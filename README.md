@@ -10,7 +10,8 @@ Echoes are limited. Each cave gives Moka a set number of squeaks, and glowing cr
 
 - **Explore**: a hand-made cave. Collect the glowing moths and fly to the green light. You earn one star for escaping, one for finding every moth, and one for finishing with enough echoes left.
 - **Cave Run**: an endless side-scroller. The screen scrolls right on its own and speeds up over time. If a wall pins Moka against the left edge, the dark catches you. Each run is a newly generated tunnel, and your best distance is saved.
-- **Battle (Bat Brawl)**: 2 to 4 bats in a pitch-black arena. You can't see walls, rivals or pickups until sound lights them up, and squeaking also gives away where you are. Hit a rival with a squeak to stun them, then fly into them for a bite (with a chomp-and-burp animation). First to 3 bites wins. Every 25 seconds the cave shifts into a different themed arena: Crystal Grotto, Lava Hollow, Mossy Den or Frozen Cavern. About one shift in three opens onto Open Sky instead: no cave walls at all, just a starry night. Pick 1–4 players on one device and fill the rest with CPU bats. On touch screens the screen is split into one zone per player (halves, thirds or quarters). On a keyboard: Mo uses WASD + F (G to dash), Ka uses the arrow keys + Enter (right Shift to dash), Ca uses IJKL + H (U to dash), and Bo uses the number pad 8456 + 0 (+ to dash).
+- **Battle (Bat Brawl)**: 2 to 4 bats in a pitch-black arena. You can't see walls, rivals or pickups until sound lights them up, and squeaking also gives away where you are. Hit a rival with a squeak to stun them, then fly into them for a bite (with a chomp-and-burp animation). First to 3 bites wins. Every 25 seconds the cave shifts into a different themed arena: Crystal Grotto, Lava Hollow, Mossy Den or Frozen Cavern. About one shift in three opens onto Open Sky instead: no cave walls at all, just a starry night. Each device controls one bat: you are Mo, and you fill the other roosts with CPU bats (or play friends Online, one device each). On a keyboard, fly with WASD or the arrow keys, squeak with F, Space or Enter, and dash with G.
+  - **3D or 2D**: battles are drawn in 3D by default, with a camera that follows your bat so the cave fills the screen. Switch to the flat top-down view on the setup screen or from the pause menu.
   - **Arena modes**: Shifting (the cave jumps to a new arena every 25 seconds), Morphing (the cave slowly reshapes itself, a few walls at a time, into the next arena), Chaos (a new arena every 9 seconds) or Open Sky (no cave at all).
   - **CPU levels**: Easy, Normal or Hard. CPU bats play fair: they only know where you are when sound reveals you, you squeak or dash nearby, or you're right next to them; otherwise they hunt from where they last noticed you.
   - **Music and sound**: every mode has its own jazz tune (piano, walking bass, brushes and vibes) plus sounds for stuns, blocks, power-ups and the countdown, all synthesized in the browser. The ♪ button in the bottom-left corner turns sound on or off.
@@ -42,9 +43,11 @@ npx serve .
 - `src/game.js` contains the game loop, input, hazards and rendering on a single canvas.
 - `src/level.js` contains the Explore cave maps, drawn as text with one character per tile (the key is at the top of the file), and the Cave Run tunnel generator.
 - `src/arenas.js` contains the Bat Brawl arena maps and their color themes.
-- `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, split-screen controls and the CPU bats.
+- `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, touch controls, the CPU bats and the 2D view.
+- `src/duel3d.js` draws Bat Brawl in 3D with a chase camera; the rules stay in `duel.js`.
 - `src/net.js` contains online rooms: room codes, the lobby, and the connection between players.
 - `src/vendor/peerjs.min.js` is PeerJS 1.5.5 (MIT), loaded only when you open Online.
+- `src/vendor/three.min.js` is three.js r158 (MIT), used for the 3D battle view.
 - `src/style.css` styles the menus and overlays.
 
 ### How online works

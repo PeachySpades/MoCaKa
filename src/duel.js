@@ -937,8 +937,8 @@
 
   // ---- Render ------------------------------------------------------------
   let ctx, PX, ox, oy;
-  const FONT = '"Fredoka", "Arial Rounded MT Bold", system-ui, sans-serif';
-  const HEAD = '"Lilita One", "Arial Rounded MT Bold", system-ui, sans-serif';
+  const FONT = '"Nunito", "Segoe UI", system-ui, sans-serif';
+  const HEAD = '"Righteous", "Trebuchet MS", system-ui, sans-serif';
   const X = (x) => ox + x * PX, Y = (y) => oy + y * PX;
 
   function glow(x, y, r, rgb, a) {
@@ -1378,13 +1378,14 @@
     ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
-  // a chunky pill with a dark fill, light outline and a solid drop shadow
+  // a glassy pill with a thin glowing outline, like the menus
   function pill(x, y, w, h, edge) {
-    ctx.fillStyle = 'rgba(5, 6, 15, 0.9)';
-    roundRect(x, y + 3, w, h, h / 2); ctx.fill();
-    ctx.fillStyle = 'rgba(27, 30, 61, 0.92)';
+    ctx.fillStyle = 'rgba(10, 12, 30, 0.72)';
     roundRect(x, y, w, h, h / 2); ctx.fill();
-    ctx.strokeStyle = edge; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.save();
+    ctx.shadowColor = edge; ctx.shadowBlur = 10;
+    ctx.strokeStyle = edge; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.restore();
   }
 
   // Scoreboard: one pill per bat along the top, split around the pause button
@@ -1398,7 +1399,7 @@
     bats.forEach((b, k) => {
       const x = k < left ? pad + k * (pw + 8) : W - pad - (n - k) * (pw + 8) + 8;
       const y = 8;
-      pill(x, y, pw, ph, viewer === b.i || (b.ctrl === 'local' && localCount === 1) ? '#f4f1ff' : 'rgba(244, 241, 255, 0.35)');
+      pill(x, y, pw, ph, viewer === b.i || (b.ctrl === 'local' && localCount === 1) ? b.color : 'rgba(150, 170, 255, 0.3)');
       // avatar dot with the score inside
       const r = ph * 0.36, cx = x + ph * 0.5, cy = y + ph / 2;
       ctx.fillStyle = b.color;

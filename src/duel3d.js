@@ -192,7 +192,7 @@
         let a = lit[k];
         for (const b of near) {
           const d = Math.hypot(tx + 0.5 - b.x, ty + 0.5 - b.y);
-          a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * (solid ? 0.4 : 0.25));
+          a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * (solid ? 0.65 : 0.35));
         }
         a = Math.max(a, tileGlow[k] * 0.5);
         const by = lit[k] > 0.05 ? v.batRgb[litBy[k]] : null;

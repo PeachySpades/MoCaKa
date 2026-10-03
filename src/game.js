@@ -957,7 +957,7 @@
     ctx.fill();
   }
 
-  const HUD_FONT = '"Fredoka", "Arial Rounded MT Bold", system-ui, sans-serif';
+  const HUD_FONT = '"Nunito", "Segoe UI", system-ui, sans-serif';
   function drawHud() {
     const pad = 16, size = Math.max(14, Math.min(20, H / 26));
     ctx.textBaseline = 'middle';
@@ -1154,7 +1154,7 @@
       const on = +b.dataset.slot <= pick.cpus;
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
-      b.querySelector('.add').textContent = on ? 'CPU · tap to remove' : '+ Add CPU';
+      b.querySelector('.add').textContent = on ? 'CPU rival' : '+ Add CPU';
     });
     document.querySelectorAll('[data-level]').forEach((b) => { b.classList.toggle('on', b.dataset.level === pick.level); b.setAttribute('aria-pressed', String(b.dataset.level === pick.level)); });
     const a = ARENA_CHOICES.find((x) => x.id === pick.arenaMode);
