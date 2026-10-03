@@ -44,7 +44,7 @@ npx serve .
 - `src/level.js` contains the Explore cave maps, drawn as text with one character per tile (the key is at the top of the file), and the Cave Run tunnel generator.
 - `src/arenas.js` contains the Bat Brawl arena maps and their color themes.
 - `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, touch controls, the CPU bats and the 2D view.
-- `src/duel3d.js` draws Bat Brawl in 3D with a chase camera; the rules stay in `duel.js`.
+- `src/view3d.js` draws the game in 3D with three.js: Bat Brawl with a chase camera, and Explore and Cave Run as a cave cross-section with depth. The rules stay in `duel.js` and `game.js`.
 - `src/net.js` contains online rooms: room codes, the lobby, and the connection between players.
 - `src/vendor/peerjs.min.js` is PeerJS 1.5.5 (MIT), loaded only when you open Online.
 - `src/vendor/three.min.js` is three.js r158 (MIT), used for the 3D battle view.

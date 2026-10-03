@@ -1,8 +1,12 @@
-// Echo Caves: the 3D view of Bat Brawl.
-// The battle itself (rules, CPUs, online sync) lives in duel.js and stays flat:
-// arena tile (x, y) is the 3D point (x, height, y). This file only draws that
-// world with three.js, using a chase camera that follows your bat, and tells
-// duel.js where things land on screen so it can draw labels on top.
+// Echo Caves in 3D, drawn with three.js. The game rules stay flat (tiles on a
+// grid) in game.js and duel.js; this file only draws them.
+//  - Bat Brawl (EchoDuel3D): arena tile (x, y) is the 3D point (x, height, y),
+//    seen by a chase camera that follows your bat. duel.js asks where things land
+//    on screen so it can draw labels on top.
+//  - Explore and Cave Run (EchoCave3D): the cave is a cross-section, tile (x, y) is
+//    (x, -y, 0), and the rock reaches back into the screen. The camera looks
+//    straight at that plane, so game.js keeps drawing creatures, rings and sparks
+//    on its flat canvas on top, at exactly the right places.
 (() => {
   'use strict';
   const T = window.THREE;
@@ -119,7 +123,7 @@
     return (dotTex = new T.CanvasTexture(c));
   }
 
-  function batRig(b) {
+  function batRig(b, into = scene) {
     const g = new T.Group();
     const mat = new T.MeshLambertMaterial({ color: b.color, transparent: true, emissive: new T.Color(b.color), emissiveIntensity: 0.35 });
     const body = new T.Mesh(new T.SphereGeometry(1, 20, 14), mat);
@@ -164,8 +168,8 @@
       const s = new T.Mesh(new T.OctahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0xffe278, transparent: true }));
       g.add(s); return s;
     });
-    scene.add(g);
-    return { g, wings, eyes, glow, shield, stars, mats: [mat, wingMat, white, dark, glow.material, ...stars.map((s) => s.material)], color: b.color };
+    into.add(g);
+    return { g, yaw: 0, wings, eyes, glow, shield, stars, mats: [mat, wingMat, white, dark, glow.material, ...stars.map((s) => s.material)], color: b.color };
   }
 
   // ---- Per-frame drawing ----------------------------------------------------
@@ -285,7 +289,17 @@
       const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : 16) + b.i);
       rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05, y);
       rig.g.scale.setScalar(scale * 1.15);
-      rig.g.rotation.set(Math.max(-0.5, Math.min(0.5, b.vy * 0.08)) - 0.35, Math.max(-0.6, Math.min(0.6, b.vx * 0.1)) + (stunned ? clock * 6 : 0) + spin, Math.max(-0.4, Math.min(0.4, -b.vx * 0.05)));
+      // turn to face the way it's flying: toward the camera you see its face,
+      // flying away you see its back
+      const speed = Math.hypot(b.vx, b.vy);
+      if (speed > 0.6) {
+        const want = Math.atan2(b.vx, b.vy);
+        let d = want - rig.yaw;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        rig.yaw += d * Math.min(1, dt * 10);
+      }
+      rig.g.rotation.order = 'YXZ';
+      rig.g.rotation.set(-0.25, rig.yaw + (stunned ? clock * 6 : 0) + spin, Math.max(-0.35, Math.min(0.35, -speed * 0.04 * Math.sign(Math.sin(rig.yaw)))));
       rig.wings[0].rotation.z = -flap * 0.7; rig.wings[1].rotation.z = flap * 0.7;
       rig.eyes.forEach((e) => e.scale.set(1, stunned ? 0.25 : 1, 1));
       rig.shield.visible = b.shield;
@@ -336,6 +350,108 @@
     batRigs.forEach((r) => scene.remove(r.g));
     batRigs = [];
   }
+
+  // ---- Explore and Cave Run ------------------------------------------------
+  const CAVE_DEPTH = 2.2, CAVE_POOL = 3200, CAVE_UP = 1.6;
+  let cave = null;
+  function caveInit() {
+    if (cave) return true;
+    if (!init()) return false;
+    const sc = new T.Scene();
+    sc.add(new T.HemisphereLight(0xffffff, 0x334466, 1.0));
+    const key = new T.DirectionalLight(0xffffff, 1.3);
+    key.position.set(-0.5, 0.9, 1);
+    sc.add(key);
+    // rock: a block per tile, reaching back from the play plane into the screen
+    const bg = new T.BoxGeometry(1, 1, CAVE_DEPTH);
+    bg.translate(0.5, -0.5, -CAVE_DEPTH / 2);
+    const rock = new T.InstancedMesh(bg, new T.MeshLambertMaterial(), CAVE_POOL);
+    // the back wall behind open air, which the echo washes over too
+    const pg = new T.PlaneGeometry(1, 1);
+    pg.translate(0.5, -0.5, -CAVE_DEPTH);
+    const back = new T.InstancedMesh(pg, new T.MeshBasicMaterial(), CAVE_POOL);
+    for (const m of [rock, back]) {
+      m.instanceMatrix.setUsage(T.DynamicDrawUsage);
+      m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(CAVE_POOL * 3), 3);
+      m.instanceColor.setUsage(T.DynamicDrawUsage);
+      m.frustumCulled = false;
+      sc.add(m);
+    }
+    const cam = new T.PerspectiveCamera(FOV, 2, 0.1, 100);
+    cave = { scene: sc, rock, back, cam, bat: null, W: 0, H: 0, last: 0 };
+    return true;
+  }
+
+  // v: { W, H, PX, cam: {x, y}, shake: {x, y} (pixels), level: {w, h, grid, lit}, near(x, y) -> 0..1,
+  //      moka: {x, y, face, vx, vy, hurt}, clock, bg, wall, fill (colors) }
+  function renderCave(v) {
+    if (!caveInit()) return false;
+    const { W: w, H: h, PX: px, level: L, clock } = v;
+    if (canvas.style.display === 'none') canvas.style.display = '';
+    const c = cave;
+    if (c.W !== w || c.H !== h) { c.W = w; c.H = h; renderer.setSize(w, h, false); }
+    const bg = hexRgb(v.bg), wall = rgbOf(v.wall), fill = rgbOf(v.fill);
+    if (!c.scene.background) c.scene.background = new T.Color();
+    c.scene.background.setRGB(bg[0], bg[1], bg[2]);
+
+    // only the tiles near the screen get blocks
+    const halfW = w / px / 2 + 4, halfH = h / px / 2 + 4;
+    const tx0 = Math.max(0, Math.floor(v.cam.x - halfW)), tx1 = Math.min(L.w - 1, Math.ceil(v.cam.x + halfW));
+    const ty0 = Math.max(0, Math.floor(v.cam.y - halfH)), ty1 = Math.min(L.h - 1, Math.ceil(v.cam.y + halfH));
+    let nr = 0, nb = 0;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        const k = ty * L.w + tx, solid = L.grid[k] === 1;
+        const a = Math.max(L.lit[k], v.near(tx + 0.5, ty + 0.5));
+        if (a < 0.02) continue;
+        if (solid && nr < CAVE_POOL) {
+          tmpM.makeTranslation(tx, -ty, 0); c.rock.setMatrixAt(nr, tmpM);
+          const col = wall.map((x, j) => x * 0.55 + fill[j] * 0.45);
+          c.rock.setColorAt(nr++, tmpC.setRGB(bg[0] + (col[0] - bg[0]) * a, bg[1] + (col[1] - bg[1]) * a, bg[2] + (col[2] - bg[2]) * a));
+        } else if (!solid && nb < CAVE_POOL) {
+          tmpM.makeTranslation(tx, -ty, 0); c.back.setMatrixAt(nb, tmpM);
+          const f = a * 0.22;
+          c.back.setColorAt(nb++, tmpC.setRGB(bg[0] + (fill[0] - bg[0]) * f * 2, bg[1] + (fill[1] - bg[1]) * f * 2, bg[2] + (fill[2] - bg[2]) * f * 2));
+        }
+      }
+    }
+    c.rock.count = nr; c.back.count = nb;
+    c.rock.instanceMatrix.needsUpdate = true; c.rock.instanceColor.needsUpdate = true;
+    c.back.instanceMatrix.needsUpdate = true; c.back.instanceColor.needsUpdate = true;
+
+    // Moka
+    if (!c.bat) c.bat = batRig({ color: v.mokaColor }, c.scene);
+    const m = v.moka, rig = c.bat;
+    const dt = Math.max(0, Math.min(0.1, clock - c.last)); c.last = clock;
+    rig.g.visible = !(m.hurt > 0 && Math.floor(m.hurt * 12) % 2 === 0);
+    rig.g.position.set(m.x, -m.y, 0.15);
+    rig.g.scale.setScalar(v.mokaR / 0.3);
+    const want = Math.max(-0.7, Math.min(0.7, (m.vx || 0) * 0.15)) + (m.face || 0) * 0.15;
+    rig.yaw += (want - rig.yaw) * Math.min(1, dt * 8);
+    rig.g.rotation.set(0.1, rig.yaw, Math.max(-0.3, Math.min(0.3, -(m.vx || 0) * 0.04)));
+    const flap = Math.sin(clock * 18);
+    rig.wings[0].rotation.z = -flap * 0.7; rig.wings[1].rotation.z = flap * 0.7;
+    rig.glow.visible = false; rig.shield.visible = false; rig.stars.forEach((s) => (s.visible = false));
+    for (const mt of rig.mats) mt.opacity = 1;
+
+    // camera: square on to the cave plane so the flat layer lines up, raised a
+    // little with a shifted lens so you can see the tops of ledges below you
+    const vfov = (FOV * Math.PI) / 180, dist = h / (2 * Math.tan(vfov / 2) * px);
+    c.cam.aspect = w / h;
+    const up = CAVE_UP;
+    c.cam.position.set(v.cam.x - v.shake.x / px, -v.cam.y + up - v.shake.y / -px, dist);
+    c.cam.lookAt(c.cam.position.x, c.cam.position.y, 0);
+    c.cam.setViewOffset(w, h, 0, up * px, w, h);
+    c.cam.updateProjectionMatrix();
+    renderer.render(c.scene, c.cam);
+    return true;
+  }
+
+  window.EchoCave3D = {
+    get supported() { return init(); },
+    render: renderCave,
+    reset() { if (cave && cave.bat) { cave.scene.remove(cave.bat.g); cave.bat = null; } },
+  };
 
   window.EchoDuel3D = {
     get supported() { return init(); },

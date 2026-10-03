@@ -730,14 +730,25 @@
     return Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * 0.3;
   };
 
+  let view3d = store.get('echo-view') !== '2d';
   function render() {
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    ctx.fillStyle = COL.bg;
-    ctx.fillRect(0, 0, W, H);
-    if (!L) return;
-
     const sx = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
     const sy = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
+    // In 3D the rock is drawn by view3d.js underneath; this canvas then only
+    // carries the creatures, rings, sparks and HUD, lined up with the 3D cave.
+    const in3d = !!L && view3d && !!window.EchoCave3D && window.EchoCave3D.render({
+      W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, moka, clock,
+      bg: COL.bg, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R,
+    });
+    if (in3d) ctx.clearRect(0, 0, W, H);
+    else {
+      window.EchoDuel3D?.hide();
+      ctx.fillStyle = COL.bg;
+      ctx.fillRect(0, 0, W, H);
+    }
+    if (!L) return;
+
     const ox = W / 2 - cam.x * PX + sx, oy = H / 2 - cam.y * PX + sy;
     const toX = (x) => ox + x * PX, toY = (y) => oy + y * PX;
 
@@ -753,8 +764,8 @@
         const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
         if (a < 0.02) continue;
         const x = toX(tx), y = toY(ty), s = PX;
-        ctx.fillStyle = `rgba(${COL.wallFill}, ${a * 0.8})`;
-        ctx.fillRect(x, y, s + 0.5, s + 0.5);
+        // in 3D the block is already there; keep only its neon outline
+        if (!in3d) { ctx.fillStyle = `rgba(${COL.wallFill}, ${a * 0.8})`; ctx.fillRect(x, y, s + 0.5, s + 0.5); }
         const edges = [[x, y, x + s, y], [x + s, y, x + s, y + s], [x, y + s, x + s, y + s], [x, y, x, y + s]];
         for (let i = 0; i < 4; i++) {
           if (!open[i]) continue;
@@ -832,7 +843,7 @@
       ctx.fillRect(toX(p.x) - 2, toY(p.y) - 2, 4, 4);
     }
 
-    drawMoka(toX(moka.x), toY(moka.y));
+    if (!in3d) drawMoka(toX(moka.x), toY(moka.y));
     if (mode === 'run') {
       // the creeping dark at the left edge
       const g = ctx.createLinearGradient(0, 0, PX * 1.6, 0);
@@ -993,7 +1004,7 @@
     if (mode === 'run') {
       ctx.textAlign = 'center';
       ctx.fillStyle = '#e8ecff';
-      ctx.fillText(`${runDistance()} m`, W / 2, pad + size * 0.6);
+      ctx.fillText(`${runDistance()} m`, W / 2, 62 + size * 0.6);   // under the pause button
     }
     // first-time hint
     if (hintTimer > 0 && state === 'play') {
@@ -1056,7 +1067,6 @@
     $('pause-title').textContent = online() ? 'Menu' : 'Paused';
     $('pause-note').hidden = !online();
     $('pause-restart').hidden = online();
-    $('pause-view').hidden = mode !== 'duel';
     $('pause-menu').textContent = online() ? 'Leave match' : 'Main menu';
   }
   function resume() { showOverlay(null); }
@@ -1190,6 +1200,7 @@
   function setView(v) {
     v = v === '2d' ? '2d' : '3d';
     store.set('echo-view', v);
+    view3d = v === '3d';
     window.EchoDuel?.setView(v);
     document.querySelectorAll('[data-view]').forEach((b) => { b.classList.toggle('on', b.dataset.view === v); b.setAttribute('aria-pressed', String(b.dataset.view === v)); });
     $('pause-view').textContent = v === '3d' ? 'Switch to 2D view' : 'Switch to 3D view';
@@ -1220,6 +1231,9 @@
   const portrait = matchMedia('(orientation: portrait) and (pointer: coarse)');
   let last = performance.now();
   function frame(now) {
+    // phones (iOS especially) can report the old size right after rotating, which
+    // stretches the picture; re-check every frame and resize as soon as it changes
+    if (canvas.clientWidth !== W || canvas.clientHeight !== H || Math.min(window.devicePixelRatio || 1, 2) !== DPR) resize();
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     // jazz everywhere: each mode has its own tune, and the menus have a mellow one
@@ -1234,7 +1248,6 @@
       requestAnimationFrame(frame);
       return;
     }
-    window.EchoDuel3D?.hide();
     if (state === 'play' && !frozen) update(dt);
     else if (state === 'win' || state === 'lose') {
       clock += dt;
