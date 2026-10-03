@@ -1,0 +1,739 @@
+// Echo Caves: Moka the bat flies through a pitch-black cave.
+// Squeaking sends out a ring of sound that briefly lights the walls,
+// but it also wakes up whatever is sleeping nearby.
+(() => {
+  'use strict';
+
+  // ---- Tuning ----------------------------------------------------------
+  const VIEW_TILES = 9;        // how many tiles fit vertically on screen
+  const MOKA_R = 0.28;         // Moka's collision radius, in tiles
+  const ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4;
+  const RING_SPEED = 11, RING_MAX = 8.5, SQUEAK_COOLDOWN = 0.45;
+  const LIGHT_FADE = 0.7;      // lit walls fade over ~1.4s
+  const MAX_HEARTS = 3, HURT_TIME = 1.3;
+
+  const COL = {
+    bg: '#05060d',
+    wall: '74, 222, 255',      // neon cyan, as "r, g, b" for rgba()
+    wallFill: '18, 52, 80',
+    moth: '255, 226, 120',
+    exit: '120, 255, 170',
+    danger: '255, 84, 104',
+    owl: '255, 196, 64',
+    moka: '#8b6cff',
+  };
+
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const $ = (id) => document.getElementById(id);
+  const isTouch = matchMedia('(pointer: coarse)').matches;
+
+  // ---- Storage (best stars per cave) -----------------------------------
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* private mode */ } },
+  };
+
+  // ---- Audio -------------------------------------------------------------
+  let ac = null;
+  function unlockAudio() {
+    if (!ac) {
+      try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { ac = null; }
+    }
+    if (ac && ac.state === 'suspended') ac.resume().catch(() => {});
+  }
+  function tone(f0, f1, dur, type = 'sine', vol = 0.12, delay = 0) {
+    if (!ac) return;
+    const t = ac.currentTime + delay;
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.type = type;
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(ac.destination);
+    o.start(t);
+    o.stop(t + dur + 0.02);
+  }
+  const sfx = {
+    squeak() { tone(2300, 3600, 0.08, 'sine', 0.1); tone(2300, 3600, 0.08, 'sine', 0.03, 0.22); },
+    moth() { tone(880, 1320, 0.14, 'triangle', 0.1); tone(1320, 1760, 0.18, 'triangle', 0.07, 0.08); },
+    hurt() { tone(240, 70, 0.3, 'square', 0.07); },
+    wake() { tone(320, 160, 0.25, 'sawtooth', 0.035); },
+    crash() { tone(180, 40, 0.35, 'triangle', 0.12); },
+    win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
+  };
+
+  // ---- Level -------------------------------------------------------------
+  let L;          // the current level's runtime state
+  function loadLevel(def) {
+    const rows = def.map;
+    const h = rows.length;
+    const w = Math.max(...rows.map((r) => r.length));
+    const grid = new Uint8Array(w * h);
+    const lv = {
+      def, w, h, grid, lit: new Float32Array(w * h),
+      start: { x: 1.5, y: 1.5 }, exit: { x: 1.5, y: 1.5 },
+      moths: [], hazards: [],
+    };
+    const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
+    const shaft = (x, y) => {
+      let top = y, bot = y;
+      while (ch(x, top - 1) !== '#') top--;
+      while (ch(x, bot + 1) !== '#') bot++;
+      return { top, bot };
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const c = ch(x, y);
+        grid[y * w + x] = c === '#' ? 1 : 0;
+        const cx = x + 0.5, cy = y + 0.5;
+        if (c === 'S') lv.start = { x: cx, y: cy };
+        else if (c === 'E') lv.exit = { x: cx, y: cy };
+        else if (c === 'm') lv.moths.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
+        else if (c === 's') {
+          const { top, bot } = shaft(x, y);
+          lv.hazards.push({ kind: 'spider', x: cx, y: cy, restY: cy, top: top + 0.45, bot: bot + 0.55, r: 0.3, awake: 0, t: 0, lit: 0 });
+        } else if (c === 'r') {
+          const { top } = shaft(x, y);
+          lv.hazards.push({ kind: 'rock', x: cx, y: top + 0.32, r: 0.26, state: 'hang', shake: 0, vy: 0, lit: 0 });
+        } else if (c === 'o') {
+          lv.hazards.push({ kind: 'owl', x: cx, y: cy, homeX: cx, homeY: cy, r: 0.34, state: 'sleep', t: 0, lit: 0 });
+        }
+      }
+    }
+    return lv;
+  }
+  const solid = (tx, ty) => tx < 0 || ty < 0 || tx >= L.w || ty >= L.h || L.grid[ty * L.w + tx] === 1;
+
+  function hitsWall(px, py, r) {
+    for (let ty = Math.floor(py - r); ty <= Math.floor(py + r); ty++) {
+      for (let tx = Math.floor(px - r); tx <= Math.floor(px + r); tx++) {
+        if (!solid(tx, ty)) continue;
+        const nx = Math.max(tx, Math.min(px, tx + 1));
+        const ny = Math.max(ty, Math.min(py, ty + 1));
+        if ((px - nx) ** 2 + (py - ny) ** 2 < r * r) return true;
+      }
+    }
+    return false;
+  }
+
+  // ---- Game state --------------------------------------------------------
+  let state = 'title';          // title | play | win | lose
+  let levelIndex = 0;
+  let moka, rings, particles, cam, stats, shake, hintTimer, clock;
+
+  function startLevel(i) {
+    levelIndex = i;
+    L = loadLevel(window.ECHO_LEVELS[i]);
+    moka = { x: L.start.x, y: L.start.y, vx: 0, vy: 0, face: 1, hearts: MAX_HEARTS, hurt: 0, cooldown: 0 };
+    rings = [];
+    particles = [];
+    cam = { x: moka.x, y: moka.y };
+    stats = { moths: 0, squeaks: 0, time: 0 };
+    shake = 0;
+    hintTimer = 6;
+    clock = 0;
+    state = 'play';
+    showOverlay(null);
+  }
+
+  // ---- Input -------------------------------------------------------------
+  const keys = new Set();
+  let stick = null;             // the finger or mouse button steering Moka
+  const STICK_RANGE = 56;       // px of drag for full speed
+
+  addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (state !== 'play') {
+      if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) primaryAction();
+      return;
+    }
+    keys.add(e.code);
+    if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) squeak();
+  });
+  addEventListener('keyup', (e) => keys.delete(e.code));
+  addEventListener('blur', () => { keys.clear(); stick = null; });
+
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (state !== 'play') return;
+    unlockAudio();
+    if (!stick) {
+      stick = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
+      canvas.setPointerCapture?.(e.pointerId);
+    } else {
+      squeak(); // a second finger taps while the first steers
+    }
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    if (!stick || stick.id !== e.pointerId) return;
+    stick.x = e.clientX;
+    stick.y = e.clientY;
+    if (Math.hypot(stick.x - stick.sx, stick.y - stick.sy) > 14) stick.moved = true;
+  });
+  const endStick = (e) => {
+    if (!stick || stick.id !== e.pointerId) return;
+    if (!stick.moved && performance.now() - stick.t < 280) squeak();
+    stick = null;
+  };
+  canvas.addEventListener('pointerup', endStick);
+  canvas.addEventListener('pointercancel', endStick);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  function readInput() {
+    let ix = 0, iy = 0;
+    if (keys.has('ArrowLeft') || keys.has('KeyA')) ix -= 1;
+    if (keys.has('ArrowRight') || keys.has('KeyD')) ix += 1;
+    if (keys.has('ArrowUp') || keys.has('KeyW')) iy -= 1;
+    if (keys.has('ArrowDown') || keys.has('KeyS')) iy += 1;
+    if (stick) {
+      const dx = stick.x - stick.sx, dy = stick.y - stick.sy, len = Math.hypot(dx, dy);
+      if (len > 8) {
+        const mag = Math.min(len / STICK_RANGE, 1);
+        ix += (dx / len) * mag;
+        iy += (dy / len) * mag;
+      }
+    }
+    const len = Math.hypot(ix, iy);
+    if (len > 1) { ix /= len; iy /= len; }
+    return { ix, iy };
+  }
+
+  // ---- Actions -----------------------------------------------------------
+  function squeak() {
+    if (state !== 'play' || moka.cooldown > 0) return;
+    moka.cooldown = SQUEAK_COOLDOWN;
+    stats.squeaks++;
+    rings.push({ x: moka.x, y: moka.y, r: 0 });
+    hintTimer = Math.min(hintTimer, 2.5);
+    sfx.squeak();
+  }
+
+  function wake(h) {
+    if (h.kind === 'spider') {
+      if (!h.awake) {
+        h.t = 0;
+        const mid = (h.top + h.bot) / 2, amp = (h.bot - h.top) / 2;
+        h.phase = amp > 0.05 ? Math.acos(Math.max(-1, Math.min(1, (h.restY - mid) / amp))) : 0;
+        sfx.wake();
+      }
+      h.awake = 6;
+    } else if (h.kind === 'rock' && h.state === 'hang') {
+      h.state = 'shake';
+      h.shake = 0.4;
+      sfx.wake();
+    } else if (h.kind === 'owl') {
+      if (h.state !== 'chase') sfx.wake();
+      h.state = 'chase';
+      h.t = 4;
+    }
+  }
+
+  function hurt(fromX, fromY) {
+    if (moka.hurt > 0) return;
+    moka.hearts--;
+    moka.hurt = HURT_TIME;
+    const dx = moka.x - fromX, dy = moka.y - fromY, d = Math.hypot(dx, dy) || 1;
+    moka.vx = (dx / d) * 5;
+    moka.vy = (dy / d) * 5;
+    shake = 0.35;
+    burst(moka.x, moka.y, COL.danger, 14);
+    sfx.hurt();
+    if (moka.hearts <= 0) endGame(false);
+  }
+
+  function burst(x, y, rgb, n) {
+    for (let i = 0; i < n; i++) {
+      const a = Math.random() * Math.PI * 2, s = 1 + Math.random() * 3;
+      particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.5 + Math.random() * 0.5, rgb });
+    }
+  }
+
+  function endGame(won) {
+    state = won ? 'win' : 'lose';
+    stick = null;
+    keys.clear();
+    if (won) {
+      sfx.win();
+      const allMoths = stats.moths === L.moths.length;
+      const underPar = stats.squeaks <= L.def.par;
+      const stars = 1 + (allMoths ? 1 : 0) + (underPar ? 1 : 0);
+      const key = 'echo-caves-best-' + levelIndex;
+      const best = Math.max(stars, store.get(key) || 0);
+      store.set(key, best);
+      $('end-title').textContent = 'Out of the dark!';
+      $('end-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
+      $('end-stars').setAttribute('aria-label', stars + ' of 3 stars');
+      $('end-detail').innerHTML =
+        `<li class="got">Found the exit</li>` +
+        `<li class="${allMoths ? 'got' : ''}">Moths ${stats.moths} of ${L.moths.length}</li>` +
+        `<li class="${underPar ? 'got' : ''}">Squeaks ${stats.squeaks}, par ${L.def.par}</li>`;
+    } else {
+      $('end-title').textContent = 'Moka needs a rest';
+      $('end-stars').textContent = '☆☆☆';
+      $('end-stars').setAttribute('aria-label', 'No stars');
+      $('end-detail').innerHTML = `<li>Squeak less near sleeping things, or fly past before they wake.</li>`;
+    }
+    $('end-button').textContent = won ? 'Play again' : 'Try again';
+    setTimeout(() => { if (state === 'win' || state === 'lose') showOverlay('end'); }, won ? 500 : 700);
+  }
+
+  // ---- Update ------------------------------------------------------------
+  function update(dt) {
+    clock += dt;
+    stats.time += dt;
+    moka.cooldown = Math.max(0, moka.cooldown - dt);
+    moka.hurt = Math.max(0, moka.hurt - dt);
+    hintTimer -= dt;
+    shake = Math.max(0, shake - dt);
+
+    // Moka
+    const { ix, iy } = readInput();
+    if (ix || iy) {
+      moka.vx += ix * ACCEL * dt;
+      moka.vy += iy * ACCEL * dt;
+    } else {
+      moka.vx -= moka.vx * DRAG * dt;
+      moka.vy -= moka.vy * DRAG * dt;
+    }
+    const sp = Math.hypot(moka.vx, moka.vy);
+    if (sp > MAX_SPEED) { moka.vx *= MAX_SPEED / sp; moka.vy *= MAX_SPEED / sp; }
+    if (Math.abs(moka.vx) > 0.2) moka.face = Math.sign(moka.vx);
+    const nx = moka.x + moka.vx * dt;
+    if (!hitsWall(nx, moka.y, MOKA_R)) moka.x = nx; else moka.vx *= -0.25;
+    const ny = moka.y + moka.vy * dt;
+    if (!hitsWall(moka.x, ny, MOKA_R)) moka.y = ny; else moka.vy *= -0.25;
+
+    // Light fades
+    const lit = L.lit;
+    for (let i = 0; i < lit.length; i++) if (lit[i] > 0) lit[i] = Math.max(0, lit[i] - dt * LIGHT_FADE);
+    for (const h of L.hazards) h.lit = Math.max(0, h.lit - dt * LIGHT_FADE);
+
+    // Sound rings light walls and wake hazards as they pass
+    for (const ring of rings) {
+      const prev = ring.r;
+      ring.r += RING_SPEED * dt;
+      const r = ring.r;
+      const x0 = Math.max(0, Math.floor(ring.x - r - 1)), x1 = Math.min(L.w - 1, Math.ceil(ring.x + r + 1));
+      const y0 = Math.max(0, Math.floor(ring.y - r - 1)), y1 = Math.min(L.h - 1, Math.ceil(ring.y + r + 1));
+      for (let ty = y0; ty <= y1; ty++) {
+        for (let tx = x0; tx <= x1; tx++) {
+          const d = Math.hypot(tx + 0.5 - ring.x, ty + 0.5 - ring.y);
+          if (d >= prev - 0.6 && d < r + 0.6) lit[ty * L.w + tx] = 1;
+        }
+      }
+      for (const h of L.hazards) {
+        const d = Math.hypot(h.x - ring.x, h.y - ring.y);
+        if (d >= prev && d < r) { h.lit = 1; wake(h); }
+      }
+    }
+    rings = rings.filter((ring) => ring.r < RING_MAX);
+
+    // Hazards
+    for (const h of L.hazards) {
+      if (h.kind === 'spider') {
+        if (h.awake > 0) {
+          h.awake -= dt;
+          h.t += dt;
+          const mid = (h.top + h.bot) / 2, amp = (h.bot - h.top) / 2;
+          h.y = mid + amp * Math.cos(h.phase + h.t * 1.9);
+          if (h.awake <= 0) { h.awake = 0; h.restY = h.y; }
+        }
+      } else if (h.kind === 'rock') {
+        if (h.state === 'shake') {
+          h.shake -= dt;
+          if (h.shake <= 0) h.state = 'fall';
+        } else if (h.state === 'fall') {
+          h.vy += 24 * dt;
+          h.y += h.vy * dt;
+          if (solid(Math.floor(h.x), Math.floor(h.y + h.r))) {
+            h.state = 'gone';
+            burst(h.x, h.y, COL.wall, 12);
+            sfx.crash();
+          }
+        }
+      } else if (h.kind === 'owl') {
+        if (h.state === 'chase') {
+          h.t -= dt;
+          steer(h, moka.x, moka.y, 2.5, dt);
+          if (h.t <= 0) h.state = 'home';
+        } else if (h.state === 'home') {
+          steer(h, h.homeX, h.homeY, 3, dt);
+          if (Math.hypot(h.x - h.homeX, h.y - h.homeY) < 0.1) { h.state = 'sleep'; h.x = h.homeX; h.y = h.homeY; }
+        }
+      }
+      const harmful = h.kind === 'spider' || (h.kind === 'rock' && h.state === 'fall') || (h.kind === 'owl' && h.state !== 'sleep');
+      if (harmful && Math.hypot(h.x - moka.x, h.y - moka.y) < h.r + MOKA_R) hurt(h.x, h.y);
+    }
+    if (state !== 'play') return;
+
+    // Moths and exit
+    for (const m of L.moths) {
+      if (!m.got && Math.hypot(m.x - moka.x, m.y - moka.y) < 0.6) {
+        m.got = true;
+        stats.moths++;
+        burst(m.x, m.y, COL.moth, 16);
+        sfx.moth();
+      }
+    }
+    if (Math.hypot(L.exit.x - moka.x, L.exit.y - moka.y) < 0.6) endGame(true);
+
+    // Particles
+    for (const p of particles) {
+      p.x += p.vx * dt; p.y += p.vy * dt;
+      p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt;
+      p.life -= dt;
+    }
+    particles = particles.filter((p) => p.life > 0);
+
+    // Camera follows Moka, clamped to the cave
+    const vw = W / PX, vh = H / PX;
+    const k = 1 - Math.exp(-dt * 6);
+    cam.x += (moka.x - cam.x) * k;
+    cam.y += (moka.y - cam.y) * k;
+    cam.x = L.w <= vw ? L.w / 2 : Math.max(vw / 2, Math.min(L.w - vw / 2, cam.x));
+    cam.y = L.h <= vh ? L.h / 2 : Math.max(vh / 2, Math.min(L.h - vh / 2, cam.y));
+  }
+
+  function steer(h, tx, ty, speed, dt) {
+    const dx = tx - h.x, dy = ty - h.y, d = Math.hypot(dx, dy);
+    if (d < 0.001) return;
+    const step = Math.min(d, speed * dt);
+    h.x += (dx / d) * step;
+    h.y += (dy / d) * step;
+  }
+
+  // ---- Render ------------------------------------------------------------
+  let W = 0, H = 0, DPR = 1, PX = 40;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth;
+    H = canvas.clientHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    PX = Math.min(H, W) / VIEW_TILES;
+  }
+  addEventListener('resize', resize);
+
+  // Faint "whisker sense" right around Moka so tight spots stay fair
+  const nearGlow = (x, y) => {
+    const d = Math.hypot(x - moka.x, y - moka.y);
+    return Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * 0.3;
+  };
+
+  function render() {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = COL.bg;
+    ctx.fillRect(0, 0, W, H);
+    if (!L) return;
+
+    const sx = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
+    const sy = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
+    const ox = W / 2 - cam.x * PX + sx, oy = H / 2 - cam.y * PX + sy;
+    const toX = (x) => ox + x * PX, toY = (y) => oy + y * PX;
+
+    // Walls: only the faces that touch open air are drawn, as neon edges
+    const tx0 = Math.max(0, Math.floor(cam.x - W / PX / 2) - 1), tx1 = Math.min(L.w - 1, Math.ceil(cam.x + W / PX / 2) + 1);
+    const ty0 = Math.max(0, Math.floor(cam.y - H / PX / 2) - 1), ty1 = Math.min(L.h - 1, Math.ceil(cam.y + H / PX / 2) + 1);
+    ctx.lineCap = 'round';
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (!solid(tx, ty)) continue;
+        const open = [!solid(tx, ty - 1), !solid(tx + 1, ty), !solid(tx, ty + 1), !solid(tx - 1, ty)];
+        if (!open.some(Boolean)) continue;
+        const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
+        if (a < 0.02) continue;
+        const x = toX(tx), y = toY(ty), s = PX;
+        ctx.fillStyle = `rgba(${COL.wallFill}, ${a * 0.8})`;
+        ctx.fillRect(x, y, s + 0.5, s + 0.5);
+        const edges = [[x, y, x + s, y], [x + s, y, x + s, y + s], [x, y + s, x + s, y + s], [x, y, x, y + s]];
+        for (let i = 0; i < 4; i++) {
+          if (!open[i]) continue;
+          const [x0, y0, x1, y1] = edges[i];
+          ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.25})`;
+          ctx.lineWidth = 7;
+          ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+          ctx.strokeStyle = `rgba(${COL.wall}, ${a})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+        }
+      }
+    }
+
+    // Exit: a soft green glow that is always faintly visible
+    const pulse = 0.55 + 0.25 * Math.sin(clock * 2.4);
+    glow(toX(L.exit.x), toY(L.exit.y), PX * 1.3, COL.exit, pulse * 0.7);
+    ctx.strokeStyle = `rgba(${COL.exit}, ${pulse})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(toX(L.exit.x), toY(L.exit.y), PX * 0.32, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Moths glow on their own
+    for (const m of L.moths) {
+      if (m.got) continue;
+      const mx = toX(m.x + Math.cos(clock * 1.3 + m.phase) * 0.12);
+      const my = toY(m.y + Math.sin(clock * 2.1 + m.phase) * 0.15);
+      glow(mx, my, PX * 0.9, COL.moth, 0.55);
+      const flap = Math.abs(Math.sin(clock * 14 + m.phase));
+      ctx.fillStyle = `rgba(${COL.moth}, 0.95)`;
+      ctx.beginPath();
+      ctx.ellipse(mx - PX * 0.09, my, PX * 0.1, PX * 0.04 + PX * 0.07 * flap, -0.5, 0, Math.PI * 2);
+      ctx.ellipse(mx + PX * 0.09, my, PX * 0.1, PX * 0.04 + PX * 0.07 * flap, 0.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Hazards: bodies show while lit or close by; awake eyes always show
+    for (const h of L.hazards) {
+      if (h.kind === 'rock' && h.state === 'gone') continue;
+      const a = Math.max(h.lit, nearGlow(h.x, h.y) * 2);
+      const x = toX(h.x), y = toY(h.y);
+      if (h.kind === 'spider') drawSpider(h, x, y, a, toY);
+      else if (h.kind === 'rock') drawRock(h, x, y, a);
+      else drawOwl(h, x, y, a);
+    }
+
+    // Sound rings
+    for (const ring of rings) {
+      const f = 1 - ring.r / RING_MAX;
+      ctx.strokeStyle = `rgba(${COL.wall}, ${f * 0.9})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(toX(ring.x), toY(ring.y), ring.r * PX, 0, Math.PI * 2); ctx.stroke();
+      if (ring.r > 0.8) {
+        ctx.strokeStyle = `rgba(${COL.wall}, ${f * 0.35})`;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(toX(ring.x), toY(ring.y), (ring.r - 0.6) * PX, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+
+    for (const p of particles) {
+      ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
+      ctx.fillRect(toX(p.x) - 2, toY(p.y) - 2, 4, 4);
+    }
+
+    drawMoka(toX(moka.x), toY(moka.y));
+    drawHud();
+    drawStick();
+  }
+
+  function glow(x, y, r, rgb, a) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${rgb}, ${a})`);
+    g.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+
+  function eyes(x, y, rgb, gap, size) {
+    glow(x, y, PX * 0.45, rgb, 0.35);
+    ctx.fillStyle = `rgb(${rgb})`;
+    ctx.beginPath();
+    ctx.arc(x - gap, y, size, 0, Math.PI * 2);
+    ctx.arc(x + gap, y, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawSpider(h, x, y, a, toY) {
+    if (a > 0.02) {
+      ctx.strokeStyle = `rgba(220, 230, 255, ${a * 0.5})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, toY(h.top - 0.45)); ctx.lineTo(x, y); ctx.stroke();
+      ctx.strokeStyle = `rgba(${COL.danger}, ${a})`;
+      ctx.lineWidth = 2;
+      const legs = h.awake ? Math.sin(clock * 16) * 0.1 : 0;
+      for (const side of [-1, 1]) {
+        for (let i = 0; i < 4; i++) {
+          const ang = (-0.6 + i * 0.4 + legs) * side;
+          ctx.beginPath();
+          ctx.moveTo(x, y);
+          ctx.quadraticCurveTo(x + side * PX * 0.25, y + (ang - 0.3) * PX * 0.25, x + side * PX * 0.32, y + ang * PX * 0.3 + PX * 0.1);
+          ctx.stroke();
+        }
+      }
+      ctx.fillStyle = `rgba(60, 14, 28, ${a})`;
+      ctx.beginPath(); ctx.arc(x, y, PX * 0.16, 0, Math.PI * 2); ctx.fill();
+    }
+    if (h.awake) eyes(x, y - PX * 0.03, COL.danger, PX * 0.05, PX * 0.035);
+  }
+
+  function drawRock(h, x, y, a) {
+    if (h.state === 'hang' && a < 0.02) return;
+    const jx = h.state === 'shake' ? (Math.random() - 0.5) * 4 : 0;
+    const vis = h.state === 'hang' ? a : 1;
+    ctx.fillStyle = `rgba(${h.state === 'hang' ? COL.wall : COL.danger}, ${vis * 0.85})`;
+    ctx.beginPath();
+    ctx.moveTo(x + jx - PX * 0.24, y - PX * 0.32);
+    ctx.lineTo(x + jx + PX * 0.24, y - PX * 0.32);
+    ctx.lineTo(x + jx, y + PX * 0.32);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawOwl(h, x, y, a) {
+    const awake = h.state !== 'sleep';
+    if (a > 0.02 || awake) {
+      const vis = awake ? 1 : a;
+      const flap = awake ? Math.sin(clock * 12) * PX * 0.15 : 0;
+      ctx.fillStyle = `rgba(110, 82, 60, ${vis})`;
+      ctx.beginPath();
+      ctx.ellipse(x - PX * 0.3, y + PX * 0.05 - flap, PX * 0.2, PX * 0.1, -0.4, 0, Math.PI * 2);
+      ctx.ellipse(x + PX * 0.3, y + PX * 0.05 - flap, PX * 0.2, PX * 0.1, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = `rgba(150, 112, 80, ${vis})`;
+      ctx.beginPath(); ctx.ellipse(x, y, PX * 0.24, PX * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    if (awake) eyes(x, y - PX * 0.08, COL.owl, PX * 0.09, PX * 0.06);
+    else if (a > 0.05) {
+      ctx.strokeStyle = `rgba(40, 24, 16, ${a})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x - PX * 0.14, y - PX * 0.08); ctx.lineTo(x - PX * 0.04, y - PX * 0.08);
+      ctx.moveTo(x + PX * 0.04, y - PX * 0.08); ctx.lineTo(x + PX * 0.14, y - PX * 0.08);
+      ctx.stroke();
+    }
+  }
+
+  function drawMoka(x, y) {
+    if (moka.hurt > 0 && Math.floor(moka.hurt * 12) % 2 === 0) return;
+    glow(x, y, PX * 0.9, '139, 108, 255', 0.25);
+    const flap = Math.sin(clock * 18);
+    const r = PX * MOKA_R;
+    ctx.fillStyle = COL.moka;
+    for (const side of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x + side * r * 0.6, y - r * 0.2);
+      ctx.lineTo(x + side * r * 2.3, y - r * (0.2 + flap * 0.9));
+      ctx.lineTo(x + side * r * 1.8, y + r * 0.25);
+      ctx.lineTo(x + side * r * 1.3, y + r * 0.05);
+      ctx.lineTo(x + side * r * 0.9, y + r * 0.45);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    // ears
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.75, y - r * 0.5); ctx.lineTo(x - r * 0.45, y - r * 1.35); ctx.lineTo(x - r * 0.1, y - r * 0.8);
+    ctx.moveTo(x + r * 0.75, y - r * 0.5); ctx.lineTo(x + r * 0.45, y - r * 1.35); ctx.lineTo(x + r * 0.1, y - r * 0.8);
+    ctx.fill();
+    ctx.fillStyle = '#ffffff';
+    const lx = moka.face * r * 0.18;
+    ctx.beginPath();
+    ctx.arc(x - r * 0.32 + lx, y - r * 0.1, r * 0.2, 0, Math.PI * 2);
+    ctx.arc(x + r * 0.32 + lx, y - r * 0.1, r * 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1a1030';
+    ctx.beginPath();
+    ctx.arc(x - r * 0.28 + lx * 1.4, y - r * 0.08, r * 0.1, 0, Math.PI * 2);
+    ctx.arc(x + r * 0.36 + lx * 1.4, y - r * 0.08, r * 0.1, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const HUD_FONT = '"Chakra Petch", "Trebuchet MS", system-ui, sans-serif';
+  function drawHud() {
+    const pad = 16, size = Math.max(14, Math.min(20, H / 26));
+    ctx.textBaseline = 'middle';
+    ctx.font = `600 ${size}px ${HUD_FONT}`;
+    // hearts
+    for (let i = 0; i < MAX_HEARTS; i++) {
+      const x = pad + i * size * 1.5 + size * 0.5, y = pad + size * 0.6;
+      heart(x, y, size * 0.5, i < moka.hearts);
+    }
+    // moths
+    const my = pad + size * 1.9;
+    glow(pad + size * 0.5, my, size * 0.9, COL.moth, 0.5);
+    ctx.fillStyle = `rgb(${COL.moth})`;
+    ctx.beginPath(); ctx.arc(pad + size * 0.5, my, size * 0.22, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#e8ecff';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${stats.moths} / ${L.moths.length}`, pad + size * 1.3, my);
+    // squeaks
+    ctx.textAlign = 'right';
+    ctx.fillStyle = stats.squeaks > L.def.par ? `rgb(${COL.danger})` : `rgb(${COL.wall})`;
+    ctx.fillText(`Squeaks ${stats.squeaks}`, W - pad, pad + size * 0.6);
+    ctx.fillStyle = 'rgba(232, 236, 255, 0.55)';
+    ctx.font = `500 ${size * 0.75}px ${HUD_FONT}`;
+    ctx.fillText(`par ${L.def.par}`, W - pad, pad + size * 1.75);
+    // first-time hint
+    if (hintTimer > 0 && state === 'play') {
+      ctx.textAlign = 'center';
+      ctx.font = `600 ${size}px ${HUD_FONT}`;
+      ctx.fillStyle = `rgba(232, 236, 255, ${Math.min(1, hintTimer) * 0.85})`;
+      ctx.fillText(isTouch ? 'Drag to fly  ·  Tap to squeak' : 'Arrow keys or drag to fly  ·  Space or click to squeak', W / 2, H - pad - size);
+    }
+  }
+
+  function heart(x, y, s, full) {
+    ctx.beginPath();
+    ctx.moveTo(x, y + s * 0.8);
+    ctx.bezierCurveTo(x - s * 1.2, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
+    ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.2, y - s * 0.1, x, y + s * 0.8);
+    if (full) { ctx.fillStyle = `rgb(${COL.danger})`; ctx.fill(); }
+    else { ctx.strokeStyle = `rgba(${COL.danger}, 0.6)`; ctx.lineWidth = 1.5; ctx.stroke(); }
+  }
+
+  function drawStick() {
+    if (!stick || !stick.moved) return;
+    const rect = canvas.getBoundingClientRect();
+    const bx = stick.sx - rect.left, by = stick.sy - rect.top;
+    let dx = stick.x - stick.sx, dy = stick.y - stick.sy;
+    const len = Math.hypot(dx, dy);
+    if (len > STICK_RANGE) { dx *= STICK_RANGE / len; dy *= STICK_RANGE / len; }
+    ctx.strokeStyle = 'rgba(232, 236, 255, 0.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(bx, by, STICK_RANGE, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = 'rgba(232, 236, 255, 0.22)';
+    ctx.beginPath(); ctx.arc(bx + dx, by + dy, 20, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // ---- Screens -----------------------------------------------------------
+  function showOverlay(which) {
+    $('title-screen').hidden = which !== 'title';
+    $('end-screen').hidden = which !== 'end';
+  }
+
+  function primaryAction() {
+    unlockAudio();
+    if (state === 'title') {
+      try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
+      try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
+      startLevel(0);
+    } else if (state === 'win' || state === 'lose') {
+      startLevel(levelIndex);
+    }
+  }
+  $('play-button').addEventListener('click', primaryAction);
+  $('end-button').addEventListener('click', primaryAction);
+
+  const best = store.get('echo-caves-best-0');
+  if (best) $('best').textContent = `Best: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
+
+  // ---- Main loop ---------------------------------------------------------
+  const portrait = matchMedia('(orientation: portrait) and (pointer: coarse)');
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.05, (now - last) / 1000);
+    last = now;
+    if (state === 'play' && !portrait.matches && !document.hidden) update(dt);
+    else if (state === 'win' || state === 'lose') {
+      clock += dt;
+      for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  resize();
+  showOverlay('title');
+  requestAnimationFrame(frame);
+
+  // Small hook for automated play tests
+  window.__echo = {
+    get state() { return state; },
+    get moka() { return moka; },
+    get stats() { return stats; },
+    get level() { return L; },
+    start: () => startLevel(0),
+    squeak,
+  };
+})();

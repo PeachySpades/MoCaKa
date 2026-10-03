@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Echo Caves</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05060d">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Echo Caves">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&display=swap">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+<!-- BEGIN GAME MARKUP -->
+<canvas id="game" aria-label="Echo Caves game"></canvas>
+
+<section id="title-screen" class="overlay">
+  <div class="panel">
+    <p class="eyebrow">MoCaKa</p>
+    <h1>Echo Caves</h1>
+    <p class="lede">Moka the bat is lost in the dark. Squeak to see the walls, but every squeak wakes the cave.</p>
+    <ul class="legend">
+      <li><span class="dot moth"></span>Collect the glowing moths</li>
+      <li><span class="dot exit"></span>Fly to the green light</li>
+      <li><span class="dot danger"></span>Dodge spiders, rocks and owls</li>
+    </ul>
+    <button id="play-button" type="button">Play</button>
+    <p id="best" class="small"></p>
+  </div>
+</section>
+
+<section id="end-screen" class="overlay" hidden>
+  <div class="panel">
+    <h2 id="end-title">Out of the dark!</h2>
+    <p id="end-stars" class="stars"></p>
+    <ul id="end-detail" class="checklist"></ul>
+    <button id="end-button" type="button">Play again</button>
+  </div>
+</section>
+
+<section id="rotate-screen" class="overlay">
+  <div class="panel">
+    <div class="phone" aria-hidden="true"></div>
+    <p class="lede">Turn your phone sideways</p>
+  </div>
+</section>
+<!-- END GAME MARKUP -->
+<script src="src/level.js"></script>
+<script src="src/game.js"></script>
+</body>
+</html>
