@@ -32,6 +32,7 @@
       <button id="play-button" type="button">Explore<small id="best-cave">Explore one cave</small></button>
       <button id="run-button" type="button" class="alt">Cave Run<small id="best-run">Endless side-scroller</small></button>
       <button id="battle-button" type="button" class="alt battle">Battle<small>Stun and eat a rival</small></button>
+      <button id="online-button" type="button" class="alt battle">Online<small>Friends join with a code</small></button>
     </div>
   </div>
 </section>
@@ -41,6 +42,7 @@
     <h2 id="end-title">Out of the dark!</h2>
     <p id="end-stars" class="stars"></p>
     <ul id="end-detail" class="checklist"></ul>
+    <p id="end-wait" class="small" hidden>Waiting for the host to start a rematch…</p>
     <div class="modes">
       <button id="end-button" type="button">Play again</button>
       <button id="menu-button" type="button" class="alt">Menu</button>
@@ -52,7 +54,7 @@
   <div class="panel">
     <p class="eyebrow">Battle</p>
     <h2>Bat Brawl</h2>
-    <p class="lede">Stun a rival with a squeak, then fly into them for a bite. First to 3 bites wins. The cave shifts every 25 seconds.</p>
+    <p class="lede">The cave is pitch black. Squeak to see and to stun a rival, then fly into them for a bite. Dash to close in, grab power-ups, first to 3 bites wins.</p>
     <div class="pickers">
       <div class="picker" role="group" aria-label="Players on this device">
         <span>Players</span>
@@ -71,12 +73,43 @@
     </div>
     <button id="duel-start" type="button">Start</button>
     <ul class="legend keys">
-      <li><span class="dot mo"></span>Mo: WASD, F to squeak</li>
-      <li><span class="dot ka"></span>Ka: arrow keys, Enter to squeak</li>
-      <li><span class="dot ca"></span>Ca: IJKL, H to squeak</li>
-      <li><span class="dot bo"></span>Bo: number pad 8456, 0 to squeak</li>
+      <li><span class="dot mo"></span>Mo: WASD, F squeak, G dash</li>
+      <li><span class="dot ka"></span>Ka: arrows, Enter squeak, right Shift dash</li>
+      <li><span class="dot ca"></span>Ca: IJKL, H squeak, U dash</li>
+      <li><span class="dot bo"></span>Bo: number pad 8456, 0 squeak, + dash</li>
     </ul>
     <button id="duel-back" type="button" class="link">Back</button>
+  </div>
+</section>
+
+<section id="online-screen" class="overlay" hidden>
+  <div class="panel">
+    <p class="eyebrow">Online battle</p>
+    <div id="online-home" class="stack">
+      <h2>Room code</h2>
+      <p class="lede">Make a room and share its code, or type a friend's code to join.</p>
+      <button id="room-create" type="button">Create room</button>
+      <form id="join-form" class="join">
+        <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
+        <button id="join-go" type="submit" class="alt">Join</button>
+      </form>
+    </div>
+    <div id="online-room" class="stack" hidden>
+      <p class="small">Room code</p>
+      <p id="room-code" class="code" aria-live="polite"></p>
+      <ul id="room-players" class="roster"></ul>
+      <div class="picker" role="group" aria-label="CPU bats">
+        <span>CPU bats</span>
+        <button type="button" class="chip" data-room-cpus="0">0</button>
+        <button type="button" class="chip" data-room-cpus="1">1</button>
+        <button type="button" class="chip" data-room-cpus="2">2</button>
+        <button type="button" class="chip" data-room-cpus="3">3</button>
+      </div>
+      <button id="room-start" type="button">Start</button>
+      <button id="room-leave" type="button" class="link">Leave room</button>
+    </div>
+    <p id="online-status" class="small" role="status"></p>
+    <button id="online-back" type="button" class="link">Back</button>
   </div>
 </section>
 
@@ -91,5 +124,6 @@
 <script src="src/arenas.js"></script>
 <script src="src/game.js"></script>
 <script src="src/duel.js"></script>
+<script src="src/net.js"></script>
 </body>
 </html>

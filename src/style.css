@@ -175,6 +175,37 @@ button.chip:disabled { opacity: 0.3; cursor: not-allowed; }
 button:hover { filter: brightness(1.1); }
 button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
 
+/* Online rooms */
+.stack { display: grid; justify-items: center; gap: 12px; }
+.join { display: flex; gap: 10px; align-items: center; }
+.join input {
+  width: 6.5ch;
+  padding: 12px 14px;
+  font: 700 1.3rem/1 var(--display);
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  text-align: center;
+  color: var(--ink);
+  background: rgba(5, 6, 13, 0.7);
+  border: 2px solid rgba(74, 222, 255, 0.4);
+  border-radius: 10px;
+}
+.join input:focus { outline: none; border-color: var(--echo); box-shadow: 0 0 14px rgba(74, 222, 255, 0.4); }
+.join button { padding: 14px 24px; }
+.code {
+  margin: 0;
+  font: 700 clamp(2.4rem, 10vmin, 3.6rem)/1 var(--display);
+  letter-spacing: 0.25em;
+  padding-left: 0.25em;
+  color: var(--moth);
+  text-shadow: 0 0 18px rgba(255, 226, 120, 0.5);
+  user-select: all;
+  -webkit-user-select: all;
+}
+.roster { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; font-size: 1rem; color: var(--ink-dim); }
+.roster li { display: flex; align-items: center; gap: 8px; }
+#online-status.bad { color: var(--danger); }
+
 [hidden] { display: none !important; }
 
 /* Only phones held upright see this */
@@ -195,6 +226,10 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
   .panel { gap: 8px; padding: 14px 20px; }
   .lede { font-size: 0.95rem; }
   .legend { display: none; }
+  .stack { gap: 8px; }
+  .modes { gap: 8px; }
+  .modes button { padding: 11px 30px; }
+  .code { font-size: 2.2rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

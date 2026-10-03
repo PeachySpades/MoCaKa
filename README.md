@@ -10,7 +10,10 @@ Echoes are limited. Each cave gives Moka a set number of squeaks, and glowing cr
 
 - **Explore**: a hand-made cave. Collect the glowing moths and fly to the green light. You earn one star for escaping, one for finding every moth, and one for finishing with enough echoes left.
 - **Cave Run**: an endless side-scroller. The screen scrolls right on its own and speeds up over time. If a wall pins Moka against the left edge, the dark catches you. Each run is a newly generated tunnel, and your best distance is saved.
-- **Battle (Bat Brawl)**: 2 to 4 bats in a dark arena. Hit a rival with a squeak to stun them, then fly into them for a bite (with a chomp-and-burp animation). First to 3 bites wins. Every 25 seconds the cave shifts into a different themed arena: Crystal Grotto, Lava Hollow, Mossy Den or Frozen Cavern. Pick 1–4 players on one device and fill the rest with CPU bats. On touch screens the screen is split into one zone per player (halves, thirds or quarters). On a keyboard: Mo uses WASD + F, Ka uses the arrow keys + Enter, Ca uses IJKL + H, and Bo uses the number pad 8456 + 0.
+- **Battle (Bat Brawl)**: 2 to 4 bats in a pitch-black arena. You can't see walls, rivals or pickups until sound lights them up, and squeaking also gives away where you are. Hit a rival with a squeak to stun them, then fly into them for a bite (with a chomp-and-burp animation). First to 3 bites wins. Every 25 seconds the cave shifts into a different themed arena: Crystal Grotto, Lava Hollow, Mossy Den or Frozen Cavern. Pick 1–4 players on one device and fill the rest with CPU bats. On touch screens the screen is split into one zone per player (halves, thirds or quarters). On a keyboard: Mo uses WASD + F (G to dash), Ka uses the arrow keys + Enter (right Shift to dash), Ca uses IJKL + H (U to dash), and Bo uses the number pad 8456 + 0 (+ to dash).
+  - **Dash**: a quick burst of speed with a short cooldown. Flick your finger, press the DASH button, or use the dash key.
+  - **Power-ups** appear in the dark every few seconds: Mega Screech (your next squeak is huge and stuns longer), Speed (6 seconds), Shield (blocks one stun) and Echo Frenzy (5 seconds of free, rapid squeaks).
+- **Online**: battle friends on other devices. One player taps Create room and shares the 4-letter code; the others type it in (or open the game with `?room=CODE`). The host can fill empty seats with CPU bats. If someone leaves mid-match, a CPU bat takes over.
 
 ### Controls
 
@@ -36,4 +39,12 @@ npx serve .
 - `src/level.js` contains the Explore cave maps, drawn as text with one character per tile (the key is at the top of the file), and the Cave Run tunnel generator.
 - `src/arenas.js` contains the Bat Brawl arena maps and their color themes.
 - `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, split-screen controls and the CPU bats.
+- `src/net.js` contains online rooms: room codes, the lobby, and the connection between players.
+- `src/vendor/peerjs.min.js` is PeerJS 1.5.5 (MIT), loaded only when you open Online.
 - `src/style.css` styles the menus and overlays.
+
+### How online works
+
+The host's browser runs the match and sends snapshots to everyone about 20 times a second; guests send their stick and button presses back. Players connect directly over WebRTC using [PeerJS](https://peerjs.com/), and the free public PeerJS server is only used to find each other by room code. A few strict networks (some school or office Wi‑Fi) block direct connections; switching to mobile data usually fixes that.
+
+Online needs the game served from a real web address (for example Netlify or GitHub Pages); it does not work from a local file. To try it on one computer, open two tabs with `?net=local`, which connects tabs through the browser instead of the network.

@@ -69,6 +69,7 @@
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
     chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); },
     slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
+    dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); tone(1800, 600, 0.1, 'sine', 0.04); },
     burp() { tone(140, 90, 0.28, 'sawtooth', 0.06); tone(110, 70, 0.2, 'sawtooth', 0.04, 0.12); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
   };
@@ -287,6 +288,9 @@
     if (mode === 'run') endRun(won);
     else endCave(won);
     $('end-button').textContent = won ? 'Play again' : 'Try again';
+    $('end-button').hidden = false;
+    $('end-wait').hidden = true;
+    $('menu-button').textContent = 'Menu';
     setTimeout(() => { if (state === 'win' || state === 'lose') showOverlay('end'); }, won ? 500 : 700);
   }
 
@@ -808,6 +812,7 @@
     $('title-screen').hidden = which !== 'title';
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
+    $('online-screen').hidden = which !== 'online';
   }
 
   function enterGame(newMode) {
@@ -819,7 +824,7 @@
 
   function primaryAction() {
     unlockAudio();
-    if (mode === 'duel') startDuel(duelCfg);
+    if (mode === 'duel') (duelCfg.rematch || (() => startDuel(duelCfg)))();
     else if (state === 'title') enterGame('cave');
     else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
   }
@@ -833,18 +838,25 @@
     state = 'duel';
     L = null;
     showOverlay(null);
-    window.EchoDuel.start({ ...cfg, onEnd: endDuel });
+    window.EchoDuel.start({ ...cfg, onEnd: (result) => { cfg.onResult?.(result); endDuel(result); } });
   }
 
-  function endDuel({ winner, winnerCpu, standings, humans }) {
+  // Online guests get the result from the host and can only wait for a rematch or go back to the room
+  function endDuel({ winner, winnerCpu, standings, humans }, { guest = false } = {}) {
+    if (!duelCfg.online && guest) return;
     sfx.win();
-    $('end-title').textContent = winnerCpu && humans === 1 ? `${winner} (CPU) ate everyone!` : `${winner} wins!`;
+    const me = duelCfg.online ? ['Mo', 'Ka', 'Ca', 'Bo'][duelCfg.mode === 'host' ? 0 : duelCfg.mySlot] : null;
+    $('end-title').textContent = me === winner ? 'You win!'
+      : winnerCpu && (humans === 1 || duelCfg.online) ? `${winner} (CPU) ate everyone!` : `${winner} wins!`;
     $('end-stars').textContent = standings.map((p) => p.score).join(' – ');
     $('end-stars').setAttribute('aria-label', 'Final bites ' + standings.map((p) => `${p.name} ${p.score}`).join(', '));
     $('end-detail').innerHTML = standings
-      .map((p, k) => `<li class="${k === 0 ? 'got' : ''}" style="color:${p.color}">${p.name}${p.cpu ? ' (CPU)' : ''}: ${p.score} bite${p.score === 1 ? '' : 's'}</li>`)
+      .map((p, k) => `<li class="${k === 0 ? 'got' : ''}" style="color:${p.color}">${p.name}${p.cpu ? ' (CPU)' : ''}${p.name === me ? ' (you)' : ''}: ${p.score} bite${p.score === 1 ? '' : 's'}</li>`)
       .join('');
     $('end-button').textContent = 'Rematch';
+    $('end-button').hidden = guest;
+    $('menu-button').textContent = duelCfg.online ? 'Room' : 'Menu';
+    $('end-wait').hidden = !guest;
     showOverlay('end');
   }
 
@@ -880,12 +892,16 @@
   $('duel-start').addEventListener('click', () => startDuel(pick));
   $('duel-back').addEventListener('click', () => showOverlay('title'));
   $('menu-button').addEventListener('click', () => {
+    if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
     window.EchoDuel.stop();
     mode = 'cave';
     state = 'title';
     L = null;
     showOverlay('title');
   });
+
+  // Used by the online rooms (net.js)
+  window.EchoGame = { startDuel, showEnd: endDuel, showOverlay };
 
   function updateBests() {
     const best = store.get('echo-caves-best-0');
