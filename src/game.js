@@ -58,7 +58,21 @@
       }
     }
     if (ac && ac.state === 'suspended') ac.resume().catch(() => {});
+    // iPhones mute Web Audio when the ring switch is on silent, unless a media
+    // element is playing too: a silent looping clip switches it to "playback"
+    if (!silentLoop) {
+      try {
+        silentLoop = new Audio('data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YSADAACAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgA==');
+        silentLoop.loop = true;
+        silentLoop.setAttribute('playsinline', '');
+        silentLoop.play().catch(() => { silentLoop = null; });
+      } catch { silentLoop = null; }
+    }
   }
+  let silentLoop = null;
+  // any first touch or key unlocks sound, so the menus can play music too
+  addEventListener('pointerdown', () => unlockAudio(), { passive: true });
+  addEventListener('keydown', () => unlockAudio());
   function setMuted(m) {
     muted = m;
     store.set('echo-muted', m);
@@ -150,6 +164,12 @@
         C(43, [53, 58, 62, 65], [70, 74, 77, 79]), C(36, [52, 58, 62, 64], [70, 72, 74, 76]),
       ] },
     };
+    TUNES.lobby = { bpm: 96, swing: 0.6, ride: false, vibes: 0.7, chords: [
+      C(38, [53, 57, 60, 64], [69, 72, 74, 76, 77]), C(43, [53, 59, 64, 65], [71, 74, 76, 79]),
+      C(36, [52, 55, 59, 62], [72, 74, 76, 79, 81]), C(45, [55, 61, 64, 70], [69, 73, 76, 79]),
+      C(38, [53, 57, 60, 64], [69, 72, 74, 77]), C(43, [53, 59, 64, 65], [71, 74, 76, 79]),
+      C(40, [55, 59, 62, 66], [71, 74, 76, 79]), C(45, [55, 61, 64, 67], [69, 73, 76, 79]),
+    ] };
     let timer = null, bus = null, tune = null, style = null, next = 0, step = 0, phrase = null;
 
     function env(g, t, vol, attack, decay) {
@@ -367,6 +387,8 @@
 
   addEventListener('keydown', (e) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if ((e.code === 'Escape' || e.code === 'KeyP') && !e.repeat && inMatch()) { pauseOpen ? resume() : openPause(); return; }
+    if (pauseOpen) return;
     if (state === 'duel' || mode === 'duel') return;   // the battle handles its own keys
     if (state !== 'play') {
       if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) primaryAction();
@@ -935,7 +957,7 @@
     ctx.fill();
   }
 
-  const HUD_FONT = '"Chakra Petch", "Trebuchet MS", system-ui, sans-serif';
+  const HUD_FONT = '"Fredoka", "Arial Rounded MT Bold", system-ui, sans-serif';
   function drawHud() {
     const pad = 16, size = Math.max(14, Math.min(20, H / 26));
     ctx.textBaseline = 'middle';
@@ -1015,6 +1037,36 @@
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
     $('online-screen').hidden = which !== 'online';
+    $('pause-screen').hidden = which !== 'pause';
+    if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); }
+  }
+
+  // ---- Pause ---------------------------------------------------------------
+  // Offline games freeze; an online match keeps running for everyone else.
+  let paused = false, pauseOpen = false;
+  const inMatch = () => state === 'play' || (mode === 'duel' && state === 'duel' && window.EchoDuel.active && !window.EchoDuel.over);
+  const online = () => mode === 'duel' && duelCfg.online;
+  function openPause() {
+    if (!inMatch()) return;
+    showOverlay('pause');
+    pauseOpen = true;
+    paused = !online();
+    window.EchoDuel.setPaused(paused);
+    keys.clear(); stick = null;
+    $('pause-title').textContent = online() ? 'Menu' : 'Paused';
+    $('pause-note').hidden = !online();
+    $('pause-restart').hidden = online();
+    $('pause-menu').textContent = online() ? 'Leave match' : 'Main menu';
+  }
+  function resume() { showOverlay(null); }
+  function toMenu() {
+    const wasOnline = online();
+    if (wasOnline) duelCfg.leave();
+    window.EchoDuel.stop();
+    mode = 'cave';
+    state = 'title';
+    L = null;
+    showOverlay(wasOnline ? 'online' : 'title');
   }
 
   function enterGame(newMode) {
@@ -1068,49 +1120,77 @@
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
   $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
-  // Battle setup: how many players share this device, and how many CPU bats join (2–4 bats in total)
-  const pick = { humans: 1, cpus: 1, level: store.get('echo-cpu-level') || 'normal', arenaMode: store.get('echo-arena-mode') || 'shift' };
+  // Battle setup: you are always P1 (one player per device); fill the other
+  // slots with CPU bats, pick their level, and flip through the arena modes.
+  const ARENA_CHOICES = [
+    { id: 'shift', name: 'Shifting', desc: 'A new cave every 25s' },
+    { id: 'morph', name: 'Morphing', desc: 'The walls slowly reshape' },
+    { id: 'chaos', name: 'Chaos', desc: 'A new cave every 9s' },
+    { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night' },
+  ];
+  const pick = { humans: 1, cpus: Math.min(3, Math.max(1, store.get('echo-cpus') || 1)), level: store.get('echo-cpu-level') || 'normal', arenaMode: store.get('echo-arena-mode') || 'shift' };
+  if (!ARENA_CHOICES.some((a) => a.id === pick.arenaMode)) pick.arenaMode = 'shift';
+  // a little map of the arena, drawn from its tiles
+  function drawArenaPreview() {
+    const c = $('arena-preview'), g = c.getContext('2d');
+    const arenas = window.ECHO_ARENAS;
+    const def = pick.arenaMode === 'sky' ? arenas.find((a) => a.open) : arenas[{ shift: 0, morph: 2, chaos: 1 }[pick.arenaMode]];
+    const w = def.map[0].length, h = def.map.length, s = Math.min(c.width / w, c.height / h);
+    const x0 = (c.width - w * s) / 2, y0 = (c.height - h * s) / 2;
+    g.fillStyle = def.theme.bg; g.fillRect(0, 0, c.width, c.height);
+    def.map.forEach((row, y) => [...row].forEach((ch, x) => {
+      if (ch === '#') { g.fillStyle = `rgba(${def.theme.wall}, 0.85)`; g.fillRect(x0 + x * s, y0 + y * s, s + 0.3, s + 0.3); }
+      else if ('ABCD'.includes(ch)) { g.fillStyle = ['#8b6cff', '#ff7ad9', '#9dff6a', '#ffb347']['ABCD'.indexOf(ch)]; g.beginPath(); g.arc(x0 + (x + 0.5) * s, y0 + (y + 0.5) * s, s * 0.8, 0, Math.PI * 2); g.fill(); }
+    }));
+    if (def.open) {
+      g.fillStyle = 'rgba(255, 244, 214, 0.8)';
+      g.beginPath(); g.arc(c.width * 0.8, c.height * 0.3, 7, 0, Math.PI * 2); g.fill();
+    }
+  }
   function renderPickers() {
-    document.querySelectorAll('[data-humans]').forEach((b) => {
-      b.classList.toggle('on', +b.dataset.humans === pick.humans);
-      b.setAttribute('aria-pressed', String(+b.dataset.humans === pick.humans));
+    document.querySelectorAll('[data-slot]').forEach((b) => {
+      const on = +b.dataset.slot <= pick.cpus;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', String(on));
+      b.querySelector('.add').textContent = on ? 'CPU · tap to remove' : '+ Add CPU';
     });
     document.querySelectorAll('[data-level]').forEach((b) => { b.classList.toggle('on', b.dataset.level === pick.level); b.setAttribute('aria-pressed', String(b.dataset.level === pick.level)); });
-    document.querySelectorAll('[data-arena]').forEach((b) => { b.classList.toggle('on', b.dataset.arena === pick.arenaMode); b.setAttribute('aria-pressed', String(b.dataset.arena === pick.arenaMode)); });
-    document.querySelectorAll('[data-cpus]').forEach((b) => {
-      const n = +b.dataset.cpus, ok = pick.humans + n >= 2 && pick.humans + n <= 4;
-      b.disabled = !ok;
-      b.classList.toggle('on', n === pick.cpus);
-      b.setAttribute('aria-pressed', String(n === pick.cpus));
-    });
+    const a = ARENA_CHOICES.find((x) => x.id === pick.arenaMode);
+    $('arena-name').textContent = a.name;
+    $('arena-desc').textContent = a.desc;
+    drawArenaPreview();
   }
-  document.querySelectorAll('[data-humans]').forEach((b) => b.addEventListener('click', () => {
-    pick.humans = +b.dataset.humans;
-    if (pick.humans + pick.cpus > 4) pick.cpus = 4 - pick.humans;
-    if (pick.humans + pick.cpus < 2) pick.cpus = 1;
-    renderPickers();
-  }));
-  document.querySelectorAll('[data-cpus]').forEach((b) => b.addEventListener('click', () => {
-    pick.cpus = +b.dataset.cpus;
+  document.querySelectorAll('[data-slot]').forEach((b) => b.addEventListener('click', () => {
+    const k = +b.dataset.slot;
+    pick.cpus = k <= pick.cpus ? Math.max(1, k - 1) : k;   // at least one rival
+    store.set('echo-cpus', pick.cpus);
     renderPickers();
   }));
   document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('click', () => {
     pick.level = b.dataset.level; store.set('echo-cpu-level', pick.level); renderPickers();
   }));
-  document.querySelectorAll('[data-arena]').forEach((b) => b.addEventListener('click', () => {
-    pick.arenaMode = b.dataset.arena; store.set('echo-arena-mode', pick.arenaMode); renderPickers();
-  }));
+  const stepArena = (d) => {
+    const i = ARENA_CHOICES.findIndex((x) => x.id === pick.arenaMode);
+    pick.arenaMode = ARENA_CHOICES[(i + d + ARENA_CHOICES.length) % ARENA_CHOICES.length].id;
+    store.set('echo-arena-mode', pick.arenaMode);
+    renderPickers();
+  };
+  $('arena-prev').addEventListener('click', () => stepArena(-1));
+  $('arena-next').addEventListener('click', () => stepArena(1));
   renderPickers();
   $('duel-start').addEventListener('click', () => startDuel(pick));
   $('duel-back').addEventListener('click', () => showOverlay('title'));
   $('menu-button').addEventListener('click', () => {
     if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
-    window.EchoDuel.stop();
-    mode = 'cave';
-    state = 'title';
-    L = null;
-    showOverlay('title');
+    toMenu();
   });
+  $('pause-button').addEventListener('click', openPause);
+  $('pause-resume').addEventListener('click', resume);
+  $('pause-restart').addEventListener('click', () => {
+    if (mode === 'duel') startDuel(duelCfg);
+    else { showOverlay(null); startGame(mode, levelIndex); }
+  });
+  $('pause-menu').addEventListener('click', toMenu);
 
   // Used by the online rooms (net.js)
   window.EchoGame = { startDuel, showEnd: endDuel, showOverlay };
@@ -1129,17 +1209,19 @@
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    // each mode has its own tune; the battle picks its own each frame
+    // jazz everywhere: each mode has its own tune, and the menus have a mellow one
+    const fighting = mode === 'duel' && state === 'duel' && window.EchoDuel.active && !window.EchoDuel.over;
     if (portrait.matches || document.hidden) music.set(false);
-    else if (state === 'play') music.set(mode === 'run' ? 'run' : 'explore');
-    else if (!(mode === 'duel' && state === 'duel')) music.set(false);
+    else music.set(state === 'play' ? (mode === 'run' ? 'run' : 'explore') : fighting ? 'battle' : 'lobby');
+    $('pause-button').hidden = !inMatch() || pauseOpen;
+    const frozen = paused || portrait.matches || document.hidden;
     if (mode === 'duel' && state === 'duel') {
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      if (!portrait.matches && !document.hidden) window.EchoDuel.frame(dt, ctx, W, H);
+      if (!portrait.matches && !document.hidden) window.EchoDuel.frame(frozen ? 0 : dt, ctx, W, H);
       requestAnimationFrame(frame);
       return;
     }
-    if (state === 'play' && !portrait.matches && !document.hidden) update(dt);
+    if (state === 'play' && !frozen) update(dt);
     else if (state === 'win' || state === 'lose') {
       clock += dt;
       for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }

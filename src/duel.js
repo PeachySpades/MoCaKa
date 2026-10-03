@@ -125,6 +125,7 @@
   }
 
   // ---- State -------------------------------------------------------------
+  let paused = false;
   let active = false, mode = 'local', viewer = -1, net = null, onEnd = null;
   let localCount = 1;                    // humans on this device (local mode)
   let beams = [], beamId = 0;
@@ -225,7 +226,7 @@
   const keysFor = (slot, what) => (localCount === 1 && slot === 0) ? [...KEYMAP[0][what], ...KEYMAP[1][what]] : KEYMAP[slot][what];
 
   addEventListener('keydown', (e) => {
-    if (!active) return;
+    if (!active || paused) return;
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
     keys.add(e.code);
     if (e.repeat) return;
@@ -310,6 +311,7 @@
 
   // A local player pressed squeak or dash
   function act(slot, a, dx, dy) {
+    if (paused) return;
     const b = localBat(slot);
     if (!b) return;
     if (mode === 'client') {
@@ -930,7 +932,8 @@
 
   // ---- Render ------------------------------------------------------------
   let ctx, PX, ox, oy;
-  const FONT = '"Chakra Petch", "Trebuchet MS", system-ui, sans-serif';
+  const FONT = '"Fredoka", "Arial Rounded MT Bold", system-ui, sans-serif';
+  const HEAD = '"Lilita One", "Arial Rounded MT Bold", system-ui, sans-serif';
   const X = (x) => ox + x * PX, Y = (y) => oy + y * PX;
 
   function glow(x, y, r, rgb, a) {
@@ -956,12 +959,13 @@
     if (!stars) {
       let seed = 7;
       const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-      stars = Array.from({ length: 110 }, () => ({ x: rnd(), y: rnd(), s: 1 + rnd() * 1.6, p: rnd() * 6 }));
+      stars = Array.from({ length: 160 }, () => ({ x: rnd(), y: rnd(), s: 1 + rnd() * 1.6, p: rnd() * 6 }));
     }
     const x0 = X(0), y0 = Y(0), w = arena.w * PX, h = arena.h * PX;
     for (const st of stars) {
       ctx.fillStyle = `rgba(232, 236, 255, ${0.3 + 0.5 * Math.sin(clock * 1.5 + st.p) ** 2})`;
-      ctx.fillRect(x0 + st.x * w, y0 + st.y * h, st.s, st.s);
+      // stars fill the whole screen so the sky doesn't read as a squashed strip
+      ctx.fillRect(st.x * W, st.y * H, st.s, st.s);
     }
     const mx = x0 + w * 0.82, my = y0 + h * 0.2, mr = PX * 1.1;
     glow(mx, my, mr * 3, '255, 236, 190', 0.12);
@@ -1279,51 +1283,86 @@
     ctx.fillText('DASH', b.x, b.y);
   }
 
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
+  // a chunky pill with a dark fill, light outline and a solid drop shadow
+  function pill(x, y, w, h, edge) {
+    ctx.fillStyle = 'rgba(5, 6, 15, 0.9)';
+    roundRect(x, y + 3, w, h, h / 2); ctx.fill();
+    ctx.fillStyle = 'rgba(27, 30, 61, 0.92)';
+    roundRect(x, y, w, h, h / 2); ctx.fill();
+    ctx.strokeStyle = edge; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+
+  // Scoreboard: one pill per bat along the top, split around the pause button
   function drawHud() {
-    const n = bats.length, pad = 16;
-    const size = Math.max(13, Math.min(22, H / 24, (W - pad * 2) / n / 6));
-    const y = Math.max(20, H * 0.05);
-    const slot = (W - pad * 2) / n;
+    const n = bats.length, pad = 10, centerGap = 34;
+    const ph = Math.max(30, Math.min(40, H * 0.085));
+    const left = Math.ceil(n / 2);
+    // each side's pills must stay clear of the pause button in the middle
+    const pw = Math.min(230, (W / 2 - pad - centerGap) / left - 8);
     ctx.textBaseline = 'middle';
     bats.forEach((b, k) => {
-      const x0 = pad + k * slot;
-      ctx.textAlign = 'left';
-      ctx.font = `700 ${size * 1.3}px ${FONT}`;
+      const x = k < left ? pad + k * (pw + 8) : W - pad - (n - k) * (pw + 8) + 8;
+      const y = 8;
+      pill(x, y, pw, ph, viewer === b.i || (b.ctrl === 'local' && localCount === 1) ? '#f4f1ff' : 'rgba(244, 241, 255, 0.35)');
+      // avatar dot with the score inside
+      const r = ph * 0.36, cx = x + ph * 0.5, cy = y + ph / 2;
       ctx.fillStyle = b.color;
-      const label = `${b.name} ${b.score}`;
-      ctx.fillText(label, x0, y);
-      const sub = [];
-      if (b.ctrl === 'cpu' || b.cpuFlag) sub.push('CPU');
-      if (viewer === b.i) sub.push('YOU');
-      if (b.power) sub.push(`${POWERS[b.power].label} ${Math.ceil(b.powerT)}s`);
-      if (b.mega) sub.push('MEGA READY');
-      if (b.shield) sub.push('SHIELD');
-      if (sub.length) {
-        ctx.font = `600 ${size * 0.6}px ${FONT}`;
-        ctx.fillStyle = `rgba(${b.rgb}, 0.75)`;
-        ctx.fillText(sub.join(' · '), x0, y + size * 1.05);
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#12142a';
+      ctx.font = `${Math.round(r * 1.35)}px ${HEAD}`;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(b.score), cx, cy + 1);
+      // name, with a tag underneath
+      const tags = [];
+      if (b.ctrl === 'cpu' || b.cpuFlag) tags.push('CPU');
+      if (viewer === b.i || (b.ctrl === 'local' && localCount === 1)) tags.push('YOU');
+      if (b.power) tags.push(`${POWERS[b.power].label} ${Math.ceil(b.powerT)}`);
+      else if (b.mega) tags.push('MEGA');
+      else if (b.shield) tags.push('SHIELD');
+      ctx.textAlign = 'left';
+      ctx.fillStyle = b.color;
+      ctx.font = `${Math.round(ph * 0.42)}px ${HEAD}`;
+      const nx = x + ph * 0.95;
+      ctx.fillText(b.name, nx, cy - (tags.length ? ph * 0.12 : 0));
+      if (tags.length) {
+        ctx.font = `600 ${Math.round(ph * 0.24)}px ${FONT}`;
+        ctx.fillStyle = 'rgba(244, 241, 255, 0.6)';
+        ctx.fillText(tags.join(' · '), nx, cy + ph * 0.24);
       }
-      const pr = size * 0.18, gap = size * 0.5;
-      ctx.font = `700 ${size * 1.3}px ${FONT}`;
-      const px0 = x0 + ctx.measureText(label).width + size * 0.7;
+      // echoes left as pips on the right
+      const pr = Math.max(2.2, ph * 0.075), gap = pr * 2.7;
+      const px0 = x + pw - ph * 0.42 - (MAX_ECHOES - 1) * gap;
       for (let e = 0; e < MAX_ECHOES; e++) {
-        ctx.beginPath(); ctx.arc(px0 + e * gap, y, pr, 0, Math.PI * 2);
-        if (b.power === 'frenzy' || e < b.echoes) { ctx.fillStyle = `rgba(${b.rgb}, 0.95)`; ctx.fill(); }
-        else { ctx.strokeStyle = 'rgba(232, 236, 255, 0.2)'; ctx.lineWidth = 1; ctx.stroke(); }
+        ctx.beginPath(); ctx.arc(px0 + e * gap, cy, pr, 0, Math.PI * 2);
+        if (b.power === 'frenzy' || e < b.echoes) { ctx.fillStyle = b.color; ctx.fill(); }
+        else { ctx.fillStyle = 'rgba(244, 241, 255, 0.14)'; ctx.fill(); }
       }
     });
 
-    ctx.textAlign = 'center';
-    ctx.font = `600 ${Math.max(11, size * 0.7)}px ${FONT}`;
-    ctx.fillStyle = 'rgba(232, 236, 255, 0.55)';
+    // arena info pill along the bottom
+    const size = Math.max(13, Math.min(20, H / 26));
     const secs = Math.max(0, Math.ceil(shiftTimer));
-    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `cave shifts in ${secs}s`;
-    ctx.fillText(`${arena.def.name}  ·  first to ${WIN_SCORE} bites  ·  ${tail}`, W / 2, H - Math.max(11, H * 0.03));
+    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `shifts in ${secs}s`;
+    const info = `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}`;
+    ctx.font = `600 ${Math.round(size * 0.68)}px ${FONT}`;
+    const iw = ctx.measureText(info).width + 28, ih = size * 1.45;
+    const urgent = shiftTimer < shiftWarning() + 2 && arenaMode !== 'morph' && arenaMode !== 'sky';
+    pill(W / 2 - iw / 2, H - ih - 10, iw, ih, urgent ? `rgb(${arena.theme.wall})` : 'rgba(244, 241, 255, 0.3)');
+    ctx.textAlign = 'center';
+    ctx.fillStyle = urgent ? `rgb(${arena.theme.wall})` : 'rgba(244, 241, 255, 0.75)';
+    ctx.fillText(info, W / 2, H - ih / 2 - 10 + 1);
 
     const mid = oy + (arena.h * PX) / 2;
     if (countdown > 0) {
-      ctx.font = `700 ${size * 4}px ${FONT}`;
-      ctx.fillStyle = `rgb(${arena.theme.wall})`;
+      ctx.font = `${size * 4.5}px ${HEAD}`;
+      ctx.fillStyle = 'rgba(5, 6, 15, 0.9)';
+      ctx.fillText(String(Math.ceil(countdown)), W / 2, mid - size * 1.5 + 5);
+      ctx.fillStyle = '#f4f1ff';
       ctx.fillText(String(Math.ceil(countdown)), W / 2, mid - size * 1.5);
       ctx.font = `600 ${size}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.9)';
@@ -1331,12 +1370,15 @@
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
-        ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or DASH to dash'
+        ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or DASH to dash'
+          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to dash · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
       ctx.fillText('Grab glowing power-ups: Mega Screech, Speed, Shield, Echo Frenzy', W / 2, mid + size * 3.9);
     } else if (banner) {
-      ctx.font = `700 ${size * 1.7}px ${FONT}`;
+      ctx.font = `${size * 2}px ${HEAD}`;
+      ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
+      ctx.fillText(banner.text, W / 2, mid + 4);
       ctx.fillStyle = `rgba(${banner.rgb}, ${Math.min(1, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid);
     }
@@ -1372,7 +1414,6 @@
   function frame(dt, context, width, height) {
     ctx = context; W = width; H = height;
     if (active) { if (mode === 'client') clientUpdate(dt); else update(dt); }
-    window.EchoAudio?.music?.set(active && !over && !document.hidden && 'battle');
     if (arena) render();
   }
 
@@ -1386,6 +1427,8 @@
     get powerups() { return powerups; },
     get beams() { return beams; },
     get countdown() { return countdown; },
+    get over() { return over; },
+    setPaused: (p) => { paused = p; if (p) { keys.clear(); sticks.clear(); chargers.clear(); } },
     setShiftTimer: (s) => { shiftTimer = s; },
     spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },
     squeak: (i) => squeak(bats[i]),
