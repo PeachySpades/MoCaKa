@@ -22,6 +22,243 @@
 
   const rgbOf = (s) => s.split(',').map((v) => +v / 255);
   const hexRgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16) / 255);
+  const rng = (seed) => () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+
+  // The look shared by every mode: deep blue-violet cave stone, glowing cyan and
+  // violet crystals, little cyan mushrooms. Stone is tinted by whoever's echo lights it.
+  const CAVE_BG = [0.025, 0.028, 0.085];
+  const STONE = [0.5, 0.52, 1.0];
+  const CYAN = [0.3, 0.9, 1.0], VIOLET = [0.62, 0.4, 1.0];
+
+  // ---- Stone textures, painted once on canvases -----------------------------
+  // block: a chunky bevelled stone face (battle walls); rough: seamless rock
+  // (cave walls, rubble, ground); tile: a floor slab with grout. Each comes with
+  // a "glow" map of crystal veins that only shines when the stone itself is lit.
+  let TX = null;
+  function textures() {
+    if (TX) return TX;
+    const rnd = rng(4242);
+    const canvasOf = (s, fill) => {
+      const c = document.createElement('canvas');
+      c.width = c.height = s;
+      const g = c.getContext('2d');
+      g.fillStyle = fill; g.fillRect(0, 0, s, s);
+      return [c, g];
+    };
+    const poly = (g, pts, style, width, off = 0) => {
+      g.strokeStyle = style; g.lineWidth = width; g.lineJoin = g.lineCap = 'round';
+      g.beginPath();
+      pts.forEach(([x, y], i) => (i ? g.lineTo(x + off, y + off) : g.moveTo(x + off, y + off)));
+      g.stroke();
+    };
+    // draws fn at the 9 wrapped offsets so a rough texture tiles without seams
+    const wrapped = (g, s, wrap, fn) => {
+      const offs = wrap ? [-s, 0, s] : [0];
+      for (const dx of offs) for (const dy of offs) { g.save(); g.translate(dx, dy); fn(); g.restore(); }
+    };
+    function rock(g, s, wrap, cracks, contrast = 1) {
+      for (let k = 0; k < 28; k++) {
+        const x = rnd() * s, y = rnd() * s, r = s * (0.06 + rnd() * 0.2), dark = rnd() < 0.6;
+        wrapped(g, s, wrap, () => {
+          const gr = g.createRadialGradient(x, y, 0, x, y, r);
+          gr.addColorStop(0, dark ? `rgba(14, 12, 50, ${0.3 * contrast})` : `rgba(205, 210, 255, ${0.16 * contrast})`);
+          gr.addColorStop(1, 'rgba(0, 0, 0, 0)');
+          g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2);
+        });
+      }
+      for (let k = 0; k < (s * s) / 70; k++) {
+        const x = rnd() * s, y = rnd() * s, z = 1 + rnd() * s / 200;
+        g.fillStyle = rnd() < 0.55 ? `rgba(8, 8, 36, ${(0.08 + rnd() * 0.16) * contrast})` : `rgba(230, 232, 255, ${(0.04 + rnd() * 0.1) * contrast})`;
+        g.fillRect(x, y, z, z);
+      }
+      for (let k = 0; k < cracks; k++) {
+        const pts = [];
+        let x = rnd() * s, y = rnd() * s, a = rnd() * Math.PI * 2;
+        const n = 3 + Math.floor(rnd() * 6);
+        for (let i = 0; i <= n; i++) {
+          pts.push([x, y]);
+          a += (rnd() - 0.5) * 1.5;
+          const l = s * (0.035 + rnd() * 0.06);
+          x += Math.cos(a) * l; y += Math.sin(a) * l;
+        }
+        const w = (1.2 + rnd() * 2.2) * s / 512;
+        wrapped(g, s, wrap, () => {
+          poly(g, pts, `rgba(255, 255, 255, ${0.16 * contrast})`, w * 0.7, w * 0.8);
+          poly(g, pts, `rgba(6, 4, 28, ${0.8 * contrast})`, w);
+          // a short branch
+          if (pts.length > 3) {
+            const [bx, by] = pts[2], b2 = [[bx, by], [bx + (rnd() - 0.5) * s * 0.12, by + (rnd() - 0.5) * s * 0.12]];
+            poly(g, b2, `rgba(6, 4, 28, ${0.6 * contrast})`, w * 0.6);
+          }
+        });
+      }
+    }
+    // crystal shards poking out of the stone, drawn on both the colour and glow maps
+    function shards(gs, x, y, rgb, n, size, up) {
+      for (const [g, glow] of gs) {
+        g.save();
+        g.translate(x, y);
+        if (glow) { g.shadowColor = `rgb(${rgb})`; g.shadowBlur = size * 0.9; }
+        for (let k = 0; k < n; k++) {
+          const a = up + (k - (n - 1) / 2) * 0.45, l = size * (0.55 + 0.45 * ((k * 7) % 3) / 2), w = size * 0.16;
+          g.save(); g.rotate(a);
+          g.beginPath(); g.moveTo(-w, 0); g.lineTo(-w * 0.8, -l * 0.75); g.lineTo(0, -l); g.lineTo(w * 0.8, -l * 0.75); g.lineTo(w, 0); g.closePath();
+          g.fillStyle = glow ? `rgb(${rgb})` : `rgba(${rgb}, 0.95)`; g.fill();
+          g.fillStyle = 'rgba(255, 255, 255, 0.45)';
+          g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -l); g.lineTo(w * 0.8, -l * 0.75); g.lineTo(w, 0); g.closePath(); g.fill();
+          g.restore();
+        }
+        g.restore();
+      }
+    }
+    function specks(gs, s, n, wrap) {
+      for (let k = 0; k < n; k++) {
+        const x = rnd() * s, y = rnd() * s, r = (1.5 + rnd() * 2.5) * s / 512, rgb = rnd() < 0.55 ? '120, 235, 255' : '175, 135, 255';
+        for (const [g, glow] of gs) {
+          wrapped(g, s, wrap, () => {
+            g.save();
+            if (glow) { g.shadowColor = `rgb(${rgb})`; g.shadowBlur = r * 5; }
+            g.fillStyle = `rgb(${rgb})`;
+            g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+            g.restore();
+          });
+        }
+      }
+    }
+    const tex = (c, wrap, aniso = 1) => {
+      const t = new T.CanvasTexture(c);
+      if (wrap) t.wrapS = t.wrapT = T.RepeatWrapping;
+      t.anisotropy = Math.min(aniso, renderer.capabilities.getMaxAnisotropy());
+      return t;
+    };
+
+    // block faces: a 2x2 atlas of four different chunky stones, so neighbouring
+    // blocks don't repeat each other
+    const S = 512, Q = S / 2;
+    const [bc, bg] = canvasOf(S, 'rgb(168, 172, 228)'), [gc, gg] = canvasOf(S, '#000');
+    const inQuad = (k, fn) => {
+      const ox = (k % 2) * Q, oy = Math.floor(k / 2) * Q;
+      for (const g of [bg, gg]) { g.save(); g.beginPath(); g.rect(ox, oy, Q, Q); g.clip(); g.translate(ox, oy); }
+      fn();
+      for (const g of [bg, gg]) g.restore();
+    };
+    for (let k = 0; k < 4; k++) {
+      inQuad(k, () => {
+        rock(bg, Q, false, 4 + k);
+        // bevel: a light rim, a dark groove inside it, a dark seam at the very edge
+        const b = Q * 0.08;
+        const rim = bg.createLinearGradient(0, 0, Q, Q);
+        rim.addColorStop(0, 'rgba(235, 238, 255, 0.6)'); rim.addColorStop(1, 'rgba(190, 195, 255, 0.28)');
+        bg.strokeStyle = rim; bg.lineWidth = b; bg.strokeRect(b / 2, b / 2, Q - b, Q - b);
+        bg.strokeStyle = 'rgba(8, 6, 34, 0.45)'; bg.lineWidth = b * 0.35; bg.strokeRect(b * 1.15, b * 1.15, Q - b * 2.3, Q - b * 2.3);
+        bg.strokeStyle = 'rgba(4, 4, 20, 0.9)'; bg.lineWidth = Q * 0.03; bg.strokeRect(0, 0, Q, Q);
+        for (const [cx, cy] of [[0, 0], [Q, 0], [0, Q], [Q, Q]]) {
+          if (rnd() < 0.5) continue;
+          bg.fillStyle = 'rgba(6, 5, 26, 0.7)';
+          bg.beginPath(); bg.arc(cx, cy, b * (0.8 + rnd() * 0.9), 0, Math.PI * 2); bg.fill();
+        }
+        const both = [[bg, false], [gg, true]];
+        if (k === 0) shards(both, Q * 0.22, Q * 0.96, '110, 230, 255', 3, Q * 0.2, -0.15);
+        if (k === 1) shards(both, Q * 0.8, Q * 0.95, '170, 125, 255', 3, Q * 0.17, 0.2);
+        if (k !== 1) {
+          // a glowing vein along a crack
+          const x0 = Q * (0.3 + rnd() * 0.4), vein = [[x0, Q * 0.1], [x0 + Q * 0.06, Q * 0.28], [x0 - Q * 0.04, Q * 0.42], [x0 + Q * 0.05, Q * 0.58]];
+          const rgb = k === 2 ? '170, 125, 255' : '120, 235, 255';
+          for (const [g, glow] of both) {
+            g.save(); if (glow) { g.shadowColor = `rgb(${rgb})`; g.shadowBlur = 10; }
+            poly(g, vein, `rgb(${rgb})`, Q * 0.012); g.restore();
+          }
+        }
+        specks(both, Q, 3, false);
+      });
+    }
+
+    // rough rock, seamless
+    const [rc, rg] = canvasOf(S, 'rgb(140, 144, 205)'), [rgc, rgg] = canvasOf(S, '#000');
+    rock(rg, S, true, 7, 0.75);
+    specks([[rg, false], [rgg, true]], S, 7, true);
+
+    // floor slabs with grout, also a 2x2 atlas
+    const F = 256, FQ = F / 2;
+    const [fc, fg] = canvasOf(F, 'rgb(128, 132, 196)');
+    for (let k = 0; k < 4; k++) {
+      const ox = (k % 2) * FQ, oy = Math.floor(k / 2) * FQ;
+      fg.save(); fg.beginPath(); fg.rect(ox, oy, FQ, FQ); fg.clip(); fg.translate(ox, oy);
+      rock(fg, FQ, false, 1 + (k % 3), 0.7);
+      fg.strokeStyle = 'rgba(225, 230, 255, 0.22)'; fg.lineWidth = FQ * 0.03; fg.strokeRect(FQ * 0.06, FQ * 0.06, FQ * 0.88, FQ * 0.88);
+      fg.strokeStyle = 'rgba(3, 3, 14, 0.95)'; fg.lineWidth = FQ * 0.08; fg.strokeRect(0, 0, FQ, FQ);
+      fg.restore();
+    }
+
+    const ground = tex(rc, true);
+    ground.repeat.set(0.5, 0.5);
+    // the floor is seen at a slant, so it gets anisotropic filtering to keep its grout crisp
+    return (TX = { block: tex(bc), blockGlow: tex(gc), rough: tex(rc, true), roughGlow: tex(rgc, true), tile: tex(fc, false, 4), ground });
+  }
+
+  // Stone materials. The patched shader picks a texture variant per block (by
+  // flipping it, from the block's position) or, in 'world' mode, lays rough rock
+  // continuously across neighbouring blocks; and it scales the crystal glow by the
+  // block's own echo light so dark stone never glows on its own.
+  function patch(mat, mode, glowK, key) {
+    mat.onBeforeCompile = (s) => {
+      const hash = 'vec2 h2 = fract(sin(vec2(dot(tp.xz, vec2(12.99, 78.23)), dot(tp.xz, vec2(39.35, 11.13)))) * 43758.55);\n vec2 fl = step(0.5, h2);';
+      const st = mode === 'world' ? 'vec2 st = (uv + tp.xy) * 0.25;'
+        : mode === 'atlas' ? `${hash}\n vec2 st = ((mix(uv, 1.0 - uv, fl) * 0.97 + 0.015) + step(0.5, fract(h2 * 7.0))) * 0.5;`
+          : `${hash}\n vec2 st = mix(uv, 1.0 - uv, fl);`;
+      s.vertexShader = s.vertexShader.replace('#include <uv_vertex>', `#include <uv_vertex>
+#ifdef USE_INSTANCING
+  vec3 tp = instanceMatrix[3].xyz;
+  ${st}
+  #ifdef USE_MAP
+  vMapUv = st;
+  #endif
+  #ifdef USE_EMISSIVEMAP
+  vEmissiveMapUv = st;
+  #endif
+#endif`);
+      s.fragmentShader = s.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+#ifdef USE_COLOR
+  totalEmissiveRadiance *= max(vColor.r, max(vColor.g, vColor.b)) * ${glowK.toFixed(2)};
+#endif`);
+    };
+    mat.customProgramCacheKey = () => key;
+    return mat;
+  }
+  const stoneMat = (map, glow, mode, glowK, key) => patch(new T.MeshLambertMaterial(glow ? { map, emissive: 0xffffff, emissiveMap: glow } : { map }), mode, glowK, key);
+  // crystals glow in their own colour (instance colour), with flat-shaded facets on top
+  function crystalMat() {
+    const m = new T.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    m.onBeforeCompile = (s) => {
+      s.fragmentShader = s.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n totalEmissiveRadiance += vColor * 0.75;\n#endif');
+    };
+    m.customProgramCacheKey = () => 'crystal';
+    return m;
+  }
+  // a pointed six-sided crystal, base at 0, tip at 1, whiter toward the tip
+  function crystalGeo() {
+    const g = new T.LatheGeometry([new T.Vector2(0, 0), new T.Vector2(0.12, 0), new T.Vector2(0.13, 0.72), new T.Vector2(0, 1)], 6);
+    return shadeByHeight(g, 0.45, 1.25);
+  }
+  // a little mushroom: stem and a domed cap
+  function mushroomGeo() {
+    const p = [[0, 0], [0.028, 0], [0.022, 0.12], [0.03, 0.15], [0.11, 0.15], [0.1, 0.19], [0.06, 0.225], [0, 0.235]];
+    return shadeByHeight(new T.LatheGeometry(p.map(([x, y]) => new T.Vector2(x, y)), 8), 0.5, 1.2);
+  }
+  function shadeByHeight(g, lo, hi) {
+    g.computeBoundingBox();
+    const pos = g.attributes.position, n = pos.count, col = new Float32Array(n * 3), top = g.boundingBox.max.y || 1;
+    for (let i = 0; i < n; i++) { const k = lo + (hi - lo) * (pos.getY(i) / top); col[i * 3] = col[i * 3 + 1] = col[i * 3 + 2] = k; }
+    g.setAttribute('color', new T.BufferAttribute(col, 3));
+    return g;
+  }
+  const glowMatOf = () => new T.MeshBasicMaterial({ map: softDot(), transparent: true, depthWrite: false, blending: T.AdditiveBlending, fog: false });
+  function instanced(geo, mat, n) {
+    const m = new T.InstancedMesh(geo, mat, n);
+    m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(n * 3), 3);
+    m.frustumCulled = false;
+    return m;
+  }
 
   function init() {
     if (renderer || failed) return !!renderer;
@@ -39,9 +276,10 @@
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     scene = new T.Scene();
     camera = new T.PerspectiveCamera(FOV, 2, 0.1, 200);
-    hemi = new T.HemisphereLight(0xffffff, 0x334466, 1.1);
-    sun = new T.DirectionalLight(0xffffff, 1.4);
-    sun.position.set(-0.6, 1, 0.8);
+    // cool blue-violet cave light: tops of blocks catch it, sides fall into shade
+    hemi = new T.HemisphereLight(0xb4b8ff, 0x2a2260, 1.05);
+    sun = new T.DirectionalLight(0xd8dcff, 1.25);
+    sun.position.set(-0.5, 1, 0.55);
     scene.add(hemi, sun);
 
     // the beams and rings of sound glow, so they add light instead of covering things
@@ -73,15 +311,18 @@
   }
 
   // ---- Arena: one block per tile, shown only where sound or senses reach ----
+  let wallMat = null, floorMat = null;
   function buildTiles(arena) {
-    if (walls) { scene.remove(walls, floor); walls.geometry.dispose(); floor.geometry.dispose(); }
-    const n = arena.w * arena.h;
+    if (walls) { scene.remove(walls, floor); walls.geometry.dispose(); floor.geometry.dispose(); walls.dispose(); floor.dispose(); }
+    const n = arena.w * arena.h, tx = textures();
     const wg = new T.BoxGeometry(1, WALL_H, 1);
     wg.translate(0.5, WALL_H / 2, 0.5);
-    walls = new T.InstancedMesh(wg, new T.MeshLambertMaterial(), n);
-    const fg = new T.PlaneGeometry(0.96, 0.96);
+    wallMat = wallMat || stoneMat(tx.block, tx.blockGlow, 'atlas', 0.9, 'stone-block');
+    walls = new T.InstancedMesh(wg, wallMat, n);
+    const fg = new T.PlaneGeometry(1, 1);
     fg.rotateX(-Math.PI / 2); fg.translate(0.5, 0, 0.5);
-    floor = new T.InstancedMesh(fg, new T.MeshBasicMaterial(), n);
+    floorMat = floorMat || patch(new T.MeshBasicMaterial({ map: tx.tile }), 'atlas', 0, 'stone-floor');
+    floor = new T.InstancedMesh(fg, floorMat, n);
     for (const m of [walls, floor]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(n * 3), 3);
@@ -89,7 +330,119 @@
       m.frustumCulled = false;
       scene.add(m);
     }
+    // the floor never moves: lay every tile once, only colours change per frame
+    for (let k = 0; k < n; k++) { tmpM.makeTranslation(k % arena.w, 0, Math.floor(k / arena.w)); floor.setMatrixAt(k, tmpM); }
+    floor.instanceMatrix.needsUpdate = true;
+    buildDecor(arena.w, arena.h);
     lastTiles = n;
+  }
+
+  // ---- Scenery outside the arena: crystals, mushrooms, rubble, floating motes ----
+  // All of it sits beyond the border wall, so it never hides or hints at
+  // anything inside the playable cave.
+  let decor = null, motes = null, senseRings = [];
+  function buildDecor(w, h) {
+    if (decor) { scene.remove(decor); decor.traverse((o) => o.isMesh && o.geometry.dispose()); }
+    const tx = textures(), rnd = rng(1234);
+    decor = new T.Group();
+    const spot = (minD, maxD) => {
+      for (;;) {
+        const x = -8 + rnd() * (w + 16), z = -8 + rnd() * (h + 12);
+        const d = Math.max(-x, x - w, -z, z - h);
+        if (d > minD && d < maxD) return { x, z, d };
+      }
+    };
+    const q = new T.Quaternion(), e = new T.Euler(), p = new T.Vector3(), s = new T.Vector3(), c = new T.Color();
+    const put = (mesh, k, x, y, z, rx, ry, rz, sx, sy, sz, rgb) => {
+      p.set(x, y, z); q.setFromEuler(e.set(rx, ry, rz)); s.set(sx, sy, sz);
+      mesh.setMatrixAt(k, tmpM.compose(p, q, s));
+      mesh.setColorAt(k, c.setRGB(rgb[0], rgb[1], rgb[2]));
+    };
+    // soft glows face the camera (it only ever slides, never turns), pools lie on the ground
+    const bbGeo = new T.PlaneGeometry(1, 1); bbGeo.rotateX(-PITCH);
+    const poolGeo = new T.PlaneGeometry(1, 1); poolGeo.rotateX(-Math.PI / 2);
+    const NC = 30, NM = 22;
+    const crystals = instanced(crystalGeo(), crystalMat(), NC * 6);
+    const shrooms = instanced(mushroomGeo(), crystalMat(), NM * 5);
+    const glows = instanced(bbGeo, glowMatOf(), NC + NM);
+    const pools = instanced(poolGeo, glowMatOf(), NC + NM);
+    let nc = 0, ns = 0, ng = 0;
+    for (let k = 0; k < NC; k++) {
+      // most clusters hug the outside of the border wall, a few stand farther back and taller
+      const far = k % 3 === 0, o = spot(far ? 2.5 : 0.35, far ? 7.5 : 2.6);
+      const col = rnd() < 0.55 ? CYAN : VIOLET, n = 3 + Math.floor(rnd() * 4), big = far ? 1.7 : 1;
+      let top = 0;
+      for (let j = 0; j < n; j++) {
+        const a = rnd() * Math.PI * 2, r = j ? 0.12 + rnd() * 0.3 : 0, hh = (j ? 0.45 + rnd() * 0.7 : 0.9 + rnd() * 0.8) * big;
+        const t = j ? 0.25 + rnd() * 0.45 : rnd() * 0.15, k2 = 0.85 + rnd() * 0.3;
+        put(crystals, nc++, o.x + Math.cos(a) * r, -0.05, o.z + Math.sin(a) * r, Math.sin(a) * t, rnd() * 3, -Math.cos(a) * t,
+          (0.9 + rnd() * 0.6) * big, hh, (0.9 + rnd() * 0.6) * big, [col[0] * k2, col[1] * k2, col[2] * k2]);
+        top = Math.max(top, hh);
+      }
+      put(glows, ng, o.x, top * 0.5, o.z, 0, 0, 0, 2.2 * big + top, 2.2 * big + top, 1, col.map((v) => v * 0.32));
+      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 3.2 * big, 1, 3.2 * big, col.map((v) => v * 0.3));
+    }
+    for (let k = 0; k < NM; k++) {
+      const o = spot(0.3, 4), n = 2 + Math.floor(rnd() * 4);
+      for (let j = 0; j < n; j++) {
+        const sc = 0.9 + rnd() * 1.1;
+        put(shrooms, ns++, o.x + (rnd() - 0.5) * 0.7, 0, o.z + (rnd() - 0.5) * 0.5, (rnd() - 0.5) * 0.3, rnd() * 3, (rnd() - 0.5) * 0.3, sc, sc, sc, CYAN);
+      }
+      put(glows, ng, o.x, 0.25, o.z, 0, 0, 0, 1.1, 1.1, 1, CYAN.map((v) => v * 0.4));
+      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 1.6, 1, 1.6, CYAN.map((v) => v * 0.3));
+    }
+    crystals.count = nc; shrooms.count = ns; glows.count = pools.count = ng;
+    // dark rubble and stalagmites
+    const rockMat = stoneMat(tx.rough, null, 'flip', 0, 'stone-rubble');
+    const lumps = instanced(new T.DodecahedronGeometry(0.5, 0), rockMat, 70);
+    for (let k = 0; k < 70; k++) {
+      const o = spot(0.15, 7), sc = 0.35 + rnd() * 0.7 + (o.d > 3 ? 0.6 : 0), dk = 0.22 + rnd() * 0.12;
+      put(lumps, k, o.x, 0, o.z, rnd() * 3, rnd() * 3, rnd() * 3, sc * (1 + rnd() * 0.6), sc * 0.7, sc, [dk, dk, dk * 1.9]);
+    }
+    const spikes = instanced(new T.ConeGeometry(0.5, 1, 7).translate(0, 0.5, 0), rockMat, 46);
+    for (let k = 0; k < 46; k++) {
+      const o = spot(2.2, 8), sc = 0.6 + rnd() * 0.9 + (o.d - 2) * 0.15, dk = 0.18 + rnd() * 0.1;
+      put(spikes, k, o.x, -0.1, o.z, (rnd() - 0.5) * 0.2, rnd() * 3, (rnd() - 0.5) * 0.2, sc, sc * (1.6 + rnd() * 2.2), sc, [dk, dk, dk * 2]);
+    }
+    // rocky ground around the arena only (a frame with the arena cut out, so no pixel is shaded twice)
+    const outer = new T.Shape([new T.Vector2(-22, -16), new T.Vector2(w + 22, -16), new T.Vector2(w + 22, h + 14), new T.Vector2(-22, h + 14)]);
+    outer.holes.push(new T.Path([new T.Vector2(0, 0), new T.Vector2(0, h), new T.Vector2(w, h), new T.Vector2(w, 0)]));
+    const ground = new T.Mesh(new T.ShapeGeometry(outer).rotateX(Math.PI / 2), new T.MeshLambertMaterial({ map: tx.ground, color: 0x2a2a58, side: T.DoubleSide }));
+    ground.position.y = -0.04;
+    decor.add(ground, lumps, spikes, pools, crystals, shrooms, glows);
+    scene.add(decor);
+
+    // floating motes drift over the whole cave
+    if (!motes) {
+      const N = 140, pts = new Float32Array(N * 3), base = new Float32Array(N * 4);
+      for (let k = 0; k < N; k++) {
+        base[k * 4] = -4 + rnd() * (w + 8); base[k * 4 + 1] = 0.3 + rnd() * 2.6; base[k * 4 + 2] = -5 + rnd() * (h + 7); base[k * 4 + 3] = rnd() * 6.28;
+      }
+      const g = new T.BufferGeometry();
+      g.setAttribute('position', new T.BufferAttribute(pts, 3).setUsage(T.DynamicDrawUsage));
+      motes = new T.Points(g, new T.PointsMaterial({ color: 0x9fdcff, size: 0.09, map: softDot(), transparent: true, opacity: 0.75, depthWrite: false, blending: T.AdditiveBlending, fog: false }));
+      motes.userData.base = base;
+      motes.frustumCulled = false;
+      scene.add(motes);
+      // two faint rings on the floor around your bat: how far its senses reach
+      for (const r of [2.1, 3.4]) {
+        const m = new T.Mesh(new T.RingGeometry(r - 0.04, r, 64).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ transparent: true, depthWrite: false, blending: T.AdditiveBlending, fog: false }));
+        m.visible = false; scene.add(m); senseRings.push(m);
+      }
+    }
+  }
+  function driftMotes(clock, on) {
+    motes.visible = on;
+    if (!on) return;
+    const pos = motes.geometry.attributes.position, a = pos.array, b = motes.userData.base;
+    for (let k = 0; k < pos.count; k++) {
+      const ph = b[k * 4 + 3];
+      a[k * 3] = b[k * 4] + Math.sin(clock * 0.3 + ph) * 0.6;
+      a[k * 3 + 1] = b[k * 4 + 1] + Math.sin(clock * 0.5 + ph * 2) * 0.35;
+      a[k * 3 + 2] = b[k * 4 + 2] + Math.cos(clock * 0.25 + ph) * 0.6;
+    }
+    pos.needsUpdate = true;
+    motes.material.opacity = 0.55 + 0.2 * Math.sin(clock * 1.3);
   }
 
   function buildSky(on) {
@@ -160,8 +513,9 @@
       return e;
     });
     const glow = new T.Mesh(new T.PlaneGeometry(1.8, 1.8), new T.MeshBasicMaterial({ color: b.color, map: softDot(), transparent: true, opacity: 0.18, depthWrite: false, blending: T.AdditiveBlending }));
-    glow.rotation.x = -Math.PI / 2; glow.position.y = -BAT_Y + 0.02;
-    g.add(glow);
+    // the pool of light lies flat on the floor, so it lives outside the tilting bat
+    glow.rotation.x = -Math.PI / 2;
+    into.add(glow);
     const shield = new T.Mesh(new T.SphereGeometry(0.62, 20, 14), new T.MeshBasicMaterial({ color: 0x96f0ff, transparent: true, opacity: 0.22, wireframe: true }));
     g.add(shield);
     const stars = [0, 1, 2].map(() => {
@@ -182,45 +536,58 @@
     if (W !== v.W || H !== v.H) { W = v.W; H = v.H; renderer.setSize(W, H, false); camera.aspect = W / H; camera.updateProjectionMatrix(); }
     if (lastTiles !== arena.w * arena.h) buildTiles(arena);
 
-    const th = arena.theme, bg = hexRgb(th.bg), open = !!arena.def.open;
-    if (!scene.fog) { scene.background = new T.Color(); scene.fog = new T.Fog(0, 14, 34); }
+    const open = !!arena.def.open, bg = open ? hexRgb(arena.theme.bg) : CAVE_BG;
+    if (!scene.fog) { scene.background = new T.Color(); scene.fog = new T.Fog(0, 15, 36); }
     scene.background.setRGB(bg[0], bg[1], bg[2]);
     scene.fog.color.setRGB(bg[0], bg[1], bg[2]);
     buildSky(open);
+    decor.visible = !open;
+    driftMotes(clock, !open);
 
-    // tiles: walls rise where sound has been, the floor shows faintly under the echo
-    const wallRgb = rgbOf(th.wall), fillRgb = rgbOf(th.fill);
-    for (let ty = 0; ty < arena.h; ty++) {
-      for (let tx = 0; tx < arena.w; tx++) {
-        const k = ty * arena.w + tx, solid = arena.grid[k] === 1;
-        let a = lit[k];
-        for (const b of near) {
-          const d = Math.hypot(tx + 0.5 - b.x, ty + 0.5 - b.y);
+    // tiles: walls rise where sound has been. The border wall always shows faintly
+    // so the arena reads as a room; walls inside stay hidden until heard or sensed.
+    // The floor is laid everywhere, under walls too, so its glow gives nothing away.
+    const w = arena.w, h = arena.h;
+    for (let ty = 0; ty < h; ty++) {
+      for (let tx = 0; tx < w; tx++) {
+        const k = ty * w + tx, solid = arena.grid[k] === 1;
+        const border = tx === 0 || ty === 0 || tx === w - 1 || ty === h - 1;
+        let a = lit[k], pool = 0;
+        for (let j = 0; j < near.length; j++) {
+          const d = Math.hypot(tx + 0.5 - near[j].x, ty + 0.5 - near[j].y);
           a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * (solid ? 0.65 : 0.35));
+          pool = Math.max(pool, Math.max(0, 1 - d / 4.2));
         }
         a = Math.max(a, tileGlow[k] * 0.5);
         const by = lit[k] > 0.05 ? v.batRgb[litBy[k]] : null;
-        // walls
-        if (solid && a > 0.02) {
-          const c = by ? by.map((x, j) => Math.min(1, x * 0.95 + wallRgb[j] * 0.25)) : wallRgb.map((x, j) => x * 0.6 + fillRgb[j] * 0.4);
-          tmpM.makeScale(1, 0.6 + 0.4 * Math.min(1, a * 1.6), 1).setPosition(tx, 0, ty);
+        // walls: blue-violet stone, washed with the colour of whoever's echo lit it
+        if (solid && (a > 0.02 || border)) {
+          const e = by ? Math.min(1, lit[k] * 1.3) * 0.75 : 0;
+          let r = STONE[0], g = STONE[1], b = STONE[2];
+          if (by) { r += (by[0] * 1.15 - r) * e; g += (by[1] * 1.15 - g) * e; b += (by[2] * 1.15 - b) * e; }
+          let k2 = a;
+          if (border) k2 = Math.max(a, open ? 0.3 : 0.62);
+          // (lights in three are physically scaled, so stone needs a boost to read as bright blue-violet)
+          k2 = Math.min(1, k2 * 1.05) * 1.75;
+          tmpM.makeScale(1, border ? 1 : 0.6 + 0.4 * Math.min(1, a * 1.6), 1).setPosition(tx, 0, ty);
           walls.setMatrixAt(k, tmpM);
-          walls.setColorAt(k, tmpC.setRGB(bg[0] + (c[0] - bg[0]) * a, bg[1] + (c[1] - bg[1]) * a, bg[2] + (c[2] - bg[2]) * a));
+          walls.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2));
         } else {
           tmpM.makeScale(0, 0, 0); walls.setMatrixAt(k, tmpM);
         }
-        // floor
-        if (!solid && !open && a > 0.02) {
-          const c = by || wallRgb, f = a * 0.32;
-          tmpM.makeTranslation(tx, 0, ty); floor.setMatrixAt(k, tmpM);
-          floor.setColorAt(k, tmpC.setRGB(bg[0] + (c[0] * 0.6 - bg[0]) * f, bg[1] + (c[1] * 0.6 - bg[1]) * f, bg[2] + (c[2] * 0.6 - bg[2]) * f));
-        } else {
-          tmpM.makeScale(0, 0, 0); floor.setMatrixAt(k, tmpM);
-        }
+        // floor: a dim base everywhere, brighter around your bat and where echoes pass
+        if (!open) {
+          const lf = Math.max(lit[k] * 0.75, pool * pool * 0.5);
+          const f = 0.1 + lf * 0.95;
+          let r = 0.36, g = 0.37, b = 0.72;
+          if (by) { const e = Math.min(1, lit[k]) * 0.5; r += (by[0] - r) * e; g += (by[1] - g) * e; b += (by[2] - b) * e; }
+          floor.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * f, bg[1] + (g - bg[1]) * f, bg[2] + (b - bg[2]) * f));
+        } else floor.setColorAt(k, tmpC.setRGB(0, 0, 0));
       }
     }
+    floor.visible = !open;
     walls.instanceMatrix.needsUpdate = true; walls.instanceColor.needsUpdate = true;
-    floor.instanceMatrix.needsUpdate = true; floor.instanceColor.needsUpdate = true;
+    floor.instanceColor.needsUpdate = true;
     if (open && moon) { moon.position.set(arena.w * 0.8, -6, arena.h * 0.15); starField.material.opacity = 0.55 + 0.25 * Math.sin(clock * 0.8); }
 
     // rings of sound
@@ -283,8 +650,9 @@
         scale = 1 - 0.85 * ease; spin = p * 9; alpha = 1;
       } else if (!b || b.dead) alpha = 0;
       const blink = b && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0;
-      rig.g.visible = alpha > 0.03 && !blink;
+      rig.g.visible = rig.glow.visible = alpha > 0.03 && !blink;
       if (!rig.g.visible) return;
+      rig.glow.position.set(x, 0.03, y);
       const stunned = b.stun > 0;
       const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : 16) + b.i);
       rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05, y);
@@ -311,6 +679,15 @@
       });
       for (const m of rig.mats) m.opacity = alpha;
       rig.glow.material.opacity = alpha * (0.35 + (b.power ? 0.25 * (1 + Math.sin(clock * 10)) : 0));
+    });
+
+    // faint sense rings on the floor around your bat
+    const fb = v.follow && !v.follow.dead ? v.follow : null;
+    senseRings.forEach((m, j) => {
+      m.visible = !!fb && !open;
+      if (!m.visible) return;
+      m.position.set(fb.x, 0.02, fb.y);
+      m.material.color.setRGB(...v.batRgb[fb.i]).multiplyScalar(j ? 0.16 : 0.24);
     });
 
     // camera: chase your bat, tilted so the cave fills the screen
@@ -347,50 +724,65 @@
   }
   function reset() {
     target.ready = false;
-    batRigs.forEach((r) => scene.remove(r.g));
+    batRigs.forEach((r) => scene.remove(r.g, r.glow));
     batRigs = [];
   }
 
   // ---- Explore and Cave Run ------------------------------------------------
-  const CAVE_DEPTH = 2.2, CAVE_POOL = 3200, CAVE_UP = 1.6;
+  const CAVE_DEPTH = 2.2, CAVE_POOL = 3200, CAVE_UP = 1.6, DECO_POOL = 360, CAVE_MOTES = 60;
   let cave = null;
   function caveInit() {
     if (cave) return true;
     if (!init()) return false;
-    const sc = new T.Scene();
-    sc.add(new T.HemisphereLight(0xffffff, 0x334466, 1.0));
-    const key = new T.DirectionalLight(0xffffff, 1.3);
+    const sc = new T.Scene(), tx = textures();
+    sc.add(new T.HemisphereLight(0xb4b8ff, 0x2a2260, 1.0));
+    const key = new T.DirectionalLight(0xd8dcff, 1.2);
     key.position.set(-0.5, 0.9, 1);
     sc.add(key);
-    // rock: a block per tile, reaching back from the play plane into the screen
+    // rock: a block per tile, reaching back from the play plane into the screen,
+    // the same cracked blue-violet stone as the battle arenas
     const bg = new T.BoxGeometry(1, 1, CAVE_DEPTH);
     bg.translate(0.5, -0.5, -CAVE_DEPTH / 2);
-    const rock = new T.InstancedMesh(bg, new T.MeshLambertMaterial(), CAVE_POOL);
+    const rock = new T.InstancedMesh(bg, stoneMat(tx.rough, tx.roughGlow, 'world', 1.6, 'stone-cave'), CAVE_POOL);
     // the back wall behind open air, which the echo washes over too
     const pg = new T.PlaneGeometry(1, 1);
     pg.translate(0.5, -0.5, -CAVE_DEPTH);
-    const back = new T.InstancedMesh(pg, new T.MeshBasicMaterial(), CAVE_POOL);
-    for (const m of [rock, back]) {
+    const back = new T.InstancedMesh(pg, stoneMat(tx.rough, tx.roughGlow, 'world', 0.9, 'stone-back'), CAVE_POOL);
+    // crystals and mushrooms growing on ledges, with soft glows (the camera looks straight on)
+    const crystals = new T.InstancedMesh(crystalGeo(), crystalMat(), DECO_POOL);
+    const shrooms = new T.InstancedMesh(mushroomGeo(), crystalMat(), DECO_POOL);
+    const glows = new T.InstancedMesh(new T.PlaneGeometry(1, 1), glowMatOf(), DECO_POOL);
+    for (const m of [rock, back, crystals, shrooms, glows]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
-      m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(CAVE_POOL * 3), 3);
+      m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(m.count * 3), 3);
       m.instanceColor.setUsage(T.DynamicDrawUsage);
       m.frustumCulled = false;
       sc.add(m);
     }
+    const mg = new T.BufferGeometry(), base = new Float32Array(CAVE_MOTES * 4), mr = rng(77);
+    for (let k = 0; k < CAVE_MOTES; k++) { base[k * 4] = mr() * 26; base[k * 4 + 1] = mr() * 14; base[k * 4 + 2] = -0.4 - mr() * 1.6; base[k * 4 + 3] = mr() * 6.28; }
+    mg.setAttribute('position', new T.BufferAttribute(new Float32Array(CAVE_MOTES * 3), 3).setUsage(T.DynamicDrawUsage));
+    const motes = new T.Points(mg, new T.PointsMaterial({ color: 0x9fdcff, size: 0.07, map: softDot(), transparent: true, opacity: 0.6, depthWrite: false, blending: T.AdditiveBlending }));
+    motes.frustumCulled = false;
+    sc.add(motes);
     const cam = new T.PerspectiveCamera(FOV, 2, 0.1, 100);
-    cave = { scene: sc, rock, back, cam, bat: null, W: 0, H: 0, last: 0 };
+    cave = { scene: sc, rock, back, crystals, shrooms, glows, motes, moteBase: base, cam, bat: null, W: 0, H: 0, last: 0,
+      p: new T.Vector3(), q: new T.Quaternion(), e: new T.Euler(), s: new T.Vector3() };
     return true;
   }
 
+  // the same hash for a tile every frame, so ledge decorations never flicker
+  const tileHash = (x, y, k = 0) => { const v = Math.sin(x * 127.1 + y * 311.7 + k * 74.7) * 43758.5453; return v - Math.floor(v); };
+
   // v: { W, H, PX, cam: {x, y}, shake: {x, y} (pixels), level: {w, h, grid, lit}, near(x, y) -> 0..1,
-  //      moka: {x, y, face, vx, vy, hurt}, clock, bg, wall, fill (colors) }
+  //      moka: {x, y, face, vx, vy, hurt}, clock, wall (echo colour) }
   function renderCave(v) {
     if (!caveInit()) return false;
     const { W: w, H: h, PX: px, level: L, clock } = v;
     if (canvas.style.display === 'none') canvas.style.display = '';
     const c = cave;
     if (c.W !== w || c.H !== h) { c.W = w; c.H = h; renderer.setSize(w, h, false); }
-    const bg = hexRgb(v.bg), wall = rgbOf(v.wall), fill = rgbOf(v.fill);
+    const bg = CAVE_BG, echo = rgbOf(v.wall);
     if (!c.scene.background) c.scene.background = new T.Color();
     c.scene.background.setRGB(bg[0], bg[1], bg[2]);
 
@@ -398,7 +790,18 @@
     const halfW = w / px / 2 + 4, halfH = h / px / 2 + 4;
     const tx0 = Math.max(0, Math.floor(v.cam.x - halfW)), tx1 = Math.min(L.w - 1, Math.ceil(v.cam.x + halfW));
     const ty0 = Math.max(0, Math.floor(v.cam.y - halfH)), ty1 = Math.min(L.h - 1, Math.ceil(v.cam.y + halfH));
-    let nr = 0, nb = 0;
+    const solidAt = (x, y) => x < 0 || y < 0 || x >= L.w || y >= L.h || L.grid[y * L.w + x] === 1;
+    // stone lit by the echo: mostly its own blue-violet, with a wash of the echo colour
+    const sr = STONE[0] + (echo[0] - STONE[0]) * 0.3, sg = STONE[1] + (echo[1] - STONE[1]) * 0.3, sb = STONE[2] + (echo[2] - STONE[2]) * 0.3;
+    let nr = 0, nb = 0, nc = 0, nm = 0, ng = 0;
+    // faint stone starts a touch brighter than the background, so it fades in rather than reading as a shadow
+    const b0 = [bg[0] * 1.6, bg[1] * 1.6, bg[2] * 1.6];
+    const { p, q, e, s } = c;
+    const put = (mesh, n, x, y, z, ry, rz, sx, sy, r, g, b) => {
+      p.set(x, y, z); q.setFromEuler(e.set(0, ry, rz)); s.set(sx, sy, sx);
+      mesh.setMatrixAt(n, tmpM.compose(p, q, s));
+      mesh.setColorAt(n, tmpC.setRGB(r, g, b));
+    };
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
         const k = ty * L.w + tx, solid = L.grid[k] === 1;
@@ -406,18 +809,50 @@
         if (a < 0.02) continue;
         if (solid && nr < CAVE_POOL) {
           tmpM.makeTranslation(tx, -ty, 0); c.rock.setMatrixAt(nr, tmpM);
-          const col = wall.map((x, j) => x * 0.55 + fill[j] * 0.45);
-          c.rock.setColorAt(nr++, tmpC.setRGB(bg[0] + (col[0] - bg[0]) * a, bg[1] + (col[1] - bg[1]) * a, bg[2] + (col[2] - bg[2]) * a));
+          const f = Math.min(1, a * 1.1) * 1.7;
+          c.rock.setColorAt(nr++, tmpC.setRGB(b0[0] + (sr - b0[0]) * f, b0[1] + (sg - b0[1]) * f, b0[2] + (sb - b0[2]) * f));
+          // a few ledges grow mushrooms or crystals, a few ceilings hang crystals
+          const hsh = tileHash(tx, ty), up = !solidAt(tx, ty - 1), down = !solidAt(tx, ty + 1);
+          const col = tileHash(tx, ty, 3) < 0.55 ? CYAN : VIOLET, kk = Math.min(1, a * 1.25);
+          if (up && hsh < 0.12 && nm < DECO_POOL - 4) {
+            const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3);
+            for (let j = 0; j < n; j++) {
+              const sc = 0.9 + tileHash(tx, ty, 10 + j) * 1.0;
+              put(c.shrooms, nm++, tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6, -ty, -0.25 - tileHash(tx, ty, 30 + j) * 1.4, j, 0, sc, sc, CYAN[0] * kk, CYAN[1] * kk, CYAN[2] * kk);
+            }
+            if (ng < DECO_POOL) put(c.glows, ng++, tx + 0.5, -ty + 0.2, -0.2, 0, 0, 1.3, 1.3, CYAN[0] * kk * 0.35, CYAN[1] * kk * 0.35, CYAN[2] * kk * 0.35);
+          } else if (((up && hsh < 0.2) || (down && hsh > 0.92)) && nc < DECO_POOL - 4) {
+            const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3), flip = !(up && hsh < 0.2);
+            for (let j = 0; j < n; j++) {
+              const hh = (j ? 0.3 + tileHash(tx, ty, 10 + j) * 0.4 : 0.55 + tileHash(tx, ty, 11) * 0.35);
+              const tilt = (j - (n - 1) / 2) * 0.35;
+              // shards lean apart; on a ceiling they hang upside down
+              put(c.crystals, nc++, tx + 0.3 + tileHash(tx, ty, 20 + j) * 0.4, flip ? -ty - 1 : -ty, -0.3 - tileHash(tx, ty, 30 + j) * 1.2,
+                tileHash(tx, ty, 50 + j) * 3, flip ? Math.PI + tilt : tilt, 0.8 + tileHash(tx, ty, 40 + j) * 0.6, hh, col[0] * kk, col[1] * kk, col[2] * kk);
+            }
+            if (ng < DECO_POOL) put(c.glows, ng++, tx + 0.5, flip ? -ty - 1.35 : -ty + 0.35, -0.2, 0, 0, 1.8, 1.8, col[0] * kk * 0.4, col[1] * kk * 0.4, col[2] * kk * 0.4);
+          }
         } else if (!solid && nb < CAVE_POOL) {
           tmpM.makeTranslation(tx, -ty, 0); c.back.setMatrixAt(nb, tmpM);
-          const f = a * 0.22;
-          c.back.setColorAt(nb++, tmpC.setRGB(bg[0] + (fill[0] - bg[0]) * f * 2, bg[1] + (fill[1] - bg[1]) * f * 2, bg[2] + (fill[2] - bg[2]) * f * 2));
+          const f = a * 0.3;
+          c.back.setColorAt(nb++, tmpC.setRGB(b0[0] + (sr - b0[0]) * f, b0[1] + (sg - b0[1]) * f, b0[2] + (sb - b0[2]) * f));
         }
       }
     }
-    c.rock.count = nr; c.back.count = nb;
-    c.rock.instanceMatrix.needsUpdate = true; c.rock.instanceColor.needsUpdate = true;
-    c.back.instanceMatrix.needsUpdate = true; c.back.instanceColor.needsUpdate = true;
+    c.rock.count = nr; c.back.count = nb; c.crystals.count = nc; c.shrooms.count = nm; c.glows.count = ng;
+    for (const m of [c.rock, c.back, c.crystals, c.shrooms, c.glows]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+
+    // motes drift in the air, wrapped around the view
+    const mp = c.motes.geometry.attributes.position, ma = mp.array, mb = c.moteBase;
+    for (let k = 0; k < CAVE_MOTES; k++) {
+      const ph = mb[k * 4 + 3];
+      const wx = mb[k * 4] + Math.sin(clock * 0.3 + ph) * 0.6, wy = mb[k * 4 + 1] + Math.sin(clock * 0.45 + ph * 2) * 0.4;
+      ma[k * 3] = v.cam.x - 13 + ((((wx - v.cam.x + 13) % 26) + 26) % 26);
+      ma[k * 3 + 1] = -(v.cam.y - 7 + ((((wy - v.cam.y + 7) % 14) + 14) % 14));
+      ma[k * 3 + 2] = mb[k * 4 + 2];
+    }
+    mp.needsUpdate = true;
+    c.motes.material.opacity = 0.45 + 0.2 * Math.sin(clock * 1.3);
 
     // Moka
     if (!c.bat) c.bat = batRig({ color: v.mokaColor }, c.scene);
@@ -450,7 +885,7 @@
   window.EchoCave3D = {
     get supported() { return init(); },
     render: renderCave,
-    reset() { if (cave && cave.bat) { cave.scene.remove(cave.bat.g); cave.bat = null; } },
+    reset() { if (cave && cave.bat) { cave.scene.remove(cave.bat.g, cave.bat.glow); cave.bat = null; } },
   };
 
   window.EchoDuel3D = {

@@ -937,8 +937,9 @@
 
   // ---- Render ------------------------------------------------------------
   let ctx, PX, ox, oy;
-  const FONT = '"Nunito", "Segoe UI", system-ui, sans-serif';
-  const HEAD = '"Righteous", "Trebuchet MS", system-ui, sans-serif';
+  // rounded, chunky type everywhere, like the menus
+  const FONT = '"Fredoka", "Nunito", system-ui, sans-serif';
+  const HEAD = FONT;
   const X = (x) => ox + x * PX, Y = (y) => oy + y * PX;
 
   function glow(x, y, r, rgb, a) {
@@ -1146,6 +1147,7 @@
   function render3dOverlay(follow) {
     const P = window.EchoDuel3D.project;
     ctx.clearRect(0, 0, W, H);
+    drawVignette();
     const c = P(follow ? follow.x : arena.w / 2, follow ? follow.y : arena.h / 2);
     PX = c.s;
     ox = 0; oy = H / 2 - (arena.h * PX) / 2;
@@ -1192,10 +1194,11 @@
         ctx.fillStyle = '#ffe278';
         ctx.fillText('STUNNED', q.x, q.y - s * 0.95);
       }
-      ctx.font = `700 ${Math.max(10, s * 0.3)}px ${FONT}`;
-      ctx.fillStyle = `rgba(${b.rgb}, 0.95)`;
+      // name tag under the bat, in a light tint of its colour
+      ctx.font = `600 ${Math.max(11, s * 0.32)}px ${FONT}`;
+      ctx.fillStyle = `rgba(${b.rgb.split(',').map((x) => Math.round(+x + (255 - x) * 0.45)).join(',')}, 0.95)`;
       const you = viewer === b.i ? ' (you)' : '';
-      ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, q.x, q.y + s * 0.75);
+      ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, q.x, q.y + s * 0.78);
       ctx.globalAlpha = 1;
     }
     for (const p of popups) {
@@ -1361,16 +1364,43 @@
   function drawDashButton() {
     const b = dashButton(), me = localBat(0);
     if (!me) return;
-    const ready = me.dashCd <= 0;
-    ctx.fillStyle = `rgba(${me.rgb}, ${ready ? 0.22 : 0.08})`;
+    const ready = me.dashCd <= 0, k = ready ? 1 : 0.55;
+    // glassy purple disc
+    const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(120, 90, 235, ${0.55 * k})`);
+    g.addColorStop(1, `rgba(36, 22, 92, ${0.72 * k})`);
+    ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = `rgba(${me.rgb}, 0.9)`;
-    ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * (1 - me.dashCd / DASH_COOLDOWN)); ctx.stroke();
-    ctx.font = `700 ${14}px ${FONT}`;
+    // glowing violet ring, filling up again while the dash recharges
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    glowStroke('rgba(80, 60, 160, 0.7)', 3.5, ready ? 'rgba(160, 120, 255, 1)' : null);
+    ctx.strokeStyle = '#a68bff'; ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - me.dashCd / DASH_COOLDOWN)); ctx.stroke();
+    ctx.font = `700 ${Math.round(b.r * 0.4)}px ${FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = ready ? '#fff' : 'rgba(255,255,255,0.4)';
-    ctx.fillText('DASH', b.x, b.y);
+    ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.45)';
+    ctx.fillText('DASH', b.x, b.y - b.r * 0.12);
+    batGlyph(b.x, b.y + b.r * 0.38, b.r * 0.62, ready ? '#8f6dff' : 'rgba(143, 109, 255, 0.45)');
+  }
+  // a little flying-bat silhouette, w wide, centred on x, y
+  function batGlyph(x, y, w, color) {
+    const s = w / 2;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x, y - s * 0.22);
+    ctx.lineTo(x - s * 0.14, y - s * 0.42); ctx.lineTo(x - s * 0.2, y - s * 0.2);
+    ctx.quadraticCurveTo(x - s * 0.6, y - s * 0.5, x - s, y - s * 0.38);
+    ctx.quadraticCurveTo(x - s * 0.8, y - s * 0.1, x - s * 0.82, y + s * 0.12);
+    ctx.quadraticCurveTo(x - s * 0.62, y - s * 0.02, x - s * 0.5, y + s * 0.16);
+    ctx.quadraticCurveTo(x - s * 0.36, y + s * 0.02, x - s * 0.2, y + s * 0.3);
+    ctx.lineTo(x, y + s * 0.42);
+    ctx.lineTo(x + s * 0.2, y + s * 0.3);
+    ctx.quadraticCurveTo(x + s * 0.36, y + s * 0.02, x + s * 0.5, y + s * 0.16);
+    ctx.quadraticCurveTo(x + s * 0.62, y - s * 0.02, x + s * 0.82, y + s * 0.12);
+    ctx.quadraticCurveTo(x + s * 0.8, y - s * 0.1, x + s, y - s * 0.38);
+    ctx.quadraticCurveTo(x + s * 0.6, y - s * 0.5, x + s * 0.2, y - s * 0.2);
+    ctx.lineTo(x + s * 0.14, y - s * 0.42);
+    ctx.closePath(); ctx.fill();
   }
 
   function roundRect(x, y, w, h, r) {
@@ -1379,78 +1409,142 @@
     ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
   }
   // a glassy pill with a thin glowing outline, like the menus
-  function pill(x, y, w, h, edge) {
-    ctx.fillStyle = 'rgba(10, 12, 30, 0.72)';
+  function pill(x, y, w, h, edge, glowAmt = 10) {
+    const g = ctx.createLinearGradient(0, y, 0, y + h);
+    g.addColorStop(0, 'rgba(26, 22, 64, 0.78)');
+    g.addColorStop(1, 'rgba(8, 8, 26, 0.82)');
+    ctx.fillStyle = g;
     roundRect(x, y, w, h, h / 2); ctx.fill();
-    ctx.save();
-    ctx.shadowColor = edge; ctx.shadowBlur = 10;
-    ctx.strokeStyle = edge; ctx.lineWidth = 1.5; ctx.stroke();
-    ctx.restore();
+    glowStroke(edge, 2, edge, glowAmt / 10);
+  }
+  // a line with a soft halo: wide faint strokes under a thin bright one (much
+  // cheaper on phones than canvas shadows). Strokes the current path.
+  function glowStroke(color, width, halo = color, k = 1) {
+    if (halo && k > 0) {
+      ctx.strokeStyle = halo;
+      ctx.globalAlpha = 0.1 * k; ctx.lineWidth = width + 9; ctx.stroke();
+      ctx.globalAlpha = 0.22 * k; ctx.lineWidth = width + 4; ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.stroke();
+  }
+  // darkened screen corners, the cave closing in around the light
+  let vignette = null, vigW = 0, vigH = 0;
+  function drawVignette() {
+    if (!vignette || vigW !== W || vigH !== H) {
+      vigW = W; vigH = H;
+      vignette = ctx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.35, W / 2, H * 0.55, Math.hypot(W, H) * 0.6);
+      vignette.addColorStop(0, 'rgba(4, 3, 16, 0)');
+      vignette.addColorStop(1, 'rgba(4, 3, 16, 0.6)');
+    }
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // The scoreboard and arena info only change when a number does, so they are
+  // drawn into a cached layer and stamped each frame (much cheaper on phones)
+  let hudLayer = null;
+  const infoText = () => {
+    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `shifts in ${Math.max(0, Math.ceil(shiftTimer))}s`;
+    return `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}`;
+  };
+  const infoUrgent = () => shiftTimer < shiftWarning() + 2 && arenaMode !== 'morph' && arenaMode !== 'sky';
+  function drawHud() {
+    const dpr = ctx.getTransform().a || 1, ph = Math.max(30, Math.min(40, H * 0.085)), topH = Math.ceil(8 + ph + 12);
+    const size = Math.max(13, Math.min(20, H / 26)), botH = Math.ceil(size * 1.55 + 22);
+    let key = `${W},${H},${dpr},${viewer},${localCount},${infoText()},${infoUrgent()}`;
+    for (const b of bats) key += `|${b.name},${b.ctrl},${b.cpuFlag},${b.score},${b.echoes},${b.power},${b.power ? Math.ceil(b.powerT) : 0},${b.mega},${b.shield}`;
+    if (!hudLayer) { const c = document.createElement('canvas'); hudLayer = { c, g: c.getContext('2d'), key: '' }; }
+    const c = hudLayer.c;
+    if (hudLayer.key !== key) {
+      if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+      const main = ctx;
+      ctx = hudLayer.g;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, c.width, c.height);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawHudPills(ph, size);
+      ctx = main;
+      hudLayer.key = key;
+    }
+    ctx.drawImage(c, 0, 0, c.width, topH * dpr, 0, 0, W, topH);
+    ctx.drawImage(c, 0, c.height - botH * dpr, c.width, botH * dpr, 0, H - botH, W, botH);
+    drawHudMiddle(size);
   }
 
   // Scoreboard: one pill per bat along the top, split around the pause button
-  function drawHud() {
+  function drawHudPills(ph, size) {
     const n = bats.length, pad = 10, centerGap = 34;
-    const ph = Math.max(30, Math.min(40, H * 0.085));
     const left = Math.ceil(n / 2);
     // each side's pills must stay clear of the pause button in the middle
-    const pw = Math.min(230, (W / 2 - pad - centerGap) / left - 8);
+    const pw = Math.min(250, (W / 2 - pad - centerGap) / left - 8);
     ctx.textBaseline = 'middle';
     bats.forEach((b, k) => {
       const x = k < left ? pad + k * (pw + 8) : W - pad - (n - k) * (pw + 8) + 8;
       const y = 8;
-      pill(x, y, pw, ph, viewer === b.i || (b.ctrl === 'local' && localCount === 1) ? b.color : 'rgba(150, 170, 255, 0.3)');
-      // avatar dot with the score inside
-      const r = ph * 0.36, cx = x + ph * 0.5, cy = y + ph / 2;
-      ctx.fillStyle = b.color;
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = '#12142a';
-      ctx.font = `${Math.round(r * 1.35)}px ${HEAD}`;
+      const mine = viewer === b.i || (b.ctrl === 'local' && localCount === 1);
+      pill(x, y, pw, ph, mine ? b.color : `rgba(${b.rgb}, 0.6)`, mine ? 12 : 6);
+      // the score in a coloured lozenge at the left
+      const sh = ph * 0.66, sw = sh * 1.45, sx = x + ph * 0.2, cy = y + ph / 2;
+      roundRect(sx, cy - sh / 2, sw, sh, sh / 2);
+      ctx.fillStyle = b.color; ctx.fill();
+      ctx.globalAlpha = 0.25; ctx.strokeStyle = b.color; ctx.lineWidth = 5; ctx.stroke(); ctx.globalAlpha = 1;
+      ctx.fillStyle = '#16123a';
+      ctx.font = `700 ${Math.round(sh * 0.72)}px ${HEAD}`;
       ctx.textAlign = 'center';
-      ctx.fillText(String(b.score), cx, cy + 1);
+      ctx.fillText(String(b.score), sx + sw / 2, cy + 1);
       // name, with a tag underneath
       const tags = [];
       if (b.ctrl === 'cpu' || b.cpuFlag) tags.push('CPU');
-      if (viewer === b.i || (b.ctrl === 'local' && localCount === 1)) tags.push('YOU');
+      if (mine) tags.push('YOU');
       if (b.power) tags.push(`${POWERS[b.power].label} ${Math.ceil(b.powerT)}`);
       else if (b.mega) tags.push('MEGA');
       else if (b.shield) tags.push('SHIELD');
       ctx.textAlign = 'left';
       ctx.fillStyle = b.color;
-      ctx.font = `${Math.round(ph * 0.42)}px ${HEAD}`;
-      const nx = x + ph * 0.95;
-      ctx.fillText(b.name, nx, cy - (tags.length ? ph * 0.12 : 0));
+      ctx.font = `700 ${Math.round(ph * 0.42)}px ${HEAD}`;
+      const nx = sx + sw + ph * 0.22;
+      ctx.fillText(b.name, nx, cy - (tags.length ? ph * 0.13 : 0));
       if (tags.length) {
-        ctx.font = `600 ${Math.round(ph * 0.24)}px ${FONT}`;
-        ctx.fillStyle = 'rgba(244, 241, 255, 0.6)';
+        ctx.font = `600 ${Math.round(ph * 0.25)}px ${FONT}`;
+        ctx.fillStyle = 'rgba(214, 208, 255, 0.7)';
         ctx.fillText(tags.join(' · '), nx, cy + ph * 0.24);
       }
       // echoes left as pips on the right
-      const pr = Math.max(2.2, ph * 0.075), gap = pr * 2.7;
-      const px0 = x + pw - ph * 0.42 - (MAX_ECHOES - 1) * gap;
+      const pr = Math.max(2.4, ph * 0.08), gap = pr * 2.8;
+      const px0 = x + pw - ph * 0.45 - (MAX_ECHOES - 1) * gap;
       for (let e = 0; e < MAX_ECHOES; e++) {
         ctx.beginPath(); ctx.arc(px0 + e * gap, cy, pr, 0, Math.PI * 2);
         if (b.power === 'frenzy' || e < b.echoes) { ctx.fillStyle = b.color; ctx.fill(); }
-        else { ctx.fillStyle = 'rgba(244, 241, 255, 0.14)'; ctx.fill(); }
+        else { ctx.fillStyle = 'rgba(214, 208, 255, 0.16)'; ctx.fill(); }
       }
     });
 
-    // arena info pill along the bottom
-    const size = Math.max(13, Math.min(20, H / 26));
-    const secs = Math.max(0, Math.ceil(shiftTimer));
-    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `shifts in ${secs}s`;
-    const info = `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}`;
-    ctx.font = `600 ${Math.round(size * 0.68)}px ${FONT}`;
-    const iw = ctx.measureText(info).width + 28, ih = size * 1.45;
-    const urgent = shiftTimer < shiftWarning() + 2 && arenaMode !== 'morph' && arenaMode !== 'sky';
-    pill(W / 2 - iw / 2, H - ih - 10, iw, ih, urgent ? `rgb(${arena.theme.wall})` : 'rgba(244, 241, 255, 0.3)');
+    // arena info pill along the bottom, with thin lines reaching out from both sides
+    const info = infoText();
+    ctx.font = `600 ${Math.round(size * 0.7)}px ${FONT}`;
+    const iw = ctx.measureText(info).width + 40, ih = size * 1.55, iy = H - ih - 10;
+    const urgent = infoUrgent();
+    const edge = urgent ? `rgb(${arena.theme.wall})` : 'rgba(150, 130, 255, 0.75)';
+    ctx.strokeStyle = urgent ? `rgba(${arena.theme.wall}, 0.6)` : 'rgba(150, 130, 255, 0.45)';
+    ctx.lineWidth = 1.5;
+    const ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(W / 2 - iw / 2 - 12, ly); ctx.lineTo(W / 2 - iw / 2 - 12 - ll, ly);
+    ctx.moveTo(W / 2 + iw / 2 + 12, ly); ctx.lineTo(W / 2 + iw / 2 + 12 + ll, ly);
+    ctx.stroke();
+    pill(W / 2 - iw / 2, iy, iw, ih, edge, 8);
     ctx.textAlign = 'center';
-    ctx.fillStyle = urgent ? `rgb(${arena.theme.wall})` : 'rgba(244, 241, 255, 0.75)';
-    ctx.fillText(info, W / 2, H - ih / 2 - 10 + 1);
+    ctx.fillStyle = urgent ? `rgb(${arena.theme.wall})` : 'rgba(234, 230, 255, 0.88)';
+    ctx.fillText(info, W / 2, ly + 1);
+  }
 
+  // countdown, banners and split-screen lines over the middle of the screen
+  function drawHudMiddle(size) {
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const mid = oy + (arena.h * PX) / 2;
     if (countdown > 0) {
-      ctx.font = `${size * 4.5}px ${HEAD}`;
+      ctx.font = `700 ${size * 4.5}px ${HEAD}`;
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)';
       ctx.fillText(String(Math.ceil(countdown)), W / 2, mid - size * 1.5 + 5);
       ctx.fillStyle = '#f4f1ff';
@@ -1467,7 +1561,7 @@
       ctx.fillText(how, W / 2, mid + size * 2.7);
       ctx.fillText('Grab glowing power-ups: Mega Screech, Speed, Shield, Echo Frenzy', W / 2, mid + size * 3.9);
     } else if (banner) {
-      ctx.font = `${size * 2}px ${HEAD}`;
+      ctx.font = `700 ${size * 2}px ${HEAD}`;
       ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid + 4);
       ctx.fillStyle = `rgba(${banner.rgb}, ${Math.min(1, banner.t * 2)})`;

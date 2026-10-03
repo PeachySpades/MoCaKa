@@ -572,6 +572,49 @@
   };
 
   let view3d = store.get('echo-view') !== '2d';
+  // The flat (2D) view paints the same cracked blue-violet stone as the 3D one
+  const CAVE_BG = '#06071a';
+  let stoneTile = null;
+  function stonePattern() {
+    if (stoneTile) return stoneTile;
+    const S = 128, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    let seed = 99;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    g.fillStyle = 'rgb(46, 46, 108)'; g.fillRect(0, 0, S, S);
+    const wrap = (fn) => { for (const dx of [-S, 0, S]) for (const dy of [-S, 0, S]) { g.save(); g.translate(dx, dy); fn(); g.restore(); } };
+    for (let k = 0; k < 14; k++) {
+      const x = rnd() * S, y = rnd() * S, r = S * (0.1 + rnd() * 0.25), dark = rnd() < 0.6;
+      wrap(() => {
+        const gr = g.createRadialGradient(x, y, 0, x, y, r);
+        gr.addColorStop(0, dark ? 'rgba(10, 8, 40, 0.35)' : 'rgba(150, 150, 230, 0.16)');
+        gr.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2);
+      });
+    }
+    for (let k = 0; k < 260; k++) {
+      g.fillStyle = rnd() < 0.55 ? 'rgba(8, 8, 30, 0.25)' : 'rgba(190, 190, 255, 0.12)';
+      g.fillRect(rnd() * S, rnd() * S, 1.5, 1.5);
+    }
+    for (let k = 0; k < 5; k++) {
+      let x = rnd() * S, y = rnd() * S, a = rnd() * 6.28;
+      const pts = [[x, y]];
+      for (let i = 0; i < 4; i++) { a += (rnd() - 0.5) * 1.5; x += Math.cos(a) * S * 0.08; y += Math.sin(a) * S * 0.08; pts.push([x, y]); }
+      wrap(() => {
+        g.strokeStyle = 'rgba(6, 4, 26, 0.75)'; g.lineWidth = 1.2;
+        g.beginPath(); pts.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py))); g.stroke();
+      });
+    }
+    for (let k = 0; k < 4; k++) {
+      g.fillStyle = k % 2 ? 'rgba(175, 135, 255, 0.9)' : 'rgba(120, 235, 255, 0.9)';
+      g.beginPath(); g.arc(rnd() * S, rnd() * S, 1.1, 0, Math.PI * 2); g.fill();
+    }
+    return (stoneTile = ctx.createPattern(c, 'repeat'));
+  }
+  // the same per-tile hash as the 3D view, so ledge decorations match and never flicker
+  const tileHash = (x, y, k = 0) => { const v = Math.sin(x * 127.1 + y * 311.7 + k * 74.7) * 43758.5453; return v - Math.floor(v); };
+  const DECO_CYAN = '120, 235, 255', DECO_VIOLET = '175, 125, 255';
   function render() {
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
     const sx = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
@@ -580,12 +623,12 @@
     // carries the creatures, rings, sparks and HUD, lined up with the 3D cave.
     const in3d = !!L && view3d && !!window.EchoCave3D && window.EchoCave3D.render({
       W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, moka, clock,
-      bg: COL.bg, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R,
+      bg: CAVE_BG, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R,
     });
     if (in3d) ctx.clearRect(0, 0, W, H);
     else {
       window.EchoDuel3D?.hide();
-      ctx.fillStyle = COL.bg;
+      ctx.fillStyle = CAVE_BG;
       ctx.fillRect(0, 0, W, H);
     }
     if (!L) return;
@@ -593,9 +636,60 @@
     const ox = W / 2 - cam.x * PX + sx, oy = H / 2 - cam.y * PX + sy;
     const toX = (x) => ox + x * PX, toY = (y) => oy + y * PX;
 
-    // Walls: only the faces that touch open air are drawn, as neon edges
     const tx0 = Math.max(0, Math.floor(cam.x - W / PX / 2) - 1), tx1 = Math.min(L.w - 1, Math.ceil(cam.x + W / PX / 2) + 1);
     const ty0 = Math.max(0, Math.floor(cam.y - H / PX / 2) - 1), ty1 = Math.min(L.h - 1, Math.ceil(cam.y + H / PX / 2) + 1);
+    // 2D: stone where sound or Moka's senses reach, a dimmer back wall behind open air,
+    // and the odd crystal or mushroom on a ledge
+    if (!in3d) {
+      const pat = stonePattern();
+      pat.setTransform(new DOMMatrix([PX / 64, 0, 0, PX / 64, ox, oy]));
+      ctx.fillStyle = pat;
+      for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+          const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
+          if (a < 0.02) continue;
+          ctx.globalAlpha = solid(tx, ty) ? Math.min(1, a * 1.15) : a * 0.32;
+          ctx.fillRect(toX(tx), toY(ty), PX + 0.5, PX + 0.5);
+        }
+      }
+      ctx.globalAlpha = 1;
+      for (let ty = ty0; ty <= ty1; ty++) {
+        for (let tx = tx0; tx <= tx1; tx++) {
+          if (!solid(tx, ty)) continue;
+          const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
+          if (a < 0.02) continue;
+          const hsh = tileHash(tx, ty), up = !solid(tx, ty - 1), down = !solid(tx, ty + 1);
+          const rgb = tileHash(tx, ty, 3) < 0.55 ? DECO_CYAN : DECO_VIOLET;
+          ctx.globalAlpha = Math.min(1, a * 1.25);
+          if (up && hsh < 0.12) {
+            const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3);
+            glow(toX(tx + 0.5), toY(ty), PX * 0.6, DECO_CYAN, 0.35);
+            for (let j = 0; j < n; j++) {
+              const mx = toX(tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6), sc = PX * (0.9 + tileHash(tx, ty, 10 + j)) * 0.1, my = toY(ty);
+              ctx.fillStyle = `rgba(${DECO_CYAN}, 0.75)`;
+              ctx.fillRect(mx - sc * 0.15, my - sc * 1.2, sc * 0.3, sc * 1.2);
+              ctx.fillStyle = `rgb(${DECO_CYAN})`;
+              ctx.beginPath(); ctx.ellipse(mx, my - sc * 1.2, sc * 0.7, sc * 0.45, 0, Math.PI, 0); ctx.fill();
+            }
+          } else if ((up && hsh < 0.2) || (down && hsh > 0.92)) {
+            const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3), hang = !(up && hsh < 0.2), by = toY(hang ? ty + 1 : ty), dir = hang ? 1 : -1;
+            glow(toX(tx + 0.5), by + dir * PX * 0.2, PX * 0.7, rgb, 0.4);
+            for (let j = 0; j < n; j++) {
+              const hh = PX * (j ? 0.3 + tileHash(tx, ty, 10 + j) * 0.4 : 0.55 + tileHash(tx, ty, 11) * 0.35) * 0.55;
+              const cx = toX(tx + 0.3 + tileHash(tx, ty, 20 + j) * 0.4), lean = (j - (n - 1) / 2) * 0.35 * hh, w = PX * 0.06;
+              ctx.fillStyle = `rgb(${rgb})`;
+              ctx.beginPath(); ctx.moveTo(cx - w, by); ctx.lineTo(cx - lean * 0.2 - w * 0.9, by + dir * hh * 0.72);
+              ctx.lineTo(cx - lean, by + dir * hh); ctx.lineTo(cx - lean * 0.2 + w * 0.9, by + dir * hh * 0.72); ctx.lineTo(cx + w, by); ctx.closePath(); ctx.fill();
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+              ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx - lean, by + dir * hh); ctx.lineTo(cx - lean * 0.2 + w * 0.9, by + dir * hh * 0.72); ctx.lineTo(cx + w, by); ctx.closePath(); ctx.fill();
+            }
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    // Walls: the faces that touch open air get glowing neon edges, in both views
     ctx.lineCap = 'round';
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
@@ -605,16 +699,14 @@
         const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
         if (a < 0.02) continue;
         const x = toX(tx), y = toY(ty), s = PX;
-        // in 3D the block is already there; keep only its neon outline
-        if (!in3d) { ctx.fillStyle = `rgba(${COL.wallFill}, ${a * 0.8})`; ctx.fillRect(x, y, s + 0.5, s + 0.5); }
         const edges = [[x, y, x + s, y], [x + s, y, x + s, y + s], [x, y + s, x + s, y + s], [x, y, x, y + s]];
         for (let i = 0; i < 4; i++) {
           if (!open[i]) continue;
           const [x0, y0, x1, y1] = edges[i];
-          ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.25})`;
+          ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.22})`;
           ctx.lineWidth = 7;
           ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
-          ctx.strokeStyle = `rgba(${COL.wall}, ${a})`;
+          ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.95})`;
           ctx.lineWidth = 2;
           ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
         }
@@ -693,9 +785,18 @@
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, PX * 1.6, H);
     }
+    // darkened corners, the cave closing in around the light (same as in battle)
+    if (!vignette || vignette.w !== W || vignette.h !== H) {
+      const g = ctx.createRadialGradient(W / 2, H * 0.55, Math.min(W, H) * 0.35, W / 2, H * 0.55, Math.hypot(W, H) * 0.6);
+      g.addColorStop(0, 'rgba(4, 3, 16, 0)'); g.addColorStop(1, 'rgba(4, 3, 16, 0.55)');
+      vignette = { g, w: W, h: H };
+    }
+    ctx.fillStyle = vignette.g;
+    ctx.fillRect(0, 0, W, H);
     drawHud();
     drawStick();
   }
+  let vignette = null;
 
   function glow(x, y, r, rgb, a) {
     const g = ctx.createRadialGradient(x, y, 0, x, y, r);
@@ -809,64 +910,162 @@
     ctx.fill();
   }
 
-  const HUD_FONT = '"Nunito", "Segoe UI", system-ui, sans-serif';
+  const HUD_FONT = '"Fredoka", "Nunito", system-ui, sans-serif';
+  // Glass pills like the battle scoreboard: hearts and moths top-left, echoes
+  // top-right, the run's distance under the pause button
+  // glass pill shapes for the HUD, drawn on whichever context is given
+  function hudShapes(ctx) {
+    const roundRect = (x, y, w, h, r) => {
+      ctx.beginPath();
+      ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+      ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+    };
+    const pill = (x, y, w, h, edge, blur = 10) => {
+      const g = ctx.createLinearGradient(0, y, 0, y + h);
+      g.addColorStop(0, 'rgba(26, 22, 64, 0.78)');
+      g.addColorStop(1, 'rgba(8, 8, 26, 0.82)');
+      ctx.fillStyle = g;
+      roundRect(x, y, w, h, h / 2); ctx.fill();
+      // soft halo from wide faint strokes (canvas shadows are slow on phones)
+      const a0 = ctx.globalAlpha;
+      ctx.strokeStyle = edge;
+      ctx.globalAlpha = a0 * 0.01 * blur; ctx.lineWidth = 11; ctx.stroke();
+      ctx.globalAlpha = a0 * 0.022 * blur; ctx.lineWidth = 6; ctx.stroke();
+      ctx.globalAlpha = a0; ctx.lineWidth = 2; ctx.stroke();
+    };
+    return { roundRect, pill };
+  }
+  const hudPillH = () => Math.max(30, Math.min(40, H * 0.085));
+  const echoColor = () => (moka.echoes <= 2 || (moka.noEcho > 0 && Math.floor(moka.noEcho * 10) % 2 === 0) ? COL.danger : COL.wall);
+
+  // Glass pills like the battle scoreboard: hearts and moths top-left, echoes
+  // top-right, the run's distance under the pause button. They only change when
+  // a number does, so they're drawn into a cached layer that is stamped each frame.
+  let hudLayer = null;
   function drawHud() {
-    const pad = 16, size = Math.max(14, Math.min(20, H / 26));
+    const ph = hudPillH(), stripH = Math.ceil(58 + ph + 14);
+    const key = [W, H, DPR, mode, moka.hearts, moka.hurt > 0, stats.moths, L.moths.length, moka.echoes, echoColor(), mode === 'run' ? runDistance() : 0].join();
+    if (!hudLayer) { const c = document.createElement('canvas'); hudLayer = { c, g: c.getContext('2d'), key: '' }; }
+    if (hudLayer.key !== key) {
+      const { c, g } = hudLayer;
+      if (c.width !== Math.round(W * DPR) || c.height !== Math.round(stripH * DPR)) { c.width = Math.round(W * DPR); c.height = Math.round(stripH * DPR); }
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, c.width, c.height);
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      hudTop(g, ph);
+      hudLayer.key = key;
+    }
+    ctx.drawImage(hudLayer.c, 0, 0, W, stripH);
+    drawHint();
+  }
+
+  function hudTop(ctx, ph) {
+    const { roundRect, pill } = hudShapes(ctx);
+    const pad = 10, top = 8, cy = top + ph / 2;
     ctx.textBaseline = 'middle';
-    ctx.font = `600 ${size}px ${HUD_FONT}`;
-    // hearts
-    for (let i = 0; i < MAX_HEARTS; i++) {
-      const x = pad + i * size * 1.5 + size * 0.5, y = pad + size * 0.6;
-      heart(x, y, size * 0.5, i < moka.hearts);
-    }
-    // moths
-    const my = pad + size * 1.9;
-    glow(pad + size * 0.5, my, size * 0.9, COL.moth, 0.5);
+
+    // hearts and moths
+    const hs = ph * 0.2, hg = ph * 0.56;
+    ctx.font = `700 ${Math.round(ph * 0.42)}px ${HUD_FONT}`;
+    const mothText = mode === 'run' ? `${stats.moths}` : `${stats.moths} / ${L.moths.length}`;
+    const lw = ph * 0.45 + MAX_HEARTS * hg + ph * 0.35 + ph * 0.55 + ctx.measureText(mothText).width + ph * 0.45;
+    pill(pad, top, lw, ph, moka.hurt > 0 ? `rgb(${COL.danger})` : 'rgba(150, 125, 255, 0.85)');
+    for (let i = 0; i < MAX_HEARTS; i++) heart(pad + ph * 0.45 + hg * (i + 0.5) - hg * 0.1, cy, hs * 1.15, i < moka.hearts, ctx);
+    const dx = pad + ph * 0.45 + MAX_HEARTS * hg + ph * 0.05;
+    ctx.fillStyle = 'rgba(214, 208, 255, 0.2)';
+    ctx.fillRect(dx, cy - ph * 0.25, 1.5, ph * 0.5);
+    const mx = dx + ph * 0.42;
+    const mg = ctx.createRadialGradient(mx, cy, 0, mx, cy, ph * 0.45);
+    mg.addColorStop(0, `rgba(${COL.moth}, 0.45)`); mg.addColorStop(1, `rgba(${COL.moth}, 0)`);
+    ctx.fillStyle = mg; ctx.fillRect(mx - ph * 0.45, cy - ph * 0.45, ph * 0.9, ph * 0.9);
     ctx.fillStyle = `rgb(${COL.moth})`;
-    ctx.beginPath(); ctx.arc(pad + size * 0.5, my, size * 0.22, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = '#e8ecff';
+    ctx.beginPath();
+    ctx.ellipse(mx - ph * 0.08, cy, ph * 0.1, ph * 0.065, -0.5, 0, Math.PI * 2);
+    ctx.ellipse(mx + ph * 0.08, cy, ph * 0.1, ph * 0.065, 0.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#efeaff';
     ctx.textAlign = 'left';
-    ctx.fillText(mode === 'run' ? `${stats.moths}` : `${stats.moths} / ${L.moths.length}`, pad + size * 1.3, my);
-    // echoes left, shown as a row of small rings
-    const low = moka.echoes <= 2;
-    const flash = moka.noEcho > 0 && Math.floor(moka.noEcho * 10) % 2 === 0;
-    const ecol = flash || low ? COL.danger : COL.wall;
-    ctx.textAlign = 'right';
-    ctx.fillStyle = `rgb(${ecol})`;
-    ctx.fillText(`Echoes ${moka.echoes}`, W - pad, pad + size * 0.6);
-    const pr = size * 0.22, gap = size * 0.62;
+    ctx.fillText(mothText, mx + ph * 0.28, cy + 1);
+
+    // echoes left: the count in a lozenge, then a row of pips
+    const ecol = echoColor();
+    const pr = Math.max(2.2, ph * 0.07), gap = pr * 2.55;
+    ctx.font = `600 ${Math.round(ph * 0.28)}px ${HUD_FONT}`;
+    const label = 'ECHOES', lbw = ctx.measureText(label).width;
+    const sh = ph * 0.66, sw = sh * 1.45;
+    const rw = ph * 0.2 + sw + ph * 0.25 + lbw + ph * 0.3 + (MAX_ECHOES - 1) * gap + pr * 2 + ph * 0.42;
+    const rx = W - pad - rw;
+    pill(rx, top, rw, ph, `rgba(${ecol}, 0.85)`);
+    const sx = rx + ph * 0.2;
+    roundRect(sx, cy - sh / 2, sw, sh, sh / 2);
+    ctx.fillStyle = `rgb(${ecol})`; ctx.fill();
+    ctx.globalAlpha = 0.25; ctx.strokeStyle = `rgb(${ecol})`; ctx.lineWidth = 5; ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.fillStyle = '#0c1430';
+    ctx.textAlign = 'center';
+    ctx.font = `700 ${Math.round(sh * 0.72)}px ${HUD_FONT}`;
+    ctx.fillText(String(moka.echoes), sx + sw / 2, cy + 1);
+    ctx.textAlign = 'left';
+    ctx.font = `600 ${Math.round(ph * 0.28)}px ${HUD_FONT}`;
+    ctx.fillStyle = 'rgba(214, 208, 255, 0.75)';
+    ctx.fillText(label, sx + sw + ph * 0.25, cy + 1);
+    const px0 = rx + rw - ph * 0.42 - pr - (MAX_ECHOES - 1) * gap;
     for (let i = 0; i < MAX_ECHOES; i++) {
-      const x = W - pad - pr - (MAX_ECHOES - 1 - i) * gap, y = pad + size * 1.75;
-      ctx.beginPath(); ctx.arc(x, y, pr, 0, Math.PI * 2);
-      const on = MAX_ECHOES - 1 - i < moka.echoes;
-      if (on) { ctx.fillStyle = `rgba(${ecol}, 0.9)`; ctx.fill(); }
-      else { ctx.strokeStyle = 'rgba(232, 236, 255, 0.18)'; ctx.lineWidth = 1; ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(px0 + i * gap, cy, pr, 0, Math.PI * 2);
+      ctx.fillStyle = i < moka.echoes ? `rgb(${ecol})` : 'rgba(214, 208, 255, 0.16)';
+      ctx.fill();
     }
+
     if (mode === 'run') {
+      // distance, in a small pill under the pause button
+      ctx.font = `700 ${Math.round(ph * 0.4)}px ${HUD_FONT}`;
+      const txt = `${runDistance()} m`, dh = ph * 0.78, dw = Math.max(dh * 2.4, ctx.measureText(txt).width + dh);
+      const dy = 58;
+      pill(W / 2 - dw / 2, dy, dw, dh, 'rgba(120, 255, 170, 0.75)', 8);
       ctx.textAlign = 'center';
-      ctx.fillStyle = '#e8ecff';
-      ctx.fillText(`${runDistance()} m`, W / 2, 62 + size * 0.6);   // under the pause button
-    }
-    // first-time hint
-    if (hintTimer > 0 && state === 'play') {
-      ctx.textAlign = 'center';
-      ctx.font = `600 ${size}px ${HUD_FONT}`;
-      ctx.fillStyle = `rgba(232, 236, 255, ${Math.min(1, hintTimer) * 0.85})`;
-      ctx.fillText(isTouch ? 'Drag to fly  ·  Tap to squeak' : 'Arrow keys or drag to fly  ·  Space or click to squeak', W / 2, H - pad - size);
-      if (mode === 'run') {
-        ctx.font = `500 ${size * 0.85}px ${HUD_FONT}`;
-        ctx.fillText('Keep moving right. The dark is coming.', W / 2, H - pad - size * 2.4);
-      }
+      ctx.fillStyle = '#efeaff';
+      ctx.fillText(txt, W / 2, dy + dh / 2 + 1);
     }
   }
 
-  function heart(x, y, s, full) {
+  function drawHint() {
+    if (!(hintTimer > 0 && state === 'play')) return;
+    const { pill } = hudShapes(ctx);
+    const size = Math.max(14, Math.min(20, H / 26));
+    ctx.textBaseline = 'middle';
+    // first-time hint, in an info pill along the bottom with lines reaching out
+    {
+      const k = Math.min(1, hintTimer);
+      ctx.globalAlpha = k;
+      ctx.font = `600 ${Math.round(size * 0.78)}px ${HUD_FONT}`;
+      const hint = isTouch ? 'DRAG TO FLY  ·  TAP TO SQUEAK' : 'ARROWS OR DRAG TO FLY  ·  SPACE OR CLICK TO SQUEAK';
+      const iw = ctx.measureText(hint).width + 40, ih = size * 1.55, iy = H - ih - 10, ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
+      ctx.strokeStyle = 'rgba(150, 130, 255, 0.45)'; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(W / 2 - iw / 2 - 12, ly); ctx.lineTo(W / 2 - iw / 2 - 12 - ll, ly);
+      ctx.moveTo(W / 2 + iw / 2 + 12, ly); ctx.lineTo(W / 2 + iw / 2 + 12 + ll, ly);
+      ctx.stroke();
+      pill(W / 2 - iw / 2, iy, iw, ih, 'rgba(150, 130, 255, 0.75)', 8);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = 'rgba(234, 230, 255, 0.9)';
+      ctx.fillText(hint, W / 2, ly + 1);
+      if (mode === 'run') {
+        ctx.font = `600 ${Math.round(size * 0.85)}px ${HUD_FONT}`;
+        ctx.fillStyle = 'rgba(234, 230, 255, 0.9)';
+        ctx.fillText('Keep moving right. The dark is coming.', W / 2, iy - size * 0.9);
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function heart(x, y, s, full, ctx = canvas.getContext('2d')) {
     ctx.beginPath();
     ctx.moveTo(x, y + s * 0.8);
     ctx.bezierCurveTo(x - s * 1.2, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
     ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.2, y - s * 0.1, x, y + s * 0.8);
-    if (full) { ctx.fillStyle = `rgb(${COL.danger})`; ctx.fill(); }
-    else { ctx.strokeStyle = `rgba(${COL.danger}, 0.6)`; ctx.lineWidth = 1.5; ctx.stroke(); }
+    if (full) {
+      ctx.fillStyle = '#ff6b8a'; ctx.fill();
+      ctx.globalAlpha = 0.25; ctx.strokeStyle = '#ff6b8a'; ctx.lineWidth = 4; ctx.stroke(); ctx.globalAlpha = 1;
+    } else { ctx.strokeStyle = 'rgba(255, 120, 150, 0.45)'; ctx.lineWidth = 1.5; ctx.stroke(); }
   }
 
   function drawStick() {
