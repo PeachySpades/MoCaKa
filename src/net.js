@@ -1,8 +1,10 @@
 // Echo Caves: online rooms.
 // One player creates a room and gets a 4-letter code; friends type the code to join.
 // The host's browser runs the match and streams snapshots; guests send their stick and buttons.
-// Transport: PeerJS (WebRTC, public broker). Add ?net=local to the URL to use a
-// BroadcastChannel instead, so two tabs on one computer can test without a network.
+// Transport: our Cloudflare room server (server/rooms.js) when one is set up, which works on
+// any network; otherwise PeerJS (WebRTC, public broker). ?relay=https://… points at another
+// room server. Add ?net=local to use a BroadcastChannel instead, so two tabs on one
+// computer can test without a network.
 (() => {
   'use strict';
 
@@ -157,7 +159,71 @@
     },
   };
 
-  const transport = useLocal ? localTransport : peerTransport;
+  // Cloudflare room server: relays every message, so it works on mobile data and strict Wi-Fi.
+  // Set ROOM_SERVER once the Worker is deployed; the game also uses it automatically when it
+  // is itself served by that Worker.
+  const ROOM_SERVER = '';
+  const relayBase = (() => {
+    const r = params.get('relay') || ROOM_SERVER || (/\.workers\.dev$/.test(location.hostname) ? location.origin : '');
+    return r ? r.replace(/^http/, 'ws').replace(/\/$/, '') : '';
+  })();
+
+  function openRoomSocket(code, role) {
+    return withTimeout(new Promise((resolve, reject) => {
+      let ws;
+      try { ws = new WebSocket(`${relayBase}/room/${code}?role=${role}`); } catch { reject(new Error('broker')); return; }
+      ws.onmessage = ({ data }) => {
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m.ev === 'ready') resolve(ws);
+        else if (m.ev === 'error') reject(new Error(m.why || 'broker'));
+      };
+      ws.onerror = () => reject(new Error('broker'));
+      ws.onclose = () => reject(new Error('broker'));
+    }), 10000, 'broker');
+  }
+  // keeps phone networks and proxies from dropping a quiet socket
+  const keepAlive = (ws) => setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 20000);
+
+  const relayTransport = {
+    async host(code, h) {
+      const ws = await openRoomSocket(code, 'host');
+      const beat = keepAlive(ws);
+      ws.onmessage = ({ data }) => {
+        if (data === 'pong') return;
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m.ev === 'join') h.onJoin(m.id);
+        else if (m.ev === 'data') h.onData(m.id, m.msg);
+        else if (m.ev === 'leave') h.onLeave(m.id);
+      };
+      ws.onerror = ws.onclose = () => clearInterval(beat);
+      return {
+        send(id, msg) { if (ws.readyState === 1) ws.send(JSON.stringify({ to: id, msg })); },
+        close() { clearInterval(beat); ws.close(); },
+      };
+    },
+    async join(code, h) {
+      const ws = await openRoomSocket(code, 'join');
+      const beat = keepAlive(ws);
+      let closed = false;
+      const end = () => { clearInterval(beat); if (!closed) { closed = true; h.onClose(); } };
+      ws.onmessage = ({ data }) => {
+        if (data === 'pong') return;
+        let m;
+        try { m = JSON.parse(data); } catch { return; }
+        if (m && m.ev === 'gone') end();
+        else h.onData(m);
+      };
+      ws.onerror = ws.onclose = end;
+      return {
+        send(msg) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); },
+        close() { closed = true; clearInterval(beat); ws.close(); },
+      };
+    },
+  };
+
+  const transport = useLocal ? localTransport : relayBase ? relayTransport : peerTransport;
 
   // ---- Room state ------------------------------------------------------------
   // role: null | 'host' | 'guest'

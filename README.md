@@ -46,6 +46,7 @@ npx serve .
 - `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, touch controls, the CPU bats and the 2D view.
 - `src/view3d.js` draws the game in 3D with three.js: Bat Brawl with a chase camera, and Explore and Cave Run as a cave cross-section with depth. The rules stay in `duel.js` and `game.js`.
 - `src/net.js` contains online rooms: room codes, the lobby, and the connection between players.
+- `server/rooms.js` and `wrangler.jsonc` are the Cloudflare Worker that serves the game and runs online rooms.
 - `src/vendor/peerjs.min.js` is PeerJS 1.5.5 (MIT), loaded only when you open Online.
 - `src/vendor/three.min.js` is three.js r158 (MIT), used for the 3D battle view.
 - `src/music.js` is the synthesized jazz band: four 32-bar tunes, one per mode.
@@ -53,6 +54,10 @@ npx serve .
 
 ### How online works
 
-The host's browser runs the match and sends snapshots to everyone about 20 times a second; guests send their stick and button presses back. Players connect directly over WebRTC using [PeerJS](https://peerjs.com/), and the free public PeerJS server is only used to find each other by room code. A few strict networks (some school or office Wi‑Fi) block direct connections; switching to mobile data usually fixes that.
+The host's browser runs the match and sends snapshots to everyone about 20 times a second; guests send their stick and button presses back. When the game runs on Cloudflare (see below), messages go through a small room server, which works on any network. Otherwise players connect directly over WebRTC using [PeerJS](https://peerjs.com/), and the free public PeerJS server is only used to find each other by room code. A few strict networks (some school or office Wi‑Fi) block direct connections; switching to mobile data usually fixes that.
+
+### Cloudflare
+
+The repo deploys as one Cloudflare Worker: it serves the game and gives each room code a Durable Object that relays messages between players. In the Cloudflare dashboard, go to Workers & Pages, choose Create, then Import a repository, and pick this repo (deploy command `npx wrangler deploy`). The game then lives at `https://mocaka.<your-subdomain>.workers.dev` and uses its own room server automatically. Copies hosted elsewhere use it once `ROOM_SERVER` in `src/net.js` is set to that address; `?relay=<address>` does the same for one visit. Locally, `npx wrangler dev` runs the whole thing.
 
 Online needs the game served from a real web address (for example Netlify or GitHub Pages); it does not work from a local file. To try it on one computer, open two tabs with `?net=local`, which connects tabs through the browser instead of the network.
