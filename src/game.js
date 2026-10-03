@@ -20,6 +20,16 @@
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
   // Cave Run: the screen scrolls right on its own, speeding up over time
   const RUN_START_SPEED = 2.0, RUN_MAX_SPEED = 4.0, RUN_SPEEDUP = 0.025;
+  // Bursting crystals (v): an echo makes them shake for SHARD_SHAKE seconds, then they
+  // explode into SHARD_BITS sharp pieces that fly out (BIT_SPEED tiles/s, falling with
+  // FALL_G tiles/s²) and hurt whoever they hit, until they smash on rock or after BIT_LIFE s.
+  // Spiders: dashing through a spider's thread snaps it; the spider falls (same
+  // gravity), lies knocked out for SPIDER_KO seconds, then fades over SPIDER_FADE.
+  const FALL_G = 24, SHARD_SHAKE = 0.45, SHARD_LEN = 0.7, SHARD_R = 0.24;
+  const SHARD_BITS = 6, BIT_SPEED = [6, 8], BIT_LIFE = 1.2, BIT_R = 0.13;
+  const SPIDER_KO = 3, SPIDER_FADE = 0.8, SPIDER_FOOT = 0.18;
+  // attacks: a dash bites any monster it touches; the wing slash swats everything in an arc in front
+  const BITE_GRACE = 0.12, SLASH_R = 1.25, SLASH_ARC = Math.PI * 5 / 6, SLASH_TIME = 0.22, SLASH_COOLDOWN = 0.5, CHOMP_TIME = 0.4;
 
   const COL = {
     bg: '#05060d',
@@ -124,10 +134,18 @@
     crash() { tone(180, 40, 0.35, 'triangle', 0.12); hiss(0.4, 0.08, 400, undefined, sfxBus, 'lowpass'); },
     empty() { tone(260, 180, 0.12, 'sine', 0.06); },
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
+    // falling crystals and snapped spider threads (co-op uses these too)
+    crack() { [3100, 3700, 2900, 4100].forEach((f, i) => tone(f, f * 0.97, 0.07, 'sine', 0.045, i * 0.075)); hiss(0.05, 0.05, 5000); hiss(0.04, 0.04, 6000, ac && ac.currentTime + 0.2); },
+    shatter() { hiss(0.08, 0.14, 4500); [2400, 3300, 4200, 2900, 3800].forEach((f, i) => tone(f, f * 0.9, 0.16, 'triangle', 0.045, 0.02 + i * 0.045)); tone(220, 90, 0.18, 'triangle', 0.07); },
+    snip() { tone(1800, 600, 0.06, 'square', 0.05); hiss(0.05, 0.1, 3500); tone(900, 1400, 0.12, 'sine', 0.04, 0.05); },
+    thud() { tone(130, 55, 0.18, 'triangle', 0.12); hiss(0.12, 0.07, 500, undefined, sfxBus, 'lowpass'); },
     // Explore: a checkpoint lantern lights (a soft bell chime), a hidden heart (a warm rising "ba-dum")
     checkpoint() { [784, 988, 1175, 1568].forEach((f, i) => { tone(f, f, 0.5, 'sine', 0.07, i * 0.09); tone(f * 2, f * 2, 0.25, 'triangle', 0.02, i * 0.09); }); },
     heartUp() { tone(330, 440, 0.12, 'triangle', 0.1); tone(440, 660, 0.14, 'triangle', 0.1, 0.13); [880, 1109, 1319].forEach((f, i) => tone(f, f * 1.01, 0.22, 'sine', 0.05, 0.28 + i * 0.07)); },
     chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); hiss(0.08, 0.1, 2000); },
+    // the wing slash: an airy swish; a swatted monster: a hard little thwack
+    slash() { hiss(0.16, 0.11, 2600, undefined, sfxBus, 'bandpass'); tone(1500, 520, 0.12, 'triangle', 0.035); },
+    swat() { tone(520, 110, 0.12, 'square', 0.08); hiss(0.06, 0.12, 1500); },
     slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
     dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); hiss(0.18, 0.09, 1800, undefined, sfxBus, 'bandpass'); },
     burp() { tone(140, 90, 0.28, 'sawtooth', 0.06); tone(110, 70, 0.2, 'sawtooth', 0.04, 0.12); },
@@ -205,6 +223,10 @@
         } else if (c === 'r') {
           const { top } = shaft(x, y);
           lv.hazards.push({ kind: 'rock', x: cx, y: top + 0.32, r: 0.26, state: 'hang', shake: 0, vy: 0, lit: 0 });
+        } else if (c === 'v') {
+          // a clump of crystal shards hanging from the ceiling above; y is its middle
+          const { top } = shaft(x, y);
+          lv.hazards.push({ kind: 'shard', x: cx, y: top + SHARD_LEN / 2, r: SHARD_R, state: 'hang', shake: 0, vy: 0, lit: 0, seed: (x * 7 + y * 13) % 10 });
         } else if (c === 'o') {
           lv.hazards.push({ kind: 'owl', x: cx, y: cy, homeX: cx, homeY: cy, r: 0.34, state: 'sleep', t: 0, lit: 0 });
         }
@@ -233,7 +255,7 @@
   // battles and co-op runs share the match plumbing (pause, menus, rooms); this is whichever is running
   const engine = () => (duelCfg.coop ? window.EchoCoop : window.EchoDuel);
   let levelIndex = 0;
-  let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
+  let moka, rings, particles, bits = [], chomps = [], cam, stats, shake, hintTimer, clock, scroll, endReason;
   // Explore: the last checkpoint passed (what to restore), and floating "Checkpoint!" / "+1" pops
   let checkpoint = null, pops = [];
 
@@ -244,14 +266,16 @@
     moka = {
       x: L.start.x, y: L.start.y, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, hurt: 0, cooldown: 0, echoes: L.def.echoes, noEcho: 0,
-      dashT: 0, dashCd: 0,
+      dashT: 0, dashCd: 0, biteT: 0, slashT: 0, slashCd: 0, slashA: 0,
     };
     rings = [];
     particles = [];
+    bits = [];
+    chomps = [];
     scroll = { x: 0, speed: RUN_START_SPEED };
     cam = { x: moka.x, y: moka.y };
     if (mode === 'run') cam.x = W / PX / 2;
-    stats = { moths: 0, squeaks: 0, time: 0, retries: 0 };
+    stats = { moths: 0, squeaks: 0, time: 0, retries: 0, kos: 0 };
     checkpoint = null;
     pops = [];
     endReason = '';
@@ -291,10 +315,12 @@
     moka = {
       x: cp.x, y: cp.y, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, hurt: 0, cooldown: 0, echoes: Math.min(MAX_ECHOES, Math.max(cp.echoes, CP_MIN_ECHOES)), noEcho: 0,
-      dashT: 0, dashCd: 0,
+      dashT: 0, dashCd: 0, biteT: 0, slashT: 0, slashCd: 0, slashA: 0,
     };
     rings = [];
     particles = [];
+    bits = [];
+    chomps = [];
     pops = [];
     cam = { x: moka.x, y: moka.y };
     stats.moths = cp.moths;
@@ -328,6 +354,7 @@
     keys.add(e.code);
     if ((e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') && !e.repeat) squeak();
     if ((e.code === 'KeyG' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat) dash();
+    if ((e.code === 'KeyH' || e.code === 'KeyX') && !e.repeat) slash();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', () => { keys.clear(); stick = null; });
@@ -339,6 +366,12 @@
     const rect = canvas.getBoundingClientRect(), b = dashButton();
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
+  // the SLASH button sits to the left of DASH, a little lower
+  const slashButton = () => { const d = dashButton(); return { x: d.x - d.r - 50, y: Math.min(H - 44, d.y + 34), r: 34 }; };
+  const inSlashButton = (cx, cy) => {
+    const rect = canvas.getBoundingClientRect(), b = slashButton();
+    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
+  };
 
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
@@ -347,6 +380,7 @@
     if (e.pointerType === 'touch') touchUsed = true;
     // a press on DASH only dashes: it never squeaks or starts steering
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { dash(); return; }
+    if (touchUsed && inSlashButton(e.clientX, e.clientY)) { slash(); return; }
     if (!stick) {
       stick = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
       canvas.setPointerCapture?.(e.pointerId);
@@ -422,11 +456,82 @@
     moka.vy = (uy / len) * DASH_SPEED;
     if (Math.abs(ux) > 0.2) moka.face = Math.sign(ux);
     moka.dashT = DASH_TIME;
+    moka.biteT = DASH_TIME + BITE_GRACE;
     moka.dashCd = DASH_COOLDOWN;
     sfx.dash();
   }
 
+  // the wing slash: both wings sweep through an arc in front of Moka (the way she steers, or faces)
+  function slash() {
+    if (state !== 'play' || paused || moka.slashCd > 0) return;
+    const { ix, iy } = readInput();
+    const a = Math.hypot(ix, iy) > 0.2 ? Math.atan2(iy, ix) : moka.face > 0 ? 0 : Math.PI;
+    if (Math.abs(Math.cos(a)) > 0.2) moka.face = Math.sign(Math.cos(a));
+    moka.slashA = a;
+    moka.slashT = SLASH_TIME;
+    moka.slashCd = SLASH_COOLDOWN;
+    sfx.slash();
+    const inArc = (x, y, r = 0) => {
+      const d = Math.hypot(x - moka.x, y - moka.y);
+      if (d > SLASH_R + r) return false;
+      if (d < MOKA_R + r) return true;
+      let da = Math.atan2(y - moka.y, x - moka.x) - a;
+      da = Math.atan2(Math.sin(da), Math.cos(da));
+      return Math.abs(da) < SLASH_ARC / 2 + Math.asin(Math.min(1, r / d));
+    };
+    for (const h of L.hazards) {
+      if (!isMonster(h) || h.ko) continue;
+      if (inArc(h.x, h.y, h.r)) { knockOut(h, 'slash'); continue; }
+      // a spider's thread crossing the arc gets cut
+      if (h.kind === 'spider') {
+        const anchor = h.top - 0.45, low = h.y - 0.2;
+        for (let cy = Math.max(anchor, moka.y - SLASH_R); cy <= Math.min(low, moka.y + SLASH_R); cy += 0.1) {
+          if (inArc(h.x, cy)) { snapThread(h, cy); break; }
+        }
+      }
+    }
+    // flying crystal pieces get swatted out of the air
+    for (const b of bits) if (b.life > 0 && inArc(b.x, b.y, BIT_R)) { b.life = 0; shatter(b.x, b.y, 6); }
+  }
+
+  const isMonster = (h) => h.kind === 'spider' || h.kind === 'owl';
+  // a bitten or swatted monster tumbles to the floor, lies there dizzy, then fades away
+  function knockOut(h, how) {
+    if (h.ko) return;
+    const dx = Math.sign(h.x - moka.x) || moka.face;
+    h.ko = 'fall';
+    h.vy = -3;
+    h.vx = dx * 2.5;
+    h.awake = 0;
+    h.snapT = 0;
+    h.cutY = h.y;
+    h.lowLen = 0;
+    h.lit = 1;
+    h.bounced = false;
+    if (h.kind === 'owl') h.state = 'ko';
+    stats.kos++;
+    shake = Math.max(shake, 0.15);
+    burst(h.x, h.y, h.kind === 'owl' ? '200, 160, 110' : COL.danger, 14);
+    if (how === 'bite') {
+      chomps.push({ x: h.x, y: h.y, t: 0, face: dx });
+      pop(h.x, h.y - 0.7, 'CHOMP!', '255, 226, 120');
+      sfx.bigChomp();
+    } else {
+      pop(h.x, h.y - 0.7, 'SWAT!', '235, 225, 255');
+      sfx.swat();
+    }
+  }
+
   function wake(h) {
+    if (isMonster(h) && h.ko) return;
+    if (h.kind === 'shard') {
+      if (h.state !== 'hang') return;
+      h.state = 'shake';
+      h.shake = SHARD_SHAKE;
+      sfx.crack();
+      dust(h.x, h.y - SHARD_LEN / 2, 5);
+      return;
+    }
     if (h.kind === 'spider') {
       if (!h.awake) {
         h.t = 0;
@@ -457,6 +562,57 @@
     burst(moka.x, moka.y, COL.danger, 14);
     sfx.hurt();
     if (moka.hearts <= 0) endGame(false, 'hearts');
+  }
+
+  // a few motes of grit trickling down from the ceiling
+  function dust(x, y, n, rgb = '170, 165, 215') {
+    for (let i = 0; i < n; i++) particles.push({ x: x + (Math.random() - 0.5) * 0.5, y, vx: (Math.random() - 0.5) * 0.6, vy: Math.random() * 0.8, g: 6, life: 0.5 + Math.random() * 0.4, rgb, s: 3 });
+  }
+  // glittering crystal splinters flying up and falling back
+  function shatter(x, y, n = 18) {
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI * (0.1 + Math.random() * 0.8), s = 2 + Math.random() * 4;
+      particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, g: 14, life: 0.5 + Math.random() * 0.5, rgb: i % 3 ? '120, 235, 255' : '235, 252, 255', spark: true });
+    }
+    dust(x, y, 6);
+  }
+  // A shaken crystal bursts: SHARD_BITS sharp pieces fan out, mostly down and sideways
+  function explode(h) {
+    h.state = 'gone';
+    const cy = h.y + SHARD_LEN * 0.3;   // from near the tip, so pieces don't smash straight into the ceiling
+    for (let i = 0; i < SHARD_BITS; i++) {
+      // a fan spread across the lower half-circle
+      const a = Math.PI * (0.06 + (i + Math.random() * 0.8) / SHARD_BITS * 0.88), sp = BIT_SPEED[0] + Math.random() * (BIT_SPEED[1] - BIT_SPEED[0]);
+      bits.push({ x: h.x, y: cy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, spin: Math.random() * 6, vs: (Math.random() < 0.5 ? -1 : 1) * (8 + Math.random() * 8), life: BIT_LIFE, len: 0.22 + Math.random() * 0.12 });
+    }
+    shatter(h.x, cy, 10);
+    shake = Math.max(shake, 0.18);
+    sfx.shatter();
+  }
+  // Dashing through a spider's thread (not its body) snaps it, and the spider drops
+  function cutThreads() {
+    for (const h of L.hazards) {
+      if (h.kind !== 'spider' || h.ko) continue;
+      const anchor = h.top - 0.45, low = h.y - 0.2;
+      if (low <= anchor) continue;
+      if (Math.hypot(moka.x - h.x, moka.y - h.y) < h.r + MOKA_R) continue;   // that's the body
+      const cy = Math.max(anchor, Math.min(low, moka.y));
+      if (Math.hypot(moka.x - h.x, moka.y - cy) >= MOKA_R) continue;
+      snapThread(h, cy);
+    }
+  }
+  function snapThread(h, cy) {
+    h.ko = 'fall';
+    h.vy = 0;
+    h.awake = 0;
+    h.snapT = 0;
+    h.cutY = cy;
+    h.lowLen = h.y - cy;
+    h.lit = 1;
+    h.vx = 0;
+    h.bounced = false;
+    for (let i = 0; i < 6; i++) particles.push({ x: h.x, y: cy, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, life: 0.35, rgb: '230, 236, 255', s: 2 });
+    sfx.snip();
   }
 
   function burst(x, y, rgb, n) {
@@ -557,6 +713,11 @@
     // Moka
     const { ix, iy } = readInput();
     moka.dashCd = Math.max(0, moka.dashCd - dt);
+    moka.biteT = Math.max(0, moka.biteT - dt);
+    moka.slashT = Math.max(0, moka.slashT - dt);
+    moka.slashCd = Math.max(0, moka.slashCd - dt);
+    for (const c of chomps) c.t += dt;
+    chomps = chomps.filter((c) => c.t < CHOMP_TIME);
     if (moka.dashT > 0) {
       // dashing: no steering, just the burst (and a trail of sparks)
       moka.dashT -= dt;
@@ -579,6 +740,7 @@
       if (!hitsWall(nx, moka.y, MOKA_R)) moka.x = nx; else { moka.vx *= -0.25; if (moka.dashT > 0) moka.dashT = 0; }
       const ny = moka.y + moka.vy * sdt;
       if (!hitsWall(moka.x, ny, MOKA_R)) moka.y = ny; else { moka.vy *= -0.25; if (moka.dashT > 0) moka.dashT = 0; }
+      if (moka.dashT > 0) cutThreads();
     }
 
     // Cave Run: the left edge of the screen keeps moving right and pushes Moka along
@@ -627,7 +789,41 @@
 
     // Hazards
     for (const h of L.hazards) {
-      if (h.kind === 'spider') {
+      if (isMonster(h) && h.ko) {
+        h.snapT += dt;
+        if (h.ko === 'fall') {
+          const foot = h.kind === 'owl' ? 0.3 : SPIDER_FOOT;
+          h.vy += FALL_G * dt;
+          if (h.vx) {
+            const nx = h.x + h.vx * dt;
+            if (solid(Math.floor(nx + Math.sign(h.vx) * 0.2), Math.floor(h.y))) h.vx = 0; else h.x = nx;
+            h.vx *= 1 - 2 * dt;
+          }
+          // knocked upward into the ceiling: stop rising
+          if (h.vy < 0 && solid(Math.floor(h.x), Math.floor(h.y + h.vy * dt - 0.2))) h.vy = 0;
+          h.y += h.vy * dt;
+          if (h.vy > 0 && solid(Math.floor(h.x), Math.floor(h.y + foot))) {
+            h.y = Math.floor(h.y + foot) - foot;
+            if (!h.bounced && h.vy > 3) {
+              // a little bounce, a puff of dust
+              h.bounced = true;
+              h.vy = -Math.min(4, h.vy * 0.3);
+              dust(h.x, h.y + SPIDER_FOOT, 7);
+              burst(h.x, h.y + SPIDER_FOOT, '170, 165, 215', 4);
+              sfx.thud();
+            } else { h.ko = 'out'; h.vy = 0; h.vx = 0; h.koT = 0; }
+          }
+        } else if (h.ko === 'out') {
+          h.koT += dt;
+          if (h.koT > SPIDER_KO + SPIDER_FADE) h.ko = 'gone';
+        }
+      } else if (h.kind === 'shard') {
+        if (h.state === 'shake') {
+          h.shake -= dt;
+          if (Math.random() < dt * 10) dust(h.x, h.y - SHARD_LEN / 2, 1);
+          if (h.shake <= 0) explode(h);
+        }
+      } else if (h.kind === 'spider') {
         if (h.awake > 0) {
           h.awake -= dt;
           h.t += dt;
@@ -658,9 +854,28 @@
           if (Math.hypot(h.x - h.homeX, h.y - h.homeY) < 0.1) { h.state = 'sleep'; h.x = h.homeX; h.y = h.homeY; }
         }
       }
-      const harmful = h.kind === 'spider' || (h.kind === 'rock' && h.state === 'fall') || (h.kind === 'owl' && h.state !== 'sleep');
-      if (harmful && Math.hypot(h.x - moka.x, h.y - moka.y) < h.r + MOKA_R) hurt(h.x, h.y);
+      // a knocked-out spider only hurts if it drops onto Moka
+      const touching = Math.hypot(h.x - moka.x, h.y - moka.y) < h.r + MOKA_R;
+      // the dash is a bite: any monster it touches gets chomped, and can't hurt Moka back
+      if (touching && moka.biteT > 0 && isMonster(h) && !h.ko) { knockOut(h, 'bite'); continue; }
+      const harmful = h.kind === 'spider' ? !h.ko || (h.ko === 'fall' && h.vy > 0 && h.y < moka.y && h.lowLen > 0)
+        : h.kind === 'rock' ? h.state === 'fall' : h.kind === 'owl' && !h.ko && h.state !== 'sleep';
+      if (harmful && touching) hurt(h.x, h.y);
     }
+    // flying crystal pieces: dodge them!
+    for (const b of bits) {
+      b.vy += FALL_G * 0.5 * dt;
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      b.spin += b.vs * dt;
+      b.life -= dt;
+      if (b.life <= 0 || solid(Math.floor(b.x), Math.floor(b.y))) { b.life = 0; shatter(b.x - b.vx * dt, b.y - b.vy * dt, 5); continue; }
+      if (Math.hypot(b.x - moka.x, b.y - moka.y) < BIT_R + MOKA_R) {
+        const was = moka.hurt;
+        hurt(b.x, b.y);
+        if (was <= 0) { b.life = 0; shatter(b.x, b.y, 6); }
+      }
+    }
+    bits = bits.filter((b) => b.life > 0);
     if (state !== 'play') return;
 
     // Moths and exit
@@ -705,6 +920,7 @@
     for (const p of particles) {
       p.x += p.vx * dt; p.y += p.vy * dt;
       p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt;
+      if (p.g) p.vy += p.g * dt;
       p.life -= dt;
     }
     particles = particles.filter((p) => p.life > 0);
@@ -798,6 +1014,8 @@
     const in3d = !!L && view3d && !!window.EchoCave3D && window.EchoCave3D.render({
       W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, moka, clock,
       bg: CAVE_BG, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R, look: mokaLook(),
+      // the bursting crystals, drawn among the ordinary ones (only some ceiling crystals are loose)
+      hazards: L ? shardViews() : [],
     });
     if (in3d) ctx.clearRect(0, 0, W, H);
     else {
@@ -929,10 +1147,12 @@
 
     // Hazards: bodies show while lit or close by; awake eyes always show
     for (const h of L.hazards) {
-      if (h.kind === 'rock' && h.state === 'gone') continue;
+      if ((h.kind === 'rock' || h.kind === 'shard') && h.state === 'gone') continue;
+      if (isMonster(h) && h.ko === 'gone') continue;
       const a = Math.max(h.lit, nearGlow(h.x, h.y) * 2);
       const x = toX(h.x), y = toY(h.y);
       if (h.kind === 'spider') drawSpider(h, x, y, a, toY);
+      else if (h.kind === 'shard') { if (!in3d) drawShard(h, x, y, a); }
       else if (h.kind === 'rock') drawRock(h, x, y, a);
       else drawOwl(h, x, y, a);
     }
@@ -952,11 +1172,36 @@
 
     for (const p of particles) {
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
-      ctx.fillRect(toX(p.x) - 2, toY(p.y) - 2, 4, 4);
+      if (p.spark) {
+        // a crystal splinter: a little four-point glint that twinkles
+        const px = toX(p.x), py = toY(p.y), r = 3 + 2.5 * Math.abs(Math.sin(p.life * 22));
+        ctx.beginPath(); ctx.moveTo(px, py - r); ctx.lineTo(px + r * 0.3, py); ctx.lineTo(px, py + r); ctx.lineTo(px - r * 0.3, py); ctx.closePath(); ctx.fill();
+        ctx.fillRect(px - r * 0.6, py - 0.75, r * 1.2, 1.5);
+      } else {
+        const s = p.s || 4;
+        ctx.fillRect(toX(p.x) - s / 2, toY(p.y) - s / 2, s, s);
+      }
+    }
+
+    // flying crystal pieces: bright, with a short glowing trail, always visible so you can dodge
+    for (const b of bits) {
+      const x = toX(b.x), y = toY(b.y), l = b.len * PX, a = Math.min(1, b.life * 3);
+      glow(x, y, PX * 0.45, COL.crystal, 0.45 * a);
+      ctx.strokeStyle = `rgba(${COL.crystal}, ${0.35 * a})`;
+      ctx.lineWidth = PX * 0.06;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - b.vx * PX * 0.05, y - b.vy * PX * 0.05); ctx.stroke();
+      ctx.save(); ctx.translate(x, y); ctx.rotate(b.spin);
+      ctx.fillStyle = `rgba(130, 235, 255, ${a})`;
+      ctx.beginPath(); ctx.moveTo(-l, 0); ctx.lineTo(0, -l * 0.28); ctx.lineTo(l, 0); ctx.lineTo(0, l * 0.28); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(240, 253, 255, ${a * 0.8})`;
+      ctx.beginPath(); ctx.moveTo(-l * 0.6, 0); ctx.lineTo(0, -l * 0.14); ctx.lineTo(l * 0.6, 0); ctx.closePath(); ctx.fill();
+      ctx.restore();
     }
 
     for (const p of pops) drawPop(p, toX(p.x), toY(p.y - p.t * 0.7));
     if (!in3d) drawMoka(toX(moka.x), toY(moka.y));
+    if (moka.slashT > 0) drawSlash(toX(moka.x), toY(moka.y));
+    for (const c of chomps) drawChomp(c, toX(c.x), toY(c.y));
     if (mode === 'run') {
       // the creeping dark at the left edge
       const g = ctx.createLinearGradient(0, 0, PX * 1.6, 0);
@@ -974,7 +1219,7 @@
     ctx.fillStyle = vignette.g;
     ctx.fillRect(0, 0, W, H);
     drawHud();
-    if (touchUsed && state === 'play') drawDashButton();
+    if (touchUsed && state === 'play') { drawDashButton(); drawSlashButton(); }
     drawStick();
   }
   let vignette = null;
@@ -997,6 +1242,7 @@
   }
 
   function drawSpider(h, x, y, a, toY) {
+    if (h.ko) { drawKnockedSpider(h, x, y, a, toY); return; }
     if (a > 0.02) {
       ctx.strokeStyle = `rgba(220, 230, 255, ${a * 0.5})`;
       ctx.lineWidth = 1;
@@ -1019,20 +1265,208 @@
     if (h.awake) eyes(x, y - PX * 0.03, COL.danger, PX * 0.05, PX * 0.035);
   }
 
+  // A spider whose thread was cut: the two thread ends spring back, it drops, bounces,
+  // then lies curled up with its legs in the air, and fades away
+  function drawKnockedSpider(h, x, y, a, toY) {
+    const anchor = toY(h.top - 0.45), k = Math.min(1, h.snapT / 0.35), ease = 1 - (1 - k) * (1 - k);
+    if (k < 1) {
+      ctx.strokeStyle = `rgba(220, 230, 255, ${0.7 * (1 - k)})`;
+      ctx.lineWidth = 1;
+      const upEnd = anchor + (toY(h.cutY) - anchor) * (1 - ease);
+      ctx.beginPath(); ctx.moveTo(x, anchor); ctx.quadraticCurveTo(x + PX * 0.12 * (1 - k), (anchor + upEnd) / 2, x, upEnd); ctx.stroke();
+      const lo = h.lowLen * (1 - ease) * PX;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x - PX * 0.15 * k, y - lo / 2, x + PX * 0.08 * k, y - lo); ctx.stroke();
+    }
+    const fade = h.ko === 'out' ? Math.max(0, 1 - Math.max(0, h.koT - SPIDER_KO) / SPIDER_FADE) : 1;
+    const vis = Math.max(0.55, a) * fade;
+    if (vis < 0.02) return;
+    ctx.save();
+    ctx.translate(x, y);
+    // tumbling while it falls, flat on its back once down
+    ctx.rotate(h.ko === 'fall' ? Math.PI * Math.min(1, h.snapT * 3) : Math.PI);
+    ctx.strokeStyle = `rgba(${COL.danger}, ${vis * 0.8})`;
+    ctx.lineWidth = 2;
+    const tw = h.ko === 'out' ? Math.sin(clock * 9) * 0.06 : 0;
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 4; i++) {
+        // legs curled in, pointing up (the body is flipped, so "down" here is up on screen)
+        const sx = side * PX * (0.08 + i * 0.02), ex = side * PX * (0.1 + i * 0.05 + tw * (i % 2 ? 1 : -1));
+        ctx.beginPath(); ctx.moveTo(sx * 0.5, 0); ctx.quadraticCurveTo(side * PX * 0.26, PX * 0.06, ex, PX * (0.2 + i * 0.015)); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = `rgba(60, 14, 28, ${vis})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, PX * 0.17, PX * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    // dizzy X eyes and a couple of circling stars
+    ctx.strokeStyle = `rgba(255, 210, 220, ${vis})`;
+    ctx.lineWidth = 1.5;
+    for (const ex of [-1, 1]) {
+      const cx = x + ex * PX * 0.06, cy = y + PX * 0.02, r = PX * 0.03;
+      ctx.beginPath(); ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r); ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r); ctx.stroke();
+    }
+    if (h.ko === 'out') {
+      ctx.fillStyle = `rgba(255, 236, 160, ${vis})`;
+      for (let j = 0; j < 2; j++) {
+        const ang = clock * 4 + j * Math.PI;
+        const sx = x + Math.cos(ang) * PX * 0.22, sy = y - PX * 0.28 + Math.sin(ang) * PX * 0.06, r = PX * 0.05;
+        ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.3, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.3, sy); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  // A loose stalactite: grey-violet stone, shaking then falling red-hot with danger
   function drawRock(h, x, y, a) {
     if (h.state === 'hang' && a < 0.02) return;
     const jx = h.state === 'shake' ? (Math.random() - 0.5) * 4 : 0;
     const vis = h.state === 'hang' ? a : 1;
-    ctx.fillStyle = `rgba(${h.state === 'hang' ? COL.wall : COL.danger}, ${vis * 0.85})`;
+    ctx.fillStyle = h.state === 'fall' ? `rgba(${COL.danger}, 0.9)` : `rgba(118, 110, 170, ${vis * 0.95})`;
     ctx.beginPath();
     ctx.moveTo(x + jx - PX * 0.24, y - PX * 0.32);
     ctx.lineTo(x + jx + PX * 0.24, y - PX * 0.32);
+    ctx.lineTo(x + jx + PX * 0.08, y + PX * 0.05);
     ctx.lineTo(x + jx, y + PX * 0.32);
+    ctx.lineTo(x + jx - PX * 0.1, y);
     ctx.closePath();
     ctx.fill();
+    ctx.fillStyle = `rgba(30, 24, 70, ${vis * 0.6})`;
+    ctx.beginPath(); ctx.moveTo(x + jx + PX * 0.24, y - PX * 0.32); ctx.lineTo(x + jx + PX * 0.08, y + PX * 0.05); ctx.lineTo(x + jx, y + PX * 0.32); ctx.lineTo(x + jx + PX * 0.04, y - PX * 0.32); ctx.closePath(); ctx.fill();
+  }
+
+  // shake offset (tiles) of a falling crystal, so 2D and 3D wobble the same
+  const shardWob = (h) => (h.state === 'shake' ? Math.sin(clock * 70 + h.seed) * 0.05 * (0.5 + 0.5 * (1 - h.shake / SHARD_SHAKE)) : 0);
+  // what the 3D view needs to draw each crystal: hanging from y (its top) down to y + len
+  function shardViews() {
+    const out = [];
+    for (const h of L.hazards) {
+      if (h.kind !== 'shard' || h.state === 'gone') continue;
+      out.push({ x: h.x, y: h.y - SHARD_LEN / 2, len: SHARD_LEN, wob: shardWob(h), a: Math.max(h.lit, nearGlow(h.x, h.y) * 2), fall: h.state === 'fall' });
+    }
+    return out;
+  }
+
+  // A clump of falling-crystal shards: one long icicle and two short ones, glowing cyan.
+  // Hidden in the dark like other hazards until lit; shaking or falling it shines bright.
+  function drawShard(h, x, y, a) {
+    const active = h.state !== 'hang';
+    if (!active && a < 0.02) return;
+    const vis = active ? 1 : Math.min(1, a);
+    const cx = x + shardWob(h) * PX, top = y - SHARD_LEN / 2 * PX, L0 = SHARD_LEN * PX;
+    glow(cx, top + L0 * 0.45, PX * 0.75, COL.crystal, (active ? 0.55 : 0.35) * vis);
+    const spike = (bx, len, w, lean) => {
+      ctx.fillStyle = `rgba(110, 225, 255, ${vis})`;
+      ctx.beginPath(); ctx.moveTo(bx - w, top); ctx.lineTo(bx - w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + lean, top + len);
+      ctx.lineTo(bx + w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + w, top); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(235, 252, 255, ${vis * 0.55})`;
+      ctx.beginPath(); ctx.moveTo(bx, top); ctx.lineTo(bx + lean, top + len); ctx.lineTo(bx + w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + w, top); ctx.closePath(); ctx.fill();
+    };
+    spike(cx - PX * 0.16, L0 * 0.5, PX * 0.06, -PX * 0.05);
+    spike(cx + PX * 0.15, L0 * 0.42, PX * 0.055, PX * 0.04);
+    spike(cx, L0, PX * 0.09, 0);
+    if (h.state === 'hang' && vis > 0.3 && Math.sin(clock * 2.3 + h.seed * 1.7) > 0.93) {
+      // the one tell of a loose crystal: a crack that glints now and then when lit
+      ctx.strokeStyle = `rgba(255, 255, 255, ${vis * 0.8})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - PX * 0.05, top + PX * 0.12); ctx.lineTo(cx + PX * 0.03, top + PX * 0.22); ctx.stroke();
+    }
+    if (h.state === 'shake') {
+      // hairline cracks flicker across the big shard
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * Math.sin(clock * 40)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - PX * 0.06, top + PX * 0.1); ctx.lineTo(cx + PX * 0.03, top + PX * 0.2); ctx.lineTo(cx - PX * 0.02, top + PX * 0.3); ctx.stroke();
+    }
+  }
+
+  // a knocked-out owl: flat on its back, wings splayed, X eyes and circling stars, fading
+  function drawKnockedOwl(h, x, y, a) {
+    const fade = h.ko === 'out' ? Math.max(0, 1 - Math.max(0, h.koT - SPIDER_KO) / SPIDER_FADE) : 1;
+    const vis = Math.max(0.6, a) * fade;
+    if (vis < 0.02) return;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(h.ko === 'fall' ? h.snapT * 9 * (h.vx >= 0 ? 1 : -1) : Math.PI * 0.92);
+    ctx.fillStyle = `rgba(110, 82, 60, ${vis})`;
+    ctx.beginPath();
+    ctx.ellipse(-PX * 0.32, PX * 0.08, PX * 0.2, PX * 0.09, -0.2, 0, Math.PI * 2);
+    ctx.ellipse(PX * 0.32, PX * 0.08, PX * 0.2, PX * 0.09, 0.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = `rgba(150, 112, 80, ${vis})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, PX * 0.24, PX * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = `rgba(40, 24, 16, ${vis})`;
+    ctx.lineWidth = 2;
+    for (const ex of [-1, 1]) {
+      const cx = ex * PX * 0.09, cy = -PX * 0.08, r = PX * 0.045;
+      ctx.beginPath(); ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r); ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r); ctx.stroke();
+    }
+    ctx.restore();
+    if (h.ko === 'out') {
+      ctx.fillStyle = `rgba(255, 236, 160, ${vis})`;
+      for (let j = 0; j < 3; j++) {
+        const ang = clock * 4 + j * Math.PI * 2 / 3;
+        const sx = x + Math.cos(ang) * PX * 0.3, sy = y - PX * 0.4 + Math.sin(ang) * PX * 0.08, r = PX * 0.06;
+        ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.3, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.3, sy); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  // The wing slash: a bright crescent sweeping across the arc in front of Moka, with feathery streaks
+  function drawSlash(x, y) {
+    const k = 1 - moka.slashT / SLASH_TIME, a = moka.slashA, half = SLASH_ARC / 2;
+    const sweep = -half + (half * 2) * Math.min(1, k * 1.6);   // the leading edge
+    const fade = k < 0.6 ? 1 : (1 - k) / 0.4, R = SLASH_R * PX;
+    const dir = Math.cos(a) >= 0 ? 1 : -1;   // sweep top to bottom on the side Moka faces
+    const a0 = a - half * dir, a1 = a + sweep * dir;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const [w, al, rr] of [[R * 0.42, 0.18, 0.74], [R * 0.22, 0.45, 0.8], [R * 0.08, 0.95, 0.86]]) {
+      ctx.strokeStyle = `rgba(230, 220, 255, ${al * fade})`;
+      ctx.lineWidth = w;
+      ctx.beginPath(); ctx.arc(x, y, R * rr, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
+    }
+    // three streaks trailing behind the leading edge
+    ctx.strokeStyle = `rgba(190, 160, 255, ${0.7 * fade})`;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const ang = a1 - dir * (0.18 + i * 0.16), r0 = R * (0.55 + i * 0.12), r1 = R * (1.0 + i * 0.05);
+      ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // The dive bite: a big toothy mouth snapping shut on the monster, with slash lines (like battle)
+  function drawChomp(c, x, y) {
+    const k = c.t / CHOMP_TIME, shut = Math.min(1, k / 0.35), fade = k < 0.6 ? 1 : (1 - k) / 0.4;
+    const r = PX * (0.62 + 0.12 * Math.sin(Math.min(1, k * 2) * Math.PI)), open = 0.85 * (1 - shut) + 0.04;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(-c.face, 1);   // the mouth opens toward where Moka came from
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = '#ffd34d';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, open, Math.PI * 2 - open); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#7a3d00'; ctx.lineWidth = 2.5; ctx.stroke();
+    // teeth along both jaws
+    ctx.fillStyle = '#ffffff';
+    for (const j of [-1, 1]) {
+      for (let i = 0; i < 3; i++) {
+        const t = r * (0.35 + i * 0.22), ang = open * j, tx = Math.cos(ang) * t, ty = Math.sin(ang) * t, n = -j;
+        ctx.beginPath(); ctx.moveTo(tx - r * 0.07, ty); ctx.lineTo(tx + r * 0.07, ty); ctx.lineTo(tx, ty + n * r * 0.16); ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.fillStyle = '#2a1030';
+    ctx.beginPath(); ctx.arc(-r * 0.1, -r * 0.5, r * 0.11, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (shut >= 1) {
+      // slash lines bursting out when the jaws close
+      ctx.strokeStyle = `rgba(255, 245, 210, ${fade})`;
+      ctx.lineWidth = 3;
+      for (let i = 0; i < 5; i++) {
+        const ang = i / 5 * Math.PI * 2 + 0.3, r0 = PX * 0.8, r1 = PX * (0.95 + k * 0.6);
+        ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
+      }
+    }
   }
 
   function drawOwl(h, x, y, a) {
+    if (h.ko) { drawKnockedOwl(h, x, y, a); return; }
     const awake = h.state !== 'sleep';
     if (a > 0.02 || awake) {
       const vis = awake ? 1 : a;
@@ -1353,6 +1787,37 @@
     ctx.closePath(); ctx.fill();
   }
 
+  // The SLASH button: a smaller glassy disc next to DASH, a white wing-swoosh on it
+  function drawSlashButton() {
+    const b = slashButton(), ready = moka.slashCd <= 0, k = ready ? 1 : 0.55;
+    const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(90, 170, 235, ${0.55 * k})`);
+    g.addColorStop(1, `rgba(20, 50, 100, ${0.72 * k})`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    if (ready) {
+      ctx.strokeStyle = 'rgba(120, 210, 255, 1)';
+      ctx.globalAlpha = 0.1; ctx.lineWidth = 11; ctx.stroke();
+      ctx.globalAlpha = 0.22; ctx.lineWidth = 6.5; ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = 'rgba(50, 110, 170, 0.7)'; ctx.lineWidth = 3; ctx.stroke();
+    ctx.strokeStyle = '#7fd4ff';
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - moka.slashCd / SLASH_COOLDOWN)); ctx.stroke();
+    ctx.font = `700 ${Math.round(b.r * 0.42)}px ${HUD_FONT}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = ready ? '#f1fbff' : 'rgba(241, 251, 255, 0.45)';
+    ctx.fillText('SLASH', b.x, b.y + b.r * 0.3);
+    // a crescent swoosh above the word
+    ctx.strokeStyle = ready ? '#ffffff' : 'rgba(255, 255, 255, 0.45)';
+    ctx.lineCap = 'round';
+    ctx.lineWidth = b.r * 0.12;
+    ctx.beginPath(); ctx.arc(b.x - b.r * 0.15, b.y + b.r * 0.15, b.r * 0.5, -Math.PI * 0.75, -Math.PI * 0.2); ctx.stroke();
+    ctx.lineWidth = b.r * 0.06;
+    ctx.beginPath(); ctx.arc(b.x - b.r * 0.15, b.y + b.r * 0.15, b.r * 0.34, -Math.PI * 0.7, -Math.PI * 0.3); ctx.stroke();
+    ctx.lineCap = 'butt';
+  }
+
   function drawHint() {
     if (!(hintTimer > 0 && state === 'play')) return;
     const { pill } = hudShapes(ctx);
@@ -1363,7 +1828,7 @@
       const k = Math.min(1, hintTimer);
       ctx.globalAlpha = k;
       ctx.font = `600 ${Math.round(size * 0.78)}px ${HUD_FONT}`;
-      const hint = touchUsed ? 'DRAG TO FLY  ·  TAP TO SQUEAK  ·  FLICK OR TAP DASH' : 'ARROWS OR DRAG TO FLY  ·  SPACE OR CLICK TO SQUEAK  ·  G TO DASH';
+      const hint = touchUsed ? 'DRAG TO FLY  ·  TAP TO SQUEAK  ·  DASH BITES  ·  SLASH SWATS' : 'ARROWS TO FLY  ·  SPACE SQUEAK  ·  G DASH-BITE  ·  H WING SLASH';
       const iw = ctx.measureText(hint).width + 40, ih = size * 1.55, iy = H - ih - 10, ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
       ctx.strokeStyle = 'rgba(150, 130, 255, 0.45)'; ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1557,9 +2022,9 @@
     coop: { hint: () => 'co-op run' },
   };
   const VARIANTS = {
-    classic: 'Fly to the end together. Squeak to stun monsters, dash to smash them.',
-    escape: 'Run away! Monsters chase you and can’t be beaten. Reach the exit.',
-    hunt: 'Hunt them down! Beat enough monsters to open the exit.',
+    classic: 'Fly to the end together. Squeak to see, dash-bite or wing-slash monsters, dodge bursting crystals.',
+    escape: 'Run away! Monsters can’t be beaten: a bite or slash only knocks them back. Reach the exit.',
+    hunt: 'Hunt them down! Bite or slash enough monsters to open the exit.',
   };
   const FREQS = ['off', 'low', 'normal', 'high'];
   const FREQ_NAMES = { off: 'Off', low: 'Low', normal: 'Normal', high: 'High' };
@@ -2006,7 +2471,13 @@
     // Explore checkpoints and hidden hearts
     get checkpoint() { return checkpoint; },
     get pops() { return pops; },
+    get bits() { return bits; },
+    get chomps() { return chomps; },
+    slash,
     hurt: () => hurt(moka.x + 1, moka.y),
+    dash: (dx, dy) => dash(dx, dy),
+    setView,
+    get view3d() { return view3d; },
     restartFromCheckpoint,
     primary: primaryAction,
   };

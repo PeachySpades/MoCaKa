@@ -13,7 +13,7 @@
 (() => {
   'use strict';
 
-  const R = 0.3, ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4;
+  const R = 0.3, ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4, STUN_DRAG = 7;
   const RING_SPEED = 11, RING_MAX = 7, MEGA_RING = 11, COOLDOWN = 0.45, FRENZY_COOLDOWN = 0.22;
   const STUN_TIME = 1.8, MEGA_STUN = 2.6, SPAWN_SAFE = 1.6, RESPAWN_DELAY = 1.4;
   const START_ECHOES = 4, MAX_ECHOES = 6, CRYSTAL_ECHOES = 2;
@@ -1385,7 +1385,12 @@
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
       b.ice = b.stun > 0 ? Math.max(0, b.ice - dt) : 0;
       if (b.ice > 0) { b.vx = 0; b.vy = 0; }   // frozen solid
-      else if (!over) {
+      else if (b.stun > 0) {
+        // stunned bats can't steer: the hit's knockback dies off fast and they hang still
+        const k = Math.exp(-STUN_DRAG * dt);
+        b.dashT = 0;
+        b.vx *= k; b.vy *= k;
+      } else if (!over) {
         if (b.ctrl === 'cpu') { cpuLevel = b.lv || baseLevel; ({ ix, iy } = cpuInput(b, dt)); }
         else if (b.ctrl === 'remote') ({ ix, iy } = remoteInput.get(b.i) || { ix: 0, iy: 0 });
         else ({ ix, iy } = localInput(b.local));
@@ -1404,7 +1409,7 @@
       } else if (ix || iy) {
         const acc = ACCEL * (fast ? 1.3 : 1);
         b.vx += ix * acc * dt; b.vy += iy * acc * dt;
-      } else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
+      } else if (b.stun <= 0) { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
       if (b.ctrl === 'cpu') cpuLevel = b.lv || baseLevel;
       const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1) * (b.ctrl === 'cpu' ? cpuLevel.speed : 1);
       const sp = Math.hypot(b.vx, b.vy);

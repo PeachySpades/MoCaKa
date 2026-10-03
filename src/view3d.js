@@ -777,7 +777,7 @@
   }
 
   // ---- Explore and Cave Run ------------------------------------------------
-  const CAVE_DEPTH = 2.2, CAVE_POOL = 3200, CAVE_UP = 1.6, DECO_POOL = 360, CAVE_MOTES = 60;
+  const CAVE_DEPTH = 2.2, CAVE_POOL = 3200, CAVE_UP = 1.6, DECO_POOL = 360, CAVE_MOTES = 60, HAZ_POOL = 80;
   let cave = null;
   function caveInit() {
     if (cave) return true;
@@ -800,7 +800,10 @@
     const crystals = new T.InstancedMesh(crystalGeo(), crystalMat(), DECO_POOL);
     const shrooms = new T.InstancedMesh(mushroomGeo(), crystalMat(), DECO_POOL);
     const glows = new T.InstancedMesh(new T.PlaneGeometry(1, 1), glowMatOf(), DECO_POOL);
-    for (const m of [rock, back, crystals, shrooms, glows]) {
+    // falling-crystal hazards (v.hazards): bright clumps on the play plane, with their own glows
+    const hazards = new T.InstancedMesh(crystalGeo(), crystalMat(), HAZ_POOL * 3);
+    const hazGlows = new T.InstancedMesh(new T.PlaneGeometry(1, 1), glowMatOf(), HAZ_POOL);
+    for (const m of [rock, back, crystals, shrooms, glows, hazards, hazGlows]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(m.count * 3), 3);
       m.instanceColor.setUsage(T.DynamicDrawUsage);
@@ -814,7 +817,7 @@
     motes.frustumCulled = false;
     sc.add(motes);
     const cam = new T.PerspectiveCamera(FOV, 2, 0.1, 100);
-    cave = { scene: sc, rock, back, crystals, shrooms, glows, motes, moteBase: base, cam, bat: null, W: 0, H: 0, last: 0,
+    cave = { scene: sc, rock, back, crystals, shrooms, glows, hazards, hazGlows, motes, moteBase: base, cam, bat: null, W: 0, H: 0, last: 0,
       p: new T.Vector3(), q: new T.Quaternion(), e: new T.Euler(), s: new T.Vector3() };
     return true;
   }
@@ -869,7 +872,7 @@
               put(c.shrooms, nm++, tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6, -ty, -0.25 - tileHash(tx, ty, 30 + j) * 1.4, j, 0, sc, sc, CYAN[0] * kk, CYAN[1] * kk, CYAN[2] * kk);
             }
             if (ng < DECO_POOL) put(c.glows, ng++, tx + 0.5, -ty + 0.2, -0.2, 0, 0, 1.3, 1.3, CYAN[0] * kk * 0.35, CYAN[1] * kk * 0.35, CYAN[2] * kk * 0.35);
-          } else if (((up && hsh < 0.2) || (down && hsh > 0.92)) && nc < DECO_POOL - 4) {
+          } else if (((up && hsh < 0.2) || (down && hsh > 0.92 && !v.noCeilDecor)) && nc < DECO_POOL - 4) {
             const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3), flip = !(up && hsh < 0.2);
             for (let j = 0; j < n; j++) {
               const hh = (j ? 0.3 + tileHash(tx, ty, 10 + j) * 0.4 : 0.55 + tileHash(tx, ty, 11) * 0.35);
@@ -887,8 +890,22 @@
         }
       }
     }
+    // falling-crystal hazards, v.hazards: [{ x, y (ceiling line, tiles), len, wob (x shake, tiles), a (light 0..1), fall }]
+    // each is a clump hanging down from y: one big shard and two small ones, bright cyan.
+    // Hidden in the dark like other hazards; once shaking or falling it shines at full brightness.
+    let nh = 0, nhg = 0;
+    for (const hz of v.hazards || []) {
+      const k = hz.fall || hz.wob ? 1 : Math.min(1, (hz.a || 0) * 1.3);
+      if (k < 0.02 || nhg >= HAZ_POOL || hz.x < tx0 - 1 || hz.x > tx1 + 2) continue;
+      const hx = hz.x + (hz.wob || 0), len = hz.len || 0.7, hr = 0.55 * k, hg = 1.0 * k, hb = 1.0 * k;
+      put(c.hazards, nh++, hx, -hz.y, 0.02, 0.4, Math.PI, 1.75, len, hr, hg, hb);
+      put(c.hazards, nh++, hx - 0.17, -hz.y, -0.04, 1.1, Math.PI + 0.32, 1.05, len * 0.55, hr, hg, hb);
+      put(c.hazards, nh++, hx + 0.16, -hz.y, -0.06, 2.0, Math.PI - 0.3, 1.0, len * 0.48, hr, hg, hb);
+      put(c.hazGlows, nhg++, hx, -hz.y - len * 0.45, 0.1, 0, 0, 1.5, 1.5, CYAN[0] * k * 0.55, CYAN[1] * k * 0.55, CYAN[2] * k * 0.55);
+    }
+    c.hazards.count = nh; c.hazGlows.count = nhg;
     c.rock.count = nr; c.back.count = nb; c.crystals.count = nc; c.shrooms.count = nm; c.glows.count = ng;
-    for (const m of [c.rock, c.back, c.crystals, c.shrooms, c.glows]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+    for (const m of [c.rock, c.back, c.crystals, c.shrooms, c.glows, c.hazards, c.hazGlows]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
 
     // motes drift in the air, wrapped around the view
     const mp = c.motes.geometry.attributes.position, ma = mp.array, mb = c.moteBase;

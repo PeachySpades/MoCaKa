@@ -1,7 +1,10 @@
 // Co-op Run: 1 to 4 bats fly one side-scrolling cave together while monsters
 // try to stop them. The screen scrolls right on its own (everyone shares it),
 // a little faster in each of the cave's four sections. Squeak to light the cave
-// and stun monsters; dash into a stunned monster (or a small one) to destroy it.
+// (it wakes monsters and cracks loose crystals, but stuns nothing). Two attacks:
+// the dive bite (a dash) knocks out any monster it hits, and the wing slash swats
+// everything in an arc in front of the bat. A knocked-out monster tumbles to the
+// floor, lies there dizzy and fades away.
 // Each bat has 3 hearts. A bat that runs out (or gets pinned against the left
 // edge by a wall) is knocked out and drifts along as a ghost until a living
 // teammate reaches the next checkpoint lantern, which revives it with 1 heart.
@@ -10,8 +13,8 @@
 //
 // Three variants (start option `variant`):
 //   classic  the run above
-//   escape   monsters can't be destroyed (a squeak only dazes them briefly and
-//            pushes them back), more and faster chasers, a quicker scroll
+//   escape   monsters can't be beaten (a bite or a slash only knocks them back and
+//            dazes them for a moment), more and faster chasers, a quicker scroll
 //   hunt     smash monsters for points; new ones arrive in waves, quick kills
 //            build a combo multiplier, and the run ends at the green light or
 //            when the clock runs out (the time left becomes bonus points)
@@ -33,6 +36,9 @@
   const MAX_HEARTS = 3, HURT_TIME = 1.4, REVIVE_SAFE = 2.5;
   const START_ECHOES = 8, MAX_ECHOES = 12, CRYSTAL_ECHOES = 3;
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6, BITE_GRACE = 0.12;
+  // the wing slash: an arc SLASH_ARC radians wide (±75°), SLASH_R tiles out, in front of the bat
+  const SLASH_R = 1.25, SLASH_ARC = Math.PI * 5 / 6, SLASH_TIME = 0.22, SLASH_COOLDOWN = 0.5;
+  const DAZE = 1, CHOMP_TIME = 0.4;   // Escape: a hit monster is knocked back and dazed this long
   const VIEW_W = 24;            // tiles of cave the whole team shares, on every device
   const TRIES = 3;
   const SPEEDS = [2.3, 2.6, 2.9, 3.2];   // scroll speed per section, tiles per second
@@ -51,17 +57,27 @@
   };
   const HUNT_TIME = 150, COMBO_TIME = 2.5, MAX_COMBO = 5;
   const POINTS = { ghost: 5, crawler: 10, spider: 15, owl: 25 };
+  // Bursting crystals: some ceiling crystals are loose. An echo cracks one; it shakes for
+  // SHARD_SHAKE s, then bursts into SHARD_BITS sharp pieces (BIT_SPEED tiles/s, falling at
+  // FALL_G / 2) that hurt any bat and smash any monster they hit, until they break on rock
+  // or after BIT_LIFE s. (Same numbers as Explore and Cave Run in game.js.)
+  const FALL_G = 24, SHARD_LEN = 0.7, SHARD_R = 0.24, SHARD_SHAKE = 0.45;
+  const SHARD_BITS = 6, BIT_SPEED = [6, 8], BIT_LIFE = 1.2, BIT_R = 0.13;
+  // a spider whose thread is cut falls (FALL_G), bounces once, lies legs-up and harmless
+  // for SPIDER_OUT s, then fades over SPIDER_FADE s and is gone
+  const SPIDER_OUT = 3, SPIDER_FADE = 0.8, SPIDER_FOOT = 0.18;
   // CPU buddy skill. 'pro' is the old flawless bot, kept for autopilot in tests.
   //   react: seconds before a buddy notices a monster   think: seconds between route plans
   //   speed: share of top speed     wobble: how far off its line it drifts
   //   sqMiss / dashMiss: chance it fumbles a squeak or a dash   aim: dash aim error (radians)
   //   daze: daydreams per second (it stops flying for a moment)  lag: how far back it hangs
   //   dodge: how hard it steers around monsters   sq / angry / dashR: reach of its squeaks and dashes
+  //   shard: how hard it gets out from under a cracked crystal and away from its pieces (0: it doesn't)
   const BUDDY = {
-    pro: { react: 0, think: 0.22, speed: 1, wobble: 0, sqMiss: 0, dashMiss: 0, aim: 0, daze: 0, lag: 0, dodge: 0.7, sq: 2.6, angry: 5, dashR: 2.3 },
-    easy: { react: 1.05, think: 0.7, speed: 0.7, wobble: 0.7, sqMiss: 0.6, dashMiss: 0.6, aim: 0.8, daze: 0.22, lag: 0.18, dodge: 0.12, sq: 1.5, angry: 2.6, dashR: 1.5 },
-    normal: { react: 0.9, think: 0.6, speed: 0.74, wobble: 0.6, sqMiss: 0.55, dashMiss: 0.55, aim: 0.7, daze: 0.2, lag: 0.15, dodge: 0.15, sq: 1.7, angry: 3, dashR: 1.6 },
-    hard: { react: 0.75, think: 0.5, speed: 0.78, wobble: 0.5, sqMiss: 0.48, dashMiss: 0.48, aim: 0.6, daze: 0.18, lag: 0.12, dodge: 0.2, sq: 1.9, angry: 3.4, dashR: 1.8 },
+    pro: { react: 0, think: 0.22, speed: 1, wobble: 0, sqMiss: 0, dashMiss: 0, aim: 0, daze: 0, lag: 0, dodge: 0.7, sq: 2.6, angry: 5, dashR: 2.3, shard: 1.6 },
+    easy: { react: 1.05, think: 0.7, speed: 0.7, wobble: 0.7, sqMiss: 0.6, dashMiss: 0.6, aim: 0.8, daze: 0.22, lag: 0.18, dodge: 0.12, sq: 1.5, angry: 2.6, dashR: 1.5, shard: 0 },
+    normal: { react: 0.9, think: 0.6, speed: 0.74, wobble: 0.6, sqMiss: 0.55, dashMiss: 0.55, aim: 0.7, daze: 0.2, lag: 0.15, dodge: 0.15, sq: 1.7, angry: 3, dashR: 1.6, shard: 0.6 },
+    hard: { react: 0.75, think: 0.5, speed: 0.78, wobble: 0.5, sqMiss: 0.48, dashMiss: 0.48, aim: 0.6, daze: 0.18, lag: 0.12, dodge: 0.2, sq: 1.9, angry: 3.4, dashR: 1.8, shard: 1.1 },
   };
   const BATS = [
     { name: 'Mo', color: '#8b6cff', rgb: '139, 108, 255' },
@@ -70,29 +86,33 @@
     { name: 'Bo', color: '#ffb347', rgb: '255, 179, 71' },
   ];
   const KEYMAP = [
-    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'] },
-    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'] },
-    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'] },
-    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'] },
+    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], slash: ['KeyX'] },
+    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], slash: ['Comma'] },
+    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], slash: ['KeyO'] },
+    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], slash: ['NumpadSubtract'] },
   ];
   const COL = {
-    wall: '74, 222, 255', moth: '255, 226, 120', crystal: '150, 240, 255', exit: '120, 255, 170',
+    wall: '74, 222, 255', moth: '255, 226, 120', dust: '190, 200, 230', crystal: '150, 240, 255', exit: '120, 255, 170',
     danger: '255, 84, 104', owl: '255, 196, 64', stun: '255, 226, 120', ghost: '255, 190, 235', crawl: '160, 255, 120',
   };
   const PHASES = ['count', 'play', 'wipe', 'win', 'lose'];
   const TITLES = { classic: 'Co-op Run', escape: 'Escape', hunt: 'Hunt' };
   const KINDS = ['spider', 'crawler', 'owl', 'ghost'];
-  const MSTATES = ['hang', 'tell', 'drop', 'hold', 'climb', 'perch', 'swoop', 'recover', 'leave', 'walk', 'leap', 'drift', 'chase'];
-  const SMALL = { crawler: true, ghost: true };   // a dash destroys these even when they aren't stunned
+  const MSTATES = ['hang', 'tell', 'drop', 'hold', 'climb', 'perch', 'swoop', 'recover', 'leave', 'walk', 'leap', 'drift', 'chase', 'fall', 'out'];
+  const SHARD_ST = ['hang', 'shake', 'gone'];
+  const downed = (m) => m.st === 'fall' || m.st === 'out';   // a cut spider: no longer a monster to fight
 
   // ---- State -------------------------------------------------------------
   let active = false, mode = 'local', viewer = -1, net = null, onEnd = null, paused = false, localCount = 1;
   let L = null, D = DIFF.normal, difficulty = 'normal', seed = 1, variant = 'classic', V = VAR.classic;
   let hunt = { left: HUNT_TIME, wave: 0, waveT: 0, bonus: 0 }, spawnT = 0;
   let bats = [], rings = [], particles = [], popups = [], outbox = [];
+  // crystal bursts in flight: { id (the shard's), seed, by (whose echo), age, dead (bitmask), bits }
+  let bursts = [];
+  let chomps = [];   // dive-bite mouths snapping shut (cosmetic)
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
-  let ringId = 0, snapTimer = 0, gotDirty = true, snapCount = 0;
+  let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0;
   const remoteInput = new Map();
 
   // ---- Level -------------------------------------------------------------
@@ -100,7 +120,7 @@
     const rows = def.map, h = rows.length, w = Math.max(...rows.map((r) => r.length));
     const lv = {
       def, w, h, grid: new Uint8Array(w * h), lit: new Float32Array(w * h),
-      start: { x: 5.5, y: 6.5 }, goal: { x: w - 6.5, y: 6.5 }, moths: [], crystals: [], checkpoints: [], monsters: [],
+      start: { x: 5.5, y: 6.5 }, goal: { x: w - 6.5, y: 6.5 }, moths: [], crystals: [], checkpoints: [], monsters: [], shards: [],
     };
     const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
     const specs = [];
@@ -112,6 +132,7 @@
         else if (c === 'E') lv.goal = { x: cx, y: cy };
         else if (c === 'm') lv.moths.push({ x: cx, y: cy, got: false, phase: (x * 7 + y) % 6 });
         else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: (x * 3 + y) % 6 });
+        else if (c === 'v') lv.shards.push(resetShard({ id: lv.shards.length, x: cx, y, seed: (x * 7 + y * 13) % 10 }));
         else if (c === 'K') lv.checkpoints.push({ x: cx, y: cy, floor: floorBelow(ch, x, y) });
         else if (c === 's') specs.push({ kind: 'spider', x: cx, y: y + 0.42, bot: floorBelow(ch, x, y) - 0.45 });
         else if (c === 'c') specs.push({ kind: 'crawler', x: cx, y: y + 1 - 0.3 });
@@ -134,9 +155,12 @@
   }
   const buildLevel = () => loadLevel(window.makeCoopLevel(seed, difficulty, variant));
   function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#') b++; return b + 1; }
+  // a loose ceiling crystal: y is the ceiling line it hangs from (its tip is at y + SHARD_LEN)
+  function resetShard(s) { return Object.assign(s, { st: 'hang', t: 0, by: -1, lit: 0 }); }
   function resetMonster(m) {
     Object.assign(m, {
       x: m.hx, y: m.hy, vx: 0, vy: 0, t: 0, cd: 0, stun: 0, lit: 0, dead: false, face: -1, ax: 0, ay: 0, swoops: 0, target: -1,
+      bounced: false, cutY: null, lowLen: 0, by: -1, drop: false,
       st: { spider: 'hang', crawler: 'walk', owl: 'perch', ghost: 'drift' }[m.kind],
       r: { spider: 0.3, crawler: 0.3, owl: 0.36, ghost: 0.2 }[m.kind],
     });
@@ -160,7 +184,7 @@
     return {
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, echoes: START_ECHOES, cooldown: 0, hurt: 0, safe: 0, ko: false, loud: 0, noEcho: 0,
-      dashT: 0, dashCd: 0, biteT: 0, combo: 0, comboT: 0,
+      dashT: 0, dashCd: 0, biteT: 0, slashT: 0, slashCd: 0, slashA: 0, combo: 0, comboT: 0,
       st: { moths: 0, stuns: 0, kills: 0, kos: 0, squeaks: 0, points: 0, combo: 0 },
       ai: ctrl === 'cpu' ? newAi(buddyLevel(i)) : null,
       look: lookFor(i, ctrl === 'cpu', looks),
@@ -169,7 +193,7 @@
   // a CPU buddy's skill: its seat's own level from the lobby (o.levels), else the level option
   let buddyLevels = [];
   const buddyLevel = (i) => (BUDDY[buddyLevels[i]] && buddyLevels[i] !== 'pro' ? buddyLevels[i] : difficulty);
-  function newAi(skill) { return { path: [], think: 0, sq: 0, dw: 0, daze: 0, seen: new Map(), skill: BUDDY[skill] ? skill : 'normal' }; }
+  function newAi(skill) { return { path: [], think: 0, sq: 0, dw: 0, sl: 0, daze: 0, seen: new Map(), skill: BUDDY[skill] ? skill : 'normal' }; }
   // each bat's look (src/looks.js): the one the lobby sent, else the seat's preset (people) or a random one (CPU buddies)
   function lookFor(i, cpu, looks) {
     const E = window.EchoLooks;
@@ -218,10 +242,10 @@
     }
     hunt = { left: HUNT_TIME, wave: 0, waveT: V.wave * 0.6, bonus: 0 };
     spawnT = V.wave * 0.8;
-    rings = []; particles = []; popups = []; outbox = [];
+    rings = []; particles = []; popups = []; outbox = []; bursts = []; chomps = [];
     remoteInput.clear();
     cpIndex = -1; tries = TRIES; over = false; ended = false; result = null;
-    clock = 0; playTime = 0; shake = 0; snapTimer = 0; gotDirty = true; snapCount = 0;
+    clock = 0; playTime = 0; shake = 0; snapTimer = 0; gotDirty = true; shardDirty = true; snapCount = 0;
     placeTeam(L.start.x, L.start.y);
     scroll = { x: 0, speed: SPEEDS[0] * D.speed };
     setPhase('count', 3);
@@ -262,6 +286,24 @@
     else if (ev.k === 'popup') popups.push({ x: ev.x, y: ev.y, text: ev.text, rgb: ev.rgb, t: 0, life: ev.life || 0.9 });
     else if (ev.k === 'shake') { if (ev.s == null || ev.s < 0 || bats[ev.s]?.ctrl === 'local') shake = Math.max(shake, ev.v); }
     else if (ev.k === 'banner') banner = { text: ev.text, sub: ev.sub || '', rgb: ev.rgb, t: ev.t };
+    else if (ev.k === 'chomp') chomps.push({ x: ev.x, y: ev.y, face: ev.f || 1, t: 0 });
+    else if (ev.k === 'pop') {
+      // a crystal burst: the host made its pieces already; a guest makes the same ones from the seed
+      const sh = L && L.shards[ev.id];
+      if (!sh) return;
+      if (mode === 'client') {
+        sh.st = 'gone';
+        if (!bursts.some((bu) => bu.id === ev.id)) bursts.push(makeBurst(sh, ev.sd >>> 0, ev.by));
+      }
+      sparkle(sh.x, sh.y + SHARD_LEN / 2, 10);
+      for (let k = 0; k < 6; k++) particles.push({ x: sh.x + (Math.random() - 0.5) * 0.5, y: sh.y + 0.1, vx: (Math.random() - 0.5) * 0.6, vy: Math.random() * 0.8, g: 6, life: 0.6, rgb: COL.dust, s: 3 });
+    } else if (ev.k === 'cut') {
+      // a snapped spider thread: where it broke, for the two halves springing back
+      const m = L && L.monsters[ev.id];
+      if (!m) return;
+      m.cutY = ev.y; m.lowLen = Math.max(0, (m.ty ?? m.y) - ev.y);
+      for (let k = 0; k < 6; k++) particles.push({ x: m.x, y: ev.y, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3, life: 0.35, rgb: '230, 236, 255', s: 2 });
+    }
   }
   function burst(x, y, rgb, n, speed = 3) {
     for (let k = 0; k < n; k++) {
@@ -277,7 +319,8 @@
   const canvas = document.getElementById('game');
   let W = 0, H = 0;
   const localBat = (slot) => bats.find((b) => b.ctrl === 'local' && b.local === slot);
-  const keysFor = (slot, what) => (localCount === 1 && slot === 0) ? [...KEYMAP[0][what], ...KEYMAP[1][what]] : (KEYMAP[slot] || {})[what] || [];
+  // one player on a keyboard gets both key sets (and H slashes too, as in Explore)
+  const keysFor = (slot, what) => (localCount === 1 && slot === 0) ? [...KEYMAP[0][what], ...KEYMAP[1][what], ...(what === 'slash' ? ['KeyH'] : [])] : (KEYMAP[slot] || {})[what] || [];
 
   addEventListener('keydown', (e) => {
     if (!active || paused) return;
@@ -287,6 +330,7 @@
     for (let slot = 0; slot < localCount; slot++) {
       if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'squeak');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
+      if (keysFor(slot, 'slash').includes(e.code)) act(slot, 'slash');
     }
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
@@ -294,11 +338,15 @@
 
   let touchUsed = matchMedia('(pointer: coarse)').matches;
   const dashButton = () => ({ x: W - 64, y: H - Math.max(124, H * 0.3), r: 42 });
-  const inDashButton = (cx, cy) => {
+  // the SLASH button sits to the left of DASH, a little lower (same place as in Explore)
+  const slashButton = () => { const d = dashButton(); return { x: d.x - d.r - 50, y: Math.min(H - 44, d.y + 34), r: 34 }; };
+  const inButton = (b, cx, cy) => {
     if (localCount !== 1) return false;
-    const rect = canvas.getBoundingClientRect(), b = dashButton();
+    const rect = canvas.getBoundingClientRect();
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
+  const inDashButton = (cx, cy) => inButton(dashButton(), cx, cy);
+  const inSlashButton = (cx, cy) => inButton(slashButton(), cx, cy);
   function zoneAt(clientX, clientY) {
     const n = localCount;
     if (n === 1) return 0;
@@ -313,6 +361,7 @@
     window.EchoAudio?.unlock?.();
     if (e.pointerType === 'touch') touchUsed = true;
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
+    if (touchUsed && inSlashButton(e.clientX, e.clientY)) { act(0, 'slash'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
     // a second finger in your zone squeaks while the first one steers
     if ([...sticks.values()].some((s) => s.owner === owner)) { act(owner, 'squeak'); return; }
@@ -358,7 +407,7 @@
     if (paused) return;
     const b = localBat(slot);
     if (!b) return;
-    if (a === 'dash' && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
+    if ((a === 'dash' || a === 'slash') && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
       const { ix, iy } = localInput(slot);
       if (Math.hypot(ix, iy) > 0.2) { dx = ix; dy = iy; }
     }
@@ -372,6 +421,7 @@
   function doAct(b, a, dx, dy) {
     if (a === 'squeak' || a === 'charge') squeak(b);
     else if (a === 'dash') dash(b, dx, dy);
+    else if (a === 'slash') slash(b, dx, dy);
   }
 
   // ---- Online hooks (host side) -------------------------------------------
@@ -379,7 +429,7 @@
     const b = bats[slot];
     if (!b || b.ctrl !== 'remote' || mode !== 'host' || !msg) return;
     if (msg.t === 'in') remoteInput.set(slot, { ix: Math.max(-1, Math.min(1, +msg.ix || 0)), iy: Math.max(-1, Math.min(1, +msg.iy || 0)) });
-    else if (msg.t === 'act' && ['squeak', 'charge', 'dash'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
+    else if (msg.t === 'act' && ['squeak', 'charge', 'dash', 'slash'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
   }
   function dropRemote(slot) {
     const b = bats[slot];
@@ -418,6 +468,39 @@
     if (Math.abs(ux) > 0.2) b.face = Math.sign(ux);
     b.dashT = DASH_TIME; b.dashCd = DASH_COOLDOWN; b.biteT = DASH_TIME + BITE_GRACE;
     fx({ k: 'sfx', n: 'dash' });
+  }
+  // the wing slash: both wings sweep an arc in front of the bat (the way it steers, or faces).
+  // While it sweeps it swats monsters, cuts spider threads and smashes crystal pieces in the arc.
+  function slash(b, dx, dy) {
+    if (!canAct(b) || b.slashCd > 0) return;
+    const a = Math.hypot(dx || 0, dy || 0) > 0.1 ? Math.atan2(dy, dx) : (b.face || 1) > 0 ? 0 : Math.PI;
+    if (Math.abs(Math.cos(a)) > 0.2) b.face = Math.sign(Math.cos(a));
+    b.slashA = a; b.slashT = SLASH_TIME; b.slashCd = SLASH_COOLDOWN;
+    fx({ k: 'sfx', n: 'slash', alt: 'dash' });
+    slashHits(b);
+  }
+  function inArc(b, x, y, r = 0) {
+    const d = Math.hypot(x - b.x, y - b.y);
+    if (d > SLASH_R + r) return false;
+    if (d < R + r) return true;
+    let da = Math.atan2(y - b.y, x - b.x) - b.slashA;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    return Math.abs(da) < SLASH_ARC / 2 + Math.asin(Math.min(1, r / d));
+  }
+  function slashHits(b) {
+    for (const m of L.monsters) {
+      if (m.dead || downed(m) || m.st === 'leave' || Math.abs(m.x - b.x) > SLASH_R + 1) continue;
+      if (inArc(b, m.x, m.y, m.r)) { hitMonster(m, b, 'slash'); continue; }
+      // a spider's thread crossing the arc gets cut
+      if (m.kind === 'spider') {
+        const anchor = m.hy - 0.45, low = m.y - 0.2;
+        for (let cy = Math.max(anchor, b.y - SLASH_R); cy <= Math.min(low, b.y + SLASH_R); cy += 0.1) {
+          if (inArc(b, m.x, cy)) { snapThread(m, b, cy); break; }
+        }
+      }
+    }
+    // flying crystal pieces get swatted out of the air
+    for (const bu of bursts) for (const p of bu.bits) if (bitLive(bu, p) && inArc(b, p.x, p.y, BIT_R)) breakBit(bu, p, 6);
   }
 
   function hurtBat(b, fromX, fromY) {
@@ -466,8 +549,9 @@
     }
     hunt.waveT = Math.max(hunt.waveT, 4); spawnT = Math.max(spawnT, 4);
     for (const c of L.crystals) if (c.x >= scroll.x) c.got = false;
-    gotDirty = true;
-    rings = [];
+    for (const s of L.shards) if (s.x >= scroll.x - 2) resetShard(s);   // loose crystals grow back too
+    gotDirty = true; shardDirty = true;
+    rings = []; bursts = [];
     for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;
     setPhase('count', 2);
   }
@@ -529,6 +613,8 @@
       b.noEcho = Math.max(0, b.noEcho - dt);
       b.dashCd = Math.max(0, b.dashCd - dt);
       b.biteT = Math.max(0, b.biteT - dt);
+      b.slashCd = Math.max(0, b.slashCd - dt);
+      if (b.slashT > 0 && (b.slashT -= dt) > 0 && phase === 'play' && !b.ko) slashHits(b);
       if (b.comboT > 0 && (b.comboT -= dt) <= 0) b.combo = 0;
     }
     if (phase === 'count') {
@@ -543,12 +629,13 @@
     if (phase === 'wipe') {
       phaseT -= dt;
       fadeLight(dt);
+      updateBursts(dt, false);
       for (const b of bats) moveGhost(b, 0, 0, dt);
       if (phaseT <= 0) restartFromCheckpoint();
       broadcast(dt);
       return;
     }
-    if (phase !== 'play') { broadcast(dt); return; }
+    if (phase !== 'play') { updateBursts(dt, false); broadcast(dt); return; }
     playTime += dt;
 
     // the shared screen creeps right, a little faster in each section
@@ -583,6 +670,10 @@
 
     fadeLight(dt);
     advanceRings(dt, true);
+    updateShards(dt);
+    shardDust(dt);
+    updateBursts(dt, true);
+    if (phase !== 'play') { broadcast(dt); return; }
     for (const m of L.monsters) updateMonster(m, dt);
     if (phase !== 'play') { broadcast(dt); return; }
     contacts();
@@ -648,6 +739,7 @@
       if (!hitsWall(nx, b.y, R)) b.x = nx; else { b.vx *= -0.25; b.dashT = 0; }
       const ny = b.y + b.vy * sdt;
       if (!hitsWall(b.x, ny, R)) b.y = ny; else { b.vy *= -0.25; b.dashT = 0; }
+      if (b.dashT > 0) cutThreads(b);
     }
     // the shared screen: the right edge holds you back, the left edge pushes you on
     const left = scroll.x + R + 0.05, right = scroll.x + VIEW_W - R - 0.3;
@@ -703,22 +795,208 @@
         const d = Math.hypot(m.x - ring.x, m.y - ring.y);
         if (d >= r + m.r || d < prev - m.r) continue;
         ring.hit.add(m.id);
-        m.lit = 1;
-        if (!simulate) continue;
-        if (m.st === 'leave') continue;
-        if (m.stun <= 0) {
-          bats[ring.owner] && bats[ring.owner].st.stuns++;
-          fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.stun, n: 8 });
-          if (!ring.stunSfx) { ring.stunSfx = true; fx({ k: 'sfx', n: 'stun' }); }
-        }
-        m.stun = D.stun;
-        if (m.kind === 'owl' && (m.st === 'swoop' || m.st === 'tell')) { m.st = 'recover'; m.t = 0.6; m.vx *= 0.2; m.vy *= 0.2; }
-        if (variant === 'escape') repel(m, ring.x, ring.y, 4.5);   // in Escape a squeak shoves monsters back
-        if (m.kind === 'crawler' && m.st === 'tell') m.st = 'walk';
-        if (m.kind === 'spider' && m.st === 'tell') { m.st = 'hang'; m.cd = 1; }
+        m.lit = 1;   // an echo shows monsters but doesn't stop them: bite or slash them
+      }
+    }
+    // loose ceiling crystals: the echo lights them and, on the host, shakes them loose
+    for (const ring of rings) {
+      const prev = ring.r - RING_SPEED * dt, r = ring.r;
+      for (const s of L.shards) {
+        if (s.st !== 'hang' || Math.abs(s.x - ring.x) > r + 1) continue;
+        const d = Math.hypot(s.x - ring.x, s.y + SHARD_LEN / 2 - ring.y);
+        if (d >= r + SHARD_R || d < prev - SHARD_R) continue;
+        s.lit = 1;
+        if (!simulate || phase !== 'play') continue;
+        s.st = 'shake'; s.t = SHARD_SHAKE; s.by = ring.owner; shardDirty = true;
+        fx({ k: 'burst', x: s.x, y: s.y + 0.05, rgb: COL.dust, n: 6, sp: 1.2 });
+        if (!ring.crackSfx) { ring.crackSfx = true; fx({ k: 'sfx', n: 'crack', alt: 'freeze' }); }
       }
     }
     rings = rings.filter((ring) => ring.r < RING_MAX);
+  }
+
+  // ---- Bursting crystals --------------------------------------------------------
+  // The host times the shake and decides who gets hit; every device flies the pieces
+  // itself from the burst's seed, on a closed-form path, so host and guests see the same.
+  function seeded(seed) {
+    let t = seed >>> 0;
+    return () => { t = (t + 0x6d2b79f5) >>> 0; let r = Math.imul(t ^ (t >>> 15), t | 1); r ^= r + Math.imul(r ^ (r >>> 7), r | 61); return ((r ^ (r >>> 14)) >>> 0) / 4294967296; };
+  }
+  function makeBurst(s, seed, by, age = 0, dead = 0) {
+    const rnd = seeded(seed), y0 = s.y + SHARD_LEN / 2, bits = [];
+    for (let i = 0; i < SHARD_BITS; i++) {
+      // spread over the lower half-circle, one or two kicked a little upward (y is down)
+      const a = Math.PI * (-0.12 + (i + rnd() * 0.8) / SHARD_BITS * 1.24), sp = BIT_SPEED[0] + rnd() * (BIT_SPEED[1] - BIT_SPEED[0]);
+      bits.push({ i, x0: s.x, y0, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, s0: rnd() * 6, vs: (rnd() < 0.5 ? -1 : 1) * (8 + rnd() * 8), len: 0.22 + rnd() * 0.12, x: s.x, y: y0, spin: 0 });
+    }
+    const bu = { id: s.id, seed, by, age, dead, bits };
+    placeBits(bu);
+    return bu;
+  }
+  const bitLive = (bu, p) => !(bu.dead & (1 << p.i));
+  function placeBits(bu) {
+    const t = bu.age;
+    for (const p of bu.bits) { p.x = p.x0 + p.vx * t; p.y = p.y0 + p.vy * t + 0.25 * FALL_G * t * t; p.spin = p.s0 + p.vs * t; }
+  }
+  function breakBit(bu, p, sparks = 5) {
+    if (!bitLive(bu, p)) return;
+    bu.dead |= 1 << p.i;
+    sparkle(p.x, p.y, sparks);
+  }
+  // glittering crystal splinters
+  function sparkle(x, y, n) {
+    for (let k = 0; k < n; k++) {
+      const a = -Math.PI * (0.1 + Math.random() * 0.8), sp = 2 + Math.random() * 3;
+      particles.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, g: 14, life: 0.4 + Math.random() * 0.4, rgb: k % 3 ? '120, 235, 255' : '235, 252, 255', spark: true });
+    }
+  }
+  // host: a cracked crystal bursts
+  function explode(s) {
+    s.st = 'gone'; shardDirty = true;
+    const bu = makeBurst(s, (Math.random() * 4294967296) >>> 0, s.by);
+    bursts.push(bu);
+    fx({ k: 'pop', id: s.id, sd: bu.seed, by: s.by });
+    fx({ k: 'shake', v: 0.18 });
+    fx({ k: 'sfx', n: 'shatter', alt: 'crash' });
+  }
+  // every device: move the pieces; they break on rock or when their time runs out.
+  // The host also checks them against bats and monsters.
+  function updateBursts(dt, host) {
+    for (const bu of bursts) {
+      bu.age += dt;
+      placeBits(bu);
+      for (const p of bu.bits) {
+        if (!bitLive(bu, p)) continue;
+        if (bu.age >= BIT_LIFE || solidAt(p.x, p.y)) { breakBit(bu, p); continue; }
+        if (!host || phase !== 'play') continue;
+        for (const b of bats) {
+          if (b.ko || Math.hypot(b.x - p.x, b.y - p.y) >= BIT_R + R) continue;
+          const was = b.hurt > 0 || b.safe > 0;
+          hurtBat(b, p.x, p.y);
+          if (!was) { breakBit(bu, p, 6); }
+          break;
+        }
+        if (!bitLive(bu, p) || phase !== 'play') continue;
+        for (const m of L.monsters) {
+          if (m.dead || downed(m) || m.st === 'leave' || Math.abs(m.x - p.x) > 1 || Math.hypot(m.x - p.x, m.y - p.y) >= BIT_R + m.r) continue;
+          bitHit(m, p, bu);
+          breakBit(bu, p, 6);
+          break;
+        }
+      }
+    }
+    bursts = bursts.filter((bu) => bu.age < BIT_LIFE + 0.1);
+  }
+  // a piece hits a monster: smashed (the bat whose echo burst the crystal gets it), or in Escape, where nothing breaks, dazed and knocked back
+  function bitHit(m, p, bu) {
+    if (variant === 'escape') {
+      if (m.stun <= 0) fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: 'CLONK!', rgb: COL.crystal, life: 0.7 });
+      m.stun = Math.max(m.stun, D.stun * 0.6);
+      repel(m, p.x - p.vx * 0.1, p.y - p.vy * 0.1, 3);
+      fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.crystal, n: 6 });
+      return;
+    }
+    const b = bats[bu.by];
+    if (b && m.kind !== 'ghost') knockMonster(m, b, 'crystal');
+    else if (b) destroy(m, b, 'CRUNCH!');
+    else { m.dead = true; fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.crystal, n: 14, sp: 3 }); }
+  }
+  // host: shaking crystals count down and burst
+  function updateShards(dt) {
+    for (const s of L.shards) if (s.st === 'shake' && (s.t -= dt) <= 0) explode(s);
+  }
+  // every device: dust trickles from a shaking crystal; the echo's light on them fades
+  function shardDust(dt) {
+    for (const s of L.shards) {
+      if (s.st === 'shake') {
+        if (mode === 'client') s.t = Math.max(0, s.t - dt);
+        if (Math.random() < dt * 10) particles.push({ x: s.x + (Math.random() - 0.5) * 0.5, y: s.y + 0.05, vx: (Math.random() - 0.5) * 0.6, vy: Math.random() * 0.8, g: 6, life: 0.5 + Math.random() * 0.4, rgb: COL.dust, s: 3 });
+      }
+      if (s.lit > 0) s.lit = Math.max(0, s.lit - dt * LIGHT_FADE);
+    }
+  }
+
+  // ---- Spider threads ------------------------------------------------------------
+  // A dashing bat that crosses a spider's thread (anchor to body, not the body itself) snaps it
+  function cutThreads(b) {
+    for (const m of L.monsters) {
+      if (m.kind !== 'spider' || m.dead || downed(m) || Math.abs(m.x - b.x) > 1) continue;
+      const anchor = m.hy - 0.45, low = m.y - 0.2;
+      if (low <= anchor) continue;
+      if (Math.hypot(b.x - m.x, b.y - m.y) < m.r + R) continue;   // that's the body: the dash works as before
+      const cy = Math.max(anchor, Math.min(low, b.y));
+      if (Math.hypot(b.x - m.x, b.y - cy) >= R) continue;
+      snapThread(m, b, cy);
+    }
+  }
+  // the thread snaps at cy and the spider drops (in every variant: it's knocked out, not hurt)
+  function snapThread(m, b, cy) {
+    m.st = 'fall'; m.vy = 0; m.vx = 0; m.stun = 0; m.t = 0; m.bounced = false; m.by = b.i; m.drop = true;
+    let text = '';
+    if (variant !== 'escape') { b.st.kills++; text = score(m, b); }   // in Hunt it scores like a smash
+    fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: text || 'SNIP!', rgb: b.rgb, life: 0.8 });
+    fx({ k: 'cut', id: m.id, y: r2(cy) });
+    fx({ k: 'sfx', n: 'snip', alt: 'dash' });
+  }
+  // A bite or a slash lands. Escape: the monster is only knocked back and dazed.
+  // Otherwise a ghost moth pops, and anything else is knocked out: it tumbles to the floor,
+  // lies there dizzy and fades away (Hunt scores it, with the combo).
+  function hitMonster(m, b, how) {
+    if (variant === 'escape') {
+      if (m.stun > 0.3) return;
+      repel(m, b.x, b.y, 6);
+      m.stun = Math.max(m.stun, DAZE);
+      if (m.kind === 'owl' && (m.st === 'swoop' || m.st === 'tell')) { m.st = 'recover'; m.t = 0.6; }
+      b.st.stuns++;
+      fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.stun, n: 8 });
+      fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: how === 'bite' ? 'BONK!' : 'SWAT!', rgb: b.rgb, life: 0.7 });
+      fx({ k: 'sfx', n: how === 'bite' ? 'block' : 'swat', alt: 'stun' });
+      return;
+    }
+    if (m.kind === 'ghost') { destroy(m, b, 'POP!'); return; }
+    knockMonster(m, b, how);
+  }
+  function knockMonster(m, b, how) {
+    const dx = Math.sign(m.x - b.x) || b.face || 1;
+    m.st = 'fall'; m.vy = -3; m.vx = dx * 2.5; m.stun = 0; m.t = 0; m.bounced = false; m.by = b.i; m.drop = false;
+    if (m.kind === 'spider') fx({ k: 'cut', id: m.id, y: r2(m.y) });   // its thread springs back up
+    b.st.kills++;
+    const text = score(m, b) || (how === 'bite' ? 'CHOMP!' : how === 'crystal' ? 'CRUNCH!' : 'SWAT!');
+    fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 14, sp: 3.5 });
+    fx({ k: 'popup', x: m.x, y: m.y - 0.7, text, rgb: how === 'bite' ? '255, 226, 120' : b.rgb, life: 0.8 });
+    fx({ k: 'shake', v: 0.15, s: b.i });
+    if (how === 'bite') { fx({ k: 'chomp', x: r2(m.x), y: r2(m.y), f: -dx }); fx({ k: 'sfx', n: 'bigChomp', alt: 'chomp' }); }
+    else fx({ k: 'sfx', n: how === 'crystal' ? 'chomp' : 'swat', alt: 'chomp' });
+  }
+  // a cut spider drops (hurting a bat it lands on), bounces once, lies out, fades and is gone
+  function updateDowned(m, dt) {
+    m.t += dt;
+    if (m.st === 'fall') {
+      const falling = m.vy > 0;
+      if (m.vx) {
+        const nx = m.x + m.vx * dt;
+        if (!hitsWall(nx, m.y, m.r * 0.6)) m.x = nx; else m.vx = 0;
+        m.vx *= 1 - 2 * dt;
+      }
+      m.vy = Math.min(16, m.vy + FALL_G * dt);
+      if (m.vy < 0 && hitsWall(m.x, m.y + m.vy * dt, m.r * 0.6)) m.vy = 0;
+      m.y += m.vy * dt;
+      if (falling && m.drop) {   // only a spider dropped off its cut thread lands on bats
+        for (const b of bats) {
+          if (b.ko || b.y < m.y || Math.hypot(b.x - m.x, b.y - m.y) >= m.r + R) continue;
+          hurtBat(b, m.x, m.y - 0.5);
+        }
+      }
+      if (solidAt(m.x, m.y + SPIDER_FOOT)) {
+        m.y = Math.floor(m.y + SPIDER_FOOT) - SPIDER_FOOT;
+        if (!m.bounced && m.vy > 3) {
+          m.bounced = true;
+          m.vy = -Math.min(4, m.vy * 0.3);
+          fx({ k: 'burst', x: m.x, y: m.y + SPIDER_FOOT, rgb: COL.dust, n: 9, sp: 2 });
+          fx({ k: 'sfx', n: 'thud', alt: 'crash' });
+        } else { m.st = 'out'; m.vy = 0; m.t = 0; }
+      } else if (m.y > L.h) m.dead = true;
+    } else if (m.t > SPIDER_OUT + SPIDER_FADE) m.dead = true;
   }
 
   // ---- Monsters --------------------------------------------------------------
@@ -739,6 +1017,7 @@
       if (m.id >= L.base && m.x < scroll.x - 4) { m.dead = true; m.gone = true; }   // a wave monster left far behind is gone
       return;
     }
+    if (downed(m)) { updateDowned(m, dt); return; }
     m.cd = Math.max(0, m.cd - dt);
     if (m.stun > 0) {
       m.stun = Math.max(0, m.stun - dt);
@@ -871,12 +1150,13 @@
     for (const b of bats) {
       if (b.ko) continue;
       for (const m of L.monsters) {
-        if (m.dead || m.st === 'leave' || Math.abs(m.x - b.x) > 1.5) continue;
+        if (m.dead || m.st === 'leave' || downed(m) || Math.abs(m.x - b.x) > 1.5) continue;
         const d = Math.hypot(m.x - b.x, m.y - b.y);
-        const biting = b.biteT > 0;
-        if (biting && d < m.r + R + 0.15 && (m.stun > 0 || SMALL[m.kind])) {
-          if (!tough) { destroy(m, b); continue; }
-          if (m.stun > 0) { bonk(m, b); continue; }
+        // the dive bite: a dashing bat knocks out whatever it touches, and isn't hurt by it
+        if (b.biteT > 0 && d < m.r + R + 0.15) {
+          if (tough) { if (m.stun <= 0.3) { hitMonster(m, b, 'bite'); b.vx *= -0.35; b.vy *= -0.35; b.dashT = 0; b.biteT = 0; } }
+          else hitMonster(m, b, 'bite');
+          continue;
         }
         if (d >= m.r + R) continue;
         if (m.stun > 0) {
@@ -893,22 +1173,23 @@
       }
     }
   }
-  function destroy(m, b) {
+  function destroy(m, b, word) {
     m.dead = true;
     b.st.kills++;
-    let text = m.kind === 'ghost' ? 'POP!' : 'CHOMP!';
-    if (variant === 'hunt') {
-      // quick kills in a row multiply the points
-      b.combo = b.comboT > 0 ? Math.min(MAX_COMBO, b.combo + 1) : 1;
-      b.comboT = COMBO_TIME;
-      b.st.combo = Math.max(b.st.combo, b.combo);
-      const pts = POINTS[m.kind] * b.combo;
-      b.st.points += pts;
-      text = `+${pts}` + (b.combo > 1 ? ` ×${b.combo}` : '');
-    }
+    const text = score(m, b) || word || (m.kind === 'ghost' ? 'POP!' : 'CHOMP!');
     fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'ghost' ? COL.ghost : m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 18, sp: 4 });
     fx({ k: 'popup', x: m.x, y: m.y - 0.6, text, rgb: b.rgb, life: 0.8 });
     fx({ k: 'sfx', n: b.combo > 2 && variant === 'hunt' ? 'bigChomp' : 'chomp', alt: 'chomp' });
+  }
+  // Hunt: points for a smash (quick kills in a row multiply them); returns the popup text
+  function score(m, b) {
+    if (variant !== 'hunt') return '';
+    b.combo = b.comboT > 0 ? Math.min(MAX_COMBO, b.combo + 1) : 1;
+    b.comboT = COMBO_TIME;
+    b.st.combo = Math.max(b.st.combo, b.combo);
+    const pts = POINTS[m.kind] * b.combo;
+    b.st.points += pts;
+    return `+${pts}` + (b.combo > 1 ? ` ×${b.combo}` : '');
   }
   // push a monster away from a point (Escape): fliers get shoved, spiders scurry up, crawlers turn round
   function repel(m, fromX, fromY, power) {
@@ -916,14 +1197,6 @@
     if (m.kind === 'owl' || m.kind === 'ghost') { m.vx = (dx / d) * power; m.vy = (dy / d) * power; }
     else if (m.kind === 'spider') { if (m.st !== 'hang') m.st = 'climb'; m.cd = Math.max(m.cd, 1.5); }
     else if (m.kind === 'crawler' && m.st === 'walk') { m.vx = Math.sign(dx || 1) * 1.1; m.cd = Math.max(m.cd, 1.5); }
-  }
-  function bonk(m, b) {
-    repel(m, b.x, b.y, 6);
-    m.stun = Math.max(m.stun, 0.6);
-    b.vx *= -0.35; b.vy *= -0.35; b.dashT = 0; b.biteT = 0;
-    fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.stun, n: 8 });
-    fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: 'BONK!', rgb: b.rgb, life: 0.7 });
-    fx({ k: 'sfx', n: 'block', alt: 'stun' });
   }
 
   // ---- Waves (Escape and Hunt) ------------------------------------------------
@@ -1040,7 +1313,7 @@
   function cpuInput(b, dt) {
     const ai = b.ai || (b.ai = newAi(buddyLevel(b.i)));
     const S = BUDDY[ai.skill] || BUDDY.normal;
-    ai.think -= dt; ai.sq -= dt; ai.dw -= dt;
+    ai.think -= dt; ai.sq -= dt; ai.dw -= dt; ai.sl -= dt;
     if (b.ko) {
       // a ghost tags along with the team
       const team = livingBats();
@@ -1073,18 +1346,26 @@
       if (t0 === undefined) seen.set(key, (t0 = clock + S.react * k * (0.6 + Math.random() * 0.8)));
       return clock >= t0;
     };
-    // threats: squeak to stun; dash into anything dazed or small (not in Escape: nothing breaks there)
+    // threats: squeak to see them, wing-slash anything in reach, dive-bite at medium range
+    // (a buddy notices late and fumbles some; in Escape a hit only knocks the monster back)
     for (const m of L.monsters) {
-      if (m.dead || m.st === 'leave' || Math.abs(m.x - b.x) > 6) { seen.delete(m.id); seen.delete(-1 - m.id); continue; }
+      if (m.dead || m.st === 'leave' || downed(m) || Math.abs(m.x - b.x) > 6) { seen.delete(m.id); seen.delete(-1 - m.id); seen.delete(-1e5 - m.id); continue; }
       const d = Math.hypot(m.x - b.x, m.y - b.y);
       const angry = m.st === 'tell' || m.st === 'swoop' || m.st === 'drop' || m.st === 'leap' || m.st === 'chase';
       const threat = m.stun <= 0 && (d < S.sq || (angry && d < S.angry));
-      if (noticed(m.id, threat) && b.echoes > 0 && b.cooldown <= 0 && ai.sq <= 0) {
-        if (Math.random() < S.sqMiss) ai.sq = 0.5 + Math.random() * 0.7;   // fumbled it
-        else { squeak(b); ai.sq = 0.5 + S.react; }
+      if (noticed(m.id, threat) && b.echoes > 2 && b.cooldown <= 0 && ai.sq <= 0 && m.lit < 0.3) {
+        ai.sq = 1.2 + S.react;
+        if (Math.random() >= S.sqMiss) squeak(b);   // just to see it: an echo stuns nothing
       }
-      const smash = variant !== 'escape' && (m.stun > 0.25 || (SMALL[m.kind] && d < 1.6)) && d < S.dashR;
-      if (noticed(-1 - m.id, smash, 0.7) && b.dashCd <= 0 && ai.dw <= 0) {
+      const reach = SLASH_R + m.r - 0.1, ok = m.stun <= 0.3;
+      if (noticed(-1 - m.id, ok && d < reach, 0.5) && b.slashCd <= 0 && ai.sl <= 0) {
+        if (Math.random() < S.dashMiss) ai.sl = 0.4 + Math.random() * 0.5;   // fumbled it
+        else {
+          const a = Math.atan2(m.y - b.y, m.x - b.x) + (Math.random() - 0.5) * 2 * S.aim * 0.6;
+          slash(b, Math.cos(a), Math.sin(a));
+          ai.sl = S.react * 0.5;
+        }
+      } else if (noticed(-1e5 - m.id, ok && d >= reach && d < S.dashR + 0.8, 0.7) && b.dashCd <= 0 && ai.dw <= 0) {
         if (Math.random() < S.dashMiss) ai.dw = 0.6 + Math.random() * 0.6;
         else {
           const a = Math.atan2(m.y - b.y, m.x - b.x) + (Math.random() - 0.5) * 2 * S.aim;
@@ -1096,6 +1377,39 @@
         ix -= ((m.x - b.x) / (d || 1)) * S.dodge; iy -= ((m.y - b.y) / (d || 1)) * S.dodge;
       }
     }
+    // bursting crystals: a careful buddy gets out from under a cracked one and away from
+    // its flying pieces (an easy one doesn't, and sometimes sets them off right overhead)
+    if (S.shard) {
+      for (const s of L.shards) {
+        if (s.st !== 'shake' || Math.abs(s.x - b.x) > 3.5) continue;
+        const dx = b.x - s.x, dy = b.y - (s.y + SHARD_LEN / 2), d = Math.hypot(dx, dy) || 1;
+        if (d > 3.2 || !noticed('s' + s.id, true, 0.5)) continue;
+        // sideways and back, never up into it
+        const k = S.shard * (1.3 - d / 3.2);
+        ix += (Math.abs(dx) < 0.2 ? (b.i % 2 ? 1 : -1) : Math.sign(dx)) * k * 1.4 + (dx < 0 ? -0.2 : 0) * k;
+        iy += Math.max(0, dy / d) * k * 0.3;
+      }
+      for (const bu of bursts) {
+        for (const p of bu.bits) {
+          if (!bitLive(bu, p) || Math.abs(p.x - b.x) > 4) continue;
+          // where is this piece closest to me over the next 0.35 s?
+          let best = 9, bt = 0;
+          for (let t = 0; t <= 0.35; t += 0.05) {
+            const a = bu.age + t, px = p.x0 + p.vx * a, py = p.y0 + p.vy * a + 0.25 * FALL_G * a * a;
+            const dd = Math.hypot(px - b.x, py - b.y);
+            if (dd < best) { best = dd; bt = a; }
+          }
+          if (best > 1) continue;
+          const vx = p.vx, vy = p.vy + 0.5 * FALL_G * bt, vl = Math.hypot(vx, vy) || 1;
+          const px = p.x0 + p.vx * bt, py = p.y0 + p.vy * bt + 0.25 * FALL_G * bt * bt;
+          // step off its line, to whichever side I'm already on
+          let nx = -vy / vl, ny = vx / vl;
+          if ((b.x - px) * nx + (b.y - py) * ny < 0) { nx = -nx; ny = -ny; }
+          const k = S.shard * (1.2 - best);
+          ix += nx * k * 2; iy += ny * k * 2;
+        }
+      }
+    }
     const len = Math.hypot(ix, iy);
     return len > 1 ? { ix: ix / len, iy: iy / len } : { ix, iy };
   }
@@ -1105,7 +1419,9 @@
     if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
     for (const p of popups) p.t += dt;
     popups = popups.filter((p) => p.t < p.life);
-    for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; p.life -= dt; }
+    for (const c of chomps) c.t += dt;
+    chomps = chomps.filter((c) => c.t < CHOMP_TIME);
+    for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; if (p.g) p.vy += p.g * dt; p.life -= dt; }
     particles = particles.filter((p) => p.life > 0);
   }
 
@@ -1125,7 +1441,7 @@
       t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
       sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime),
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
-        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo]),
+        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd)]),
       // wave monsters also carry their kind, home row and floor so a guest can make them
       m: L.monsters.filter((m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6 && !(m.gone && (m.goneSent = (m.goneSent || 0) + 1) > 30))
         .map((m) => {
@@ -1141,6 +1457,10 @@
     if (snapCount <= 5 || snapCount % 100 === 0) s.lk = bats.map((b) => b.look);
     // which moths and crystals are gone: when it changes, and once a second anyway
     if (gotDirty || snapCount % 20 === 0) { s.g = L.moths.map((m) => (m.got ? 1 : 0)).join('') + '|' + L.crystals.map((c) => (c.got ? 1 : 0)).join(''); gotDirty = false; }
+    // loose crystals (0 hanging, 1 cracked and shaking, 2 burst), and the bursts in flight:
+    // [shard, seed, whose echo, age, broken pieces] so a guest flies the very same pieces
+    if (shardDirty || snapCount % 20 === 0) { s.sh = L.shards.map((c) => SHARD_ST.indexOf(c.st)).join(''); shardDirty = false; }
+    if (bursts.length) s.bu = bursts.map((bu) => [bu.id, bu.seed, bu.by, r2(bu.age), bu.dead]);
     if (result) s.res = result;
     outbox = [];
     return s;
@@ -1154,6 +1474,7 @@
       seed = s.sd >>> 0;
       setRules(DIFF[s.lv] ? s.lv : difficulty, vr);
       L = buildLevel();
+      bursts = [];
     }
     if (s.hl != null) { hunt.left = s.hl; hunt.wave = s.hw | 0; }
     phase = PHASES[s.ph] || 'play'; phaseT = s.pt; countdown = s.cd;
@@ -1167,6 +1488,8 @@
       [b.tx, b.ty, b.vx, b.vy, b.face, b.hearts, b.echoes, b.hurt] = v;
       b.ko = !!v[8]; b.dashT = v[9]; b.dashCd = v[10]; b.safe = v[11]; b.cpuFlag = !!v[12]; b.loud = v[13];
       b.st.points = v[14] | 0; b.combo = v[15] | 0;   // (a guest only draws these)
+      if (v[16] > 0.1 && !(b.slashT > 0)) b.slashT = v[16];   // a wing slash: the guest plays it out itself
+      b.slashA = v[17] || 0; b.slashCd = v[18] || 0;
       if (s.lk && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
@@ -1185,6 +1508,26 @@
       const [mg, cg] = s.g.split('|');
       L.moths.forEach((m, k) => { m.got = mg[k] === '1'; });
       L.crystals.forEach((c, k) => { c.got = cg[k] === '1'; });
+    }
+    if (s.sh) {
+      L.shards.forEach((c, k) => {
+        const st = SHARD_ST[+s.sh[k]] || c.st;
+        if (st === 'shake' && c.st === 'hang') { c.t = SHARD_SHAKE; c.lit = 1; }
+        if (st === 'hang' && c.st !== 'hang') resetShard(c);
+        c.st = st;
+      });
+    }
+    for (const [id, sd, by, age, dead] of s.bu || []) {
+      const sh = L.shards[id];
+      if (!sh) continue;
+      let bu = bursts.find((o) => o.id === id);
+      if (!bu) {
+        if (age >= BIT_LIFE) continue;
+        sh.st = 'gone';
+        bursts.push(bu = makeBurst(sh, sd >>> 0, by, age));
+      } else if (Math.abs(bu.age - age) > 0.15) { bu.age = age; placeBits(bu); }
+      // pieces the host broke on a bat or a monster
+      for (const p of bu.bits) if ((dead & (1 << p.i)) && bitLive(bu, p)) breakBit(bu, p, 6);
     }
     const known = new Map(rings.map((g) => [g.id, g]));
     rings = s.r.map(([id, x, y, r, owner]) => {
@@ -1211,10 +1554,13 @@
       b.tx += b.vx * dt * 0.5; b.ty += b.vy * dt * 0.5;
       b.x += (b.tx - b.x) * k; b.y += (b.ty - b.y) * k;
       if (b.dashT > 0 && Math.random() < 0.6) particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, rgb: b.rgb });
+      b.slashT = Math.max(0, (b.slashT || 0) - dt);
     }
     for (const m of L.monsters) if (m.tx !== undefined && !m.dead) { m.x += (m.tx - m.x) * k; m.y += (m.ty - m.y) * k; }
     fadeLight(dt);
     advanceRings(dt, false);
+    shardDust(dt);
+    updateBursts(dt, false);
     inputTimer -= dt;
     if (inputTimer <= 0) {
       inputTimer = 1 / 30;
@@ -1281,6 +1627,8 @@
     if (in3d()) {
       threeD = window.EchoCave3D.render({
         W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, clock, wall: COL.wall, mokaColor: BATS[0].color, mokaR: R,
+        // the loose crystals, drawn among the ordinary ceiling crystals
+        hazards: shardViews(),
         bats: bats.map((b) => ({
           x: b.x, y: b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0), vx: b.vx, face: b.face, color: b.color, look: b.look || null,
           alpha: b.ko ? 0.38 : 1, flap: b.ko ? 6 : b.dashT > 0 ? 40 : 18,
@@ -1310,6 +1658,7 @@
         }
       }
       ctx.globalAlpha = 1;
+      drawDecor(tx0, tx1, ty0, ty1);
     }
     // walls: the faces that touch open air get glowing neon edges, in both views
     ctx.lineCap = 'round';
@@ -1371,6 +1720,7 @@
       ctx.beginPath(); ctx.moveTo(cx, cy - PX * 0.24); ctx.lineTo(cx + PX * 0.14, cy); ctx.lineTo(cx, cy + PX * 0.24); ctx.lineTo(cx - PX * 0.14, cy); ctx.closePath(); ctx.fill();
     }
 
+    for (const sh of L.shards) if (sh.st !== 'gone' && visX(sh.x)) drawShard(sh, threeD);
     for (const m of L.monsters) if (!m.dead && visX(m.x)) drawMonster(m);
 
     for (const ring of rings) {
@@ -1384,8 +1734,19 @@
     }
     for (const p of particles) {
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
-      ctx.fillRect(X(p.x) - 2, Y(p.y) - 2, 4, 4);
+      if (p.spark) {
+        // a crystal splinter: a little four-point glint that twinkles
+        const px = X(p.x), py = Y(p.y), r = 3 + 2.5 * Math.abs(Math.sin(p.life * 22));
+        ctx.beginPath(); ctx.moveTo(px, py - r); ctx.lineTo(px + r * 0.3, py); ctx.lineTo(px, py + r); ctx.lineTo(px - r * 0.3, py); ctx.closePath(); ctx.fill();
+        ctx.fillRect(px - r * 0.6, py - 0.75, r * 1.2, 1.5);
+      } else {
+        const sz = p.s || 4;
+        ctx.fillRect(X(p.x) - sz / 2, Y(p.y) - sz / 2, sz, sz);
+      }
     }
+    drawBits();
+    for (const c of chomps) drawChomp(c);
+    for (const b of bats) if (b.slashT > 0 && !b.ko) drawSlash(b);
     for (const b of bats) drawBat(b, threeD);
     for (const p of popups) {
       const k = p.t / p.life;
@@ -1405,17 +1766,19 @@
     if (rx < W) { ctx.fillStyle = 'rgba(4, 3, 16, 0.6)'; ctx.fillRect(rx, 0, W - rx, H); }
     drawVignette();
     drawHud();
-    if (touchUsed && localCount === 1 && phase === 'play') drawDashButton();
+    if (touchUsed && localCount === 1 && phase === 'play') { drawDashButton(); drawSlashButton(); }
     drawSticks();
   }
 
   // eyes that glow in the dark: they show even when the body doesn't
   function eyes(x, y, rgb, gap, size, a = 1) {
+    if (drawingKo) return;
     glow(x, y, PX * 0.45, rgb, 0.35 * a);
     ctx.fillStyle = `rgba(${rgb}, ${a})`;
     ctx.beginPath(); ctx.arc(x - gap, y, size, 0, Math.PI * 2); ctx.arc(x + gap, y, size, 0, Math.PI * 2); ctx.fill();
   }
   function stunStars(x, y) {
+    if (drawingKo) return;
     for (let k = 0; k < 3; k++) {
       const a = clock * 5 + k * 2.1;
       ctx.fillStyle = '#ffe278';
@@ -1424,10 +1787,240 @@
   }
   // the warning mark over a monster about to attack
   function alarm(x, y) {
+    if (drawingKo) return;
     const s = Math.max(12, PX * 0.5) * (1 + 0.15 * Math.sin(clock * 20));
     ctx.font = `700 ${s}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(5, 6, 15, 0.8)'; ctx.fillText('!', x + 1, y + 2);
     ctx.fillStyle = `rgb(${COL.danger})`; ctx.fillText('!', x, y);
+  }
+
+  // the same per-tile hash as the 3D view (and Explore), so ledge and ceiling crystals match
+  const tileHash = (x, y, k = 0) => { const v = Math.sin(x * 127.1 + y * 311.7 + k * 74.7) * 43758.5453; return v - Math.floor(v); };
+  const DECO_CYAN = '120, 235, 255', DECO_VIOLET = '175, 125, 255';
+  // 2D: the odd mushroom or crystal on a ledge, and crystals hanging from the ceiling
+  function drawDecor(tx0, tx1, ty0, ty1) {
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (!solid(tx, ty)) continue;
+        const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
+        if (a < 0.02) continue;
+        const hsh = tileHash(tx, ty), up = !solid(tx, ty - 1), down = !solid(tx, ty + 1);
+        const rgb = tileHash(tx, ty, 3) < 0.55 ? DECO_CYAN : DECO_VIOLET;
+        ctx.globalAlpha = Math.min(1, a * 1.25);
+        if (up && hsh < 0.12) {
+          const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3);
+          glow(X(tx + 0.5), Y(ty), PX * 0.6, DECO_CYAN, 0.35);
+          for (let j = 0; j < n; j++) {
+            const mx = X(tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6), sc = PX * (0.9 + tileHash(tx, ty, 10 + j)) * 0.1, my = Y(ty);
+            ctx.fillStyle = `rgba(${DECO_CYAN}, 0.75)`;
+            ctx.fillRect(mx - sc * 0.15, my - sc * 1.2, sc * 0.3, sc * 1.2);
+            ctx.fillStyle = `rgb(${DECO_CYAN})`;
+            ctx.beginPath(); ctx.ellipse(mx, my - sc * 1.2, sc * 0.7, sc * 0.45, 0, Math.PI, 0); ctx.fill();
+          }
+        } else if ((up && hsh < 0.2) || (down && hsh > 0.92)) {
+          const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3), hang = !(up && hsh < 0.2), by = Y(hang ? ty + 1 : ty), dir = hang ? 1 : -1;
+          glow(X(tx + 0.5), by + dir * PX * 0.2, PX * 0.7, rgb, 0.4);
+          for (let j = 0; j < n; j++) {
+            const hh = PX * (j ? 0.3 + tileHash(tx, ty, 10 + j) * 0.4 : 0.55 + tileHash(tx, ty, 11) * 0.35) * 0.55;
+            const cx = X(tx + 0.3 + tileHash(tx, ty, 20 + j) * 0.4), lean = (j - (n - 1) / 2) * 0.35 * hh, w = PX * 0.06;
+            ctx.fillStyle = `rgb(${rgb})`;
+            ctx.beginPath(); ctx.moveTo(cx - w, by); ctx.lineTo(cx - lean * 0.2 - w * 0.9, by + dir * hh * 0.72);
+            ctx.lineTo(cx - lean, by + dir * hh); ctx.lineTo(cx - lean * 0.2 + w * 0.9, by + dir * hh * 0.72); ctx.lineTo(cx + w, by); ctx.closePath(); ctx.fill();
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+            ctx.beginPath(); ctx.moveTo(cx, by); ctx.lineTo(cx - lean, by + dir * hh); ctx.lineTo(cx - lean * 0.2 + w * 0.9, by + dir * hh * 0.72); ctx.lineTo(cx + w, by); ctx.closePath(); ctx.fill();
+          }
+        }
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // a loose crystal's light: the echo on it, the rock it hangs from, or a bat close by
+  const shardLight = (s) => Math.max(s.lit, L.lit[Math.max(0, s.y - 1) * L.w + Math.floor(s.x)] || 0, nearGlow(s.x, s.y + SHARD_LEN / 2) * 2);
+  // shake offset (tiles), so 2D and 3D wobble the same
+  const shardWob = (s) => (s.st === 'shake' ? Math.sin(clock * 70 + s.seed) * 0.05 * (0.5 + 0.5 * (1 - s.t / SHARD_SHAKE)) : 0);
+  function shardViews() {
+    const out = [];
+    if (!L) return out;
+    for (const s of L.shards) if (s.st !== 'gone') out.push({ x: s.x, y: s.y, len: SHARD_LEN, wob: shardWob(s), a: shardLight(s), fall: s.st === 'shake' });
+    return out;
+  }
+  // A loose crystal looks like the ordinary ones (one long spike, two short, bright cyan).
+  // The one tell: when lit, a crack glints now and then. Cracked, it shakes and flickers.
+  // In 3D the clump itself is drawn by view3d.js; only the crack lines go on top.
+  function drawShard(s, threeD) {
+    const active = s.st !== 'hang', a = shardLight(s);
+    if (!active && a < 0.02) return;
+    const vis = active ? 1 : Math.min(1, a);
+    const cx = X(s.x + shardWob(s)), top = Y(s.y), L0 = SHARD_LEN * PX;
+    if (!threeD) {
+      glow(cx, top + L0 * 0.45, PX * 0.75, COL.crystal, (active ? 0.55 : 0.35) * vis);
+      const spike = (bx, len, w, lean) => {
+        ctx.fillStyle = `rgba(110, 225, 255, ${vis})`;
+        ctx.beginPath(); ctx.moveTo(bx - w, top); ctx.lineTo(bx - w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + lean, top + len);
+        ctx.lineTo(bx + w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + w, top); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = `rgba(235, 252, 255, ${vis * 0.55})`;
+        ctx.beginPath(); ctx.moveTo(bx, top); ctx.lineTo(bx + lean, top + len); ctx.lineTo(bx + w * 0.9 + lean * 0.7, top + len * 0.7); ctx.lineTo(bx + w, top); ctx.closePath(); ctx.fill();
+      };
+      spike(cx - PX * 0.16, L0 * 0.5, PX * 0.06, -PX * 0.05);
+      spike(cx + PX * 0.15, L0 * 0.42, PX * 0.055, PX * 0.04);
+      spike(cx, L0, PX * 0.09, 0);
+    }
+    ctx.lineWidth = 1;
+    if (s.st === 'hang' && vis > 0.3 && Math.sin(clock * 2.3 + s.seed * 1.7) > 0.93) {
+      ctx.strokeStyle = `rgba(255, 255, 255, ${vis * 0.8})`;
+      ctx.beginPath(); ctx.moveTo(cx - PX * 0.05, top + PX * 0.12); ctx.lineTo(cx + PX * 0.03, top + PX * 0.22); ctx.stroke();
+    }
+    if (s.st === 'shake') {
+      // hairline cracks flicker across the big spike
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * Math.sin(clock * 40)})`;
+      ctx.beginPath(); ctx.moveTo(cx - PX * 0.06, top + PX * 0.1); ctx.lineTo(cx + PX * 0.03, top + PX * 0.2); ctx.lineTo(cx - PX * 0.02, top + PX * 0.3); ctx.stroke();
+    }
+  }
+  // flying crystal pieces: bright, with a short glowing trail, always visible so you can dodge
+  function drawBits() {
+    for (const bu of bursts) {
+      const a = Math.min(1, (BIT_LIFE - bu.age) * 3);
+      if (a <= 0) continue;
+      for (const p of bu.bits) {
+        if (!bitLive(bu, p)) continue;
+        const x = X(p.x), y = Y(p.y), l = p.len * PX, vy = p.vy + 0.5 * FALL_G * bu.age;
+        glow(x, y, PX * 0.45, COL.crystal, 0.45 * a);
+        ctx.strokeStyle = `rgba(${COL.crystal}, ${0.35 * a})`;
+        ctx.lineWidth = PX * 0.06;
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - p.vx * PX * 0.05, y - vy * PX * 0.05); ctx.stroke();
+        ctx.save(); ctx.translate(x, y); ctx.rotate(p.spin);
+        ctx.fillStyle = `rgba(130, 235, 255, ${a})`;
+        ctx.beginPath(); ctx.moveTo(-l, 0); ctx.lineTo(0, -l * 0.28); ctx.lineTo(l, 0); ctx.lineTo(0, l * 0.28); ctx.closePath(); ctx.fill();
+        ctx.fillStyle = `rgba(240, 253, 255, ${a * 0.8})`;
+        ctx.beginPath(); ctx.moveTo(-l * 0.6, 0); ctx.lineTo(0, -l * 0.14); ctx.lineTo(l * 0.6, 0); ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
+    }
+  }
+  // A spider whose thread was cut: the two thread ends spring back, it drops, bounces,
+  // then lies on its back, legs in the air, X eyes and stars circling, and fades away
+  function drawDownedSpider(m, x, y, a) {
+    const k = m.st === 'fall' ? Math.min(1, m.t / 0.35) : 1, ease = 1 - (1 - k) * (1 - k);
+    if (k < 1 && m.cutY != null) {
+      const anchor = Y(m.hy - 0.45);
+      ctx.strokeStyle = `rgba(220, 230, 255, ${0.7 * (1 - k)})`; ctx.lineWidth = 1;
+      const upEnd = anchor + (Y(m.cutY) - anchor) * (1 - ease);
+      ctx.beginPath(); ctx.moveTo(x, anchor); ctx.quadraticCurveTo(x + PX * 0.12 * (1 - k), (anchor + upEnd) / 2, x, upEnd); ctx.stroke();
+      const lo = m.lowLen * (1 - ease) * PX;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.quadraticCurveTo(x - PX * 0.15 * k, y - lo / 2, x + PX * 0.08 * k, y - lo); ctx.stroke();
+    }
+    const fade = m.st === 'out' ? Math.max(0, 1 - Math.max(0, m.t - SPIDER_OUT) / SPIDER_FADE) : 1;
+    const vis = Math.max(0.55, a) * fade;
+    if (vis < 0.02) return;
+    ctx.save();
+    ctx.translate(x, y);
+    // tumbling while it falls, flat on its back once down
+    ctx.rotate(m.st === 'fall' ? Math.PI * Math.min(1, m.t * 3) : Math.PI);
+    ctx.strokeStyle = `rgba(${COL.danger}, ${vis * 0.8})`; ctx.lineWidth = 2;
+    const tw = m.st === 'out' ? Math.sin(clock * 9) * 0.06 : 0;
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 4; i++) {
+        const lx = side * PX * (0.08 + i * 0.02), ex = side * PX * (0.1 + i * 0.05 + tw * (i % 2 ? 1 : -1));
+        ctx.beginPath(); ctx.moveTo(lx * 0.5, 0); ctx.quadraticCurveTo(side * PX * 0.26, PX * 0.06, ex, PX * (0.2 + i * 0.015)); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = `rgba(60, 14, 28, ${vis})`;
+    ctx.beginPath(); ctx.ellipse(0, 0, PX * 0.17, PX * 0.13, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = `rgba(255, 210, 220, ${vis})`; ctx.lineWidth = 1.5;
+    for (const ex of [-1, 1]) {
+      const cx = x + ex * PX * 0.06, cy = y + PX * 0.02, r = PX * 0.03;
+      ctx.beginPath(); ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r); ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r); ctx.stroke();
+    }
+    if (m.st === 'out') {
+      ctx.fillStyle = `rgba(255, 236, 160, ${vis})`;
+      for (let j = 0; j < 2; j++) {
+        const ang = clock * 4 + j * Math.PI;
+        const sx = x + Math.cos(ang) * PX * 0.22, sy = y - PX * 0.28 + Math.sin(ang) * PX * 0.06, r = PX * 0.05;
+        ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.3, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.3, sy); ctx.closePath(); ctx.fill();
+      }
+    }
+  }
+
+  // a knocked-out owl or crawler: its body upside down, X eyes and stars, fading at the end
+  let drawingKo = false;
+  function drawDowned(m, x, y, a) {
+    const fade = m.st === 'out' ? Math.max(0, 1 - Math.max(0, m.t - SPIDER_OUT) / SPIDER_FADE) : 1;
+    const vis = Math.max(0.55, a) * fade;
+    if (vis < 0.02) return;
+    ctx.save();
+    ctx.globalAlpha = vis;
+    ctx.translate(x, y); ctx.rotate(m.st === 'fall' ? Math.PI * Math.min(1, m.t * 3) : Math.PI); ctx.translate(-x, -y);
+    drawingKo = true;
+    const st = m.st, lit = m.lit;
+    m.st = m.kind === 'owl' ? 'perch' : 'walk'; m.lit = 1;
+    try { drawMonster(m); } finally { m.st = st; m.lit = lit; drawingKo = false; }
+    ctx.restore();
+    koFace(x, y, vis, m.st === 'out');
+  }
+  function koFace(x, y, vis, stars) {
+    ctx.strokeStyle = `rgba(255, 210, 220, ${vis})`; ctx.lineWidth = 1.5;
+    for (const ex of [-1, 1]) {
+      const cx = x + ex * PX * 0.08, cy = y + PX * 0.02, r = PX * 0.035;
+      ctx.beginPath(); ctx.moveTo(cx - r, cy - r); ctx.lineTo(cx + r, cy + r); ctx.moveTo(cx + r, cy - r); ctx.lineTo(cx - r, cy + r); ctx.stroke();
+    }
+    if (!stars) return;
+    ctx.fillStyle = `rgba(255, 236, 160, ${vis})`;
+    for (let j = 0; j < 2; j++) {
+      const ang = clock * 4 + j * Math.PI;
+      const sx = x + Math.cos(ang) * PX * 0.25, sy = y - PX * 0.32 + Math.sin(ang) * PX * 0.06, r = PX * 0.05;
+      ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.3, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.3, sy); ctx.closePath(); ctx.fill();
+    }
+  }
+  // The wing slash: a bright crescent sweeping across the arc in front of the bat, with feathery streaks
+  function drawSlash(b) {
+    const x = X(b.x), y = Y(b.y), k = 1 - b.slashT / SLASH_TIME, a = b.slashA, half = SLASH_ARC / 2;
+    const sweep = -half + half * 2 * Math.min(1, k * 1.6);   // the leading edge
+    const fade = k < 0.6 ? 1 : (1 - k) / 0.4, RR = SLASH_R * PX;
+    const dir = Math.cos(a) >= 0 ? 1 : -1;   // top to bottom on the side the bat faces
+    const a0 = a - half * dir, a1 = a + sweep * dir;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const [w, al, rr] of [[RR * 0.42, 0.18, 0.74], [RR * 0.22, 0.45, 0.8], [RR * 0.08, 0.95, 0.86]]) {
+      ctx.strokeStyle = `rgba(230, 220, 255, ${al * fade})`;
+      ctx.lineWidth = w;
+      ctx.beginPath(); ctx.arc(x, y, RR * rr, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
+    }
+    ctx.strokeStyle = `rgba(190, 160, 255, ${0.7 * fade})`;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 3; i++) {
+      const ang = a1 - dir * (0.18 + i * 0.16), r0 = RR * (0.55 + i * 0.12), r1 = RR * (1.0 + i * 0.05);
+      ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  // The dive bite: a big toothy mouth snapping shut on the monster
+  function drawChomp(c) {
+    const x = X(c.x), y = Y(c.y), k = c.t / CHOMP_TIME, shut = Math.min(1, k / 0.35), fade = k < 0.6 ? 1 : (1 - k) / 0.4;
+    const r = PX * (0.62 + 0.12 * Math.sin(Math.min(1, k * 2) * Math.PI)), open = 0.85 * (1 - shut) + 0.04;
+    ctx.save();
+    ctx.translate(x, y); ctx.scale(-c.face, 1); ctx.globalAlpha = fade;
+    ctx.fillStyle = '#ffd34d';
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, open, Math.PI * 2 - open); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#7a3d00'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = '#ffffff';
+    for (const j of [-1, 1]) {
+      for (let i = 0; i < 3; i++) {
+        const t = r * (0.35 + i * 0.22), ang = open * j, tx = Math.cos(ang) * t, ty = Math.sin(ang) * t, n = -j;
+        ctx.beginPath(); ctx.moveTo(tx - r * 0.07, ty); ctx.lineTo(tx + r * 0.07, ty); ctx.lineTo(tx, ty + n * r * 0.16); ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.fillStyle = '#2a1030';
+    ctx.beginPath(); ctx.arc(-r * 0.1, -r * 0.5, r * 0.11, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    if (shut >= 1) {
+      ctx.strokeStyle = `rgba(255, 245, 210, ${fade})`; ctx.lineWidth = 3;
+      for (let i = 0; i < 5; i++) {
+        const ang = i / 5 * Math.PI * 2 + 0.3, r0 = PX * 0.8, r1 = PX * (0.95 + k * 0.6);
+        ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
+      }
+    }
   }
 
   function drawMonster(m) {
@@ -1436,6 +2029,7 @@
     let a = Math.max(m.lit, nearGlow(m.x, m.y) * 2.5, stunned ? 0.75 : 0, angry ? 0.55 : 0);
     if (m.kind === 'ghost') a = Math.max(a, 0.5);
     a = Math.min(1, a);
+    if (downed(m)) { if (m.kind === 'spider') drawDownedSpider(m, x, y, a); else drawDowned(m, x, y, a); return; }
     if (m.kind === 'spider') {
       if (a > 0.02) {
         ctx.strokeStyle = `rgba(220, 230, 255, ${a * 0.5})`; ctx.lineWidth = 1;
@@ -1759,16 +2353,16 @@
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6 + 5);
       ctx.fillStyle = '#f4f1ff'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6);
       const intro = {
-        classic: ['Fly together to the green light!', 'Squeak to see and stun monsters, then dash into them.'],
-        escape: ['ESCAPE: run for the green light!', 'Monsters can\'t be beaten. Squeak to push them back.'],
+        classic: ['Fly together to the green light!', 'Squeak to see. Bite (dash) or slash monsters to knock them out.'],
+        escape: ['ESCAPE: run for the green light!', 'Monsters can\'t be beaten. Bite or slash to knock them back.'],
         hunt: [`HUNT: smash monsters for points! ${Math.floor(HUNT_TIME / 60)}:${String(HUNT_TIME % 60).padStart(2, '0')} on the clock`, 'Quick kills in a row multiply. Reach the light early for a bonus.'],
       }[variant];
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
         : [...intro,
           'Reach a lantern to revive fallen teammates.',
-          localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash`
-            : touchUsed ? 'Drag to fly · tap to squeak · flick or DASH to dash' : 'WASD/arrows fly · F/Space squeak · G dash · Esc pause'];
+          localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash · keys: slash`
+            : touchUsed ? 'Drag to fly · tap to squeak · DASH bites · SLASH swats' : 'WASD/arrows fly · F/Space squeak · G dash-bite · X/H wing slash · Esc pause'];
       lines.forEach((t, k) => {
         ctx.font = `${k ? 600 : 700} ${size * (k ? 0.8 : 1)}px ${FONT}`;
         ctx.fillStyle = 'rgba(5, 6, 15, 0.75)'; ctx.fillText(t, cx + 1, mid + size * (1.1 + k * 1.25) + 2);
@@ -1823,6 +2417,34 @@
     ctx.closePath(); ctx.fill();
   }
 
+  // The SLASH button: a smaller glassy disc next to DASH, a white wing-swoosh on it, a ring that refills
+  function drawSlashButton() {
+    const b = slashButton(), me = localBat(0);
+    if (!me || me.ko) return;
+    const ready = me.slashCd <= 0, k = ready ? 1 : 0.55;
+    const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(90, 170, 235, ${0.55 * k})`); g.addColorStop(1, `rgba(20, 50, 100, ${0.72 * k})`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    glowStroke('rgba(50, 110, 170, 0.7)', 3, ready ? 'rgba(120, 210, 255, 1)' : null);
+    ctx.strokeStyle = '#7fd4ff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - me.slashCd / SLASH_COOLDOWN)); ctx.stroke();
+    ctx.font = `700 ${Math.round(b.r * 0.42)}px ${FONT}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = ready ? '#f1fbff' : 'rgba(241, 251, 255, 0.45)';
+    ctx.fillText('SLASH', b.x, b.y + b.r * 0.3);
+    // a crescent swoosh above the word
+    ctx.strokeStyle = ready ? '#ffffff' : 'rgba(255, 255, 255, 0.45)'; ctx.lineCap = 'round';
+    ctx.lineWidth = Math.max(2, b.r * 0.1);
+    ctx.beginPath(); ctx.arc(b.x - b.r * 0.1, b.y + b.r * 0.15, b.r * 0.55, -Math.PI * 0.85, -Math.PI * 0.25); ctx.stroke();
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      const ang = -Math.PI * (0.8 - i * 0.12), r0 = b.r * 0.3, r1 = b.r * 0.45;
+      ctx.beginPath(); ctx.moveTo(b.x - b.r * 0.1 + Math.cos(ang) * r0, b.y + b.r * 0.15 + Math.sin(ang) * r0); ctx.lineTo(b.x - b.r * 0.1 + Math.cos(ang) * r1, b.y + b.r * 0.15 + Math.sin(ang) * r1); ctx.stroke();
+    }
+  }
+
   function drawSticks() {
     const rect = canvas.getBoundingClientRect();
     for (const s of sticks.values()) {
@@ -1870,10 +2492,10 @@
       };
     }
     const lines = r.players.map((p) => ({
-      text: `${who(p)}: ${s(p.moths, 'moth')} · ${p.stuns} stunned${v === 'classic' ? ` · ${p.kills} destroyed` : ''}${p.kos ? ` · down ${p.kos}×` : ''}`,
+      text: `${who(p)}: ${s(p.moths, 'moth')} · ${v === 'classic' ? `${p.kills} knocked out` : `${p.stuns} knocked back`}${p.kos ? ` · down ${p.kos}×` : ''}`,
       got: p.alive && r.won, color: p.color,
     }));
-    lines.push({ text: `Team: ${r.team.moths} of ${r.mothsTotal} moths · ${r.team.stuns} stunned${v === 'classic' ? ` · ${r.team.kills} destroyed` : ''} · ${r.time}s`, got: r.won });
+    lines.push({ text: `Team: ${r.team.moths} of ${r.mothsTotal} moths · ${v === 'classic' ? `${r.team.kills} knocked out` : `${r.team.stuns} knocked back`} · ${r.time}s`, got: r.won });
     return {
       title: v === 'escape' ? (r.won ? 'You escaped!' : 'Caught in the dark') : (r.won ? 'Out of the dark together!' : 'The monsters won'),
       big: r.won ? `Try ${r.triesUsed} of ${r.triesTotal}` : `${Math.round(r.progress * 100)}% of the way · ${r.checkpoint}/${r.checkpoints} lanterns`,
@@ -1903,6 +2525,7 @@
     get tries() { return tries; },
     get checkpoint() { return cpIndex; },
     get rings() { return rings; },
+    get bursts() { return bursts; },
     get result() { return result; },
     VIEW_W,
     autopilot(i, on = true, skill = 'pro') {
