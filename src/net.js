@@ -143,6 +143,7 @@
   // ---- Room state ------------------------------------------------------------
   // role: null | 'host' | 'guest'
   let role = null, link = null, code = '', cpus = 1, playing = false;
+  let level = 'normal', arenaMode = 'shift';
   let guests = [];          // host: [{ id }] in join order; slot = index + 1
   let roster = [];          // guest: [{ slot, me }] from the host's lobby message
   let mySlot = -1;
@@ -183,12 +184,19 @@
       b.classList.toggle('on', n === cpus);
       b.setAttribute('aria-pressed', String(n === cpus));
     });
+    for (const [attr, val] of [['roomLevel', level], ['roomArena', arenaMode]]) {
+      document.querySelectorAll(`[data-${attr === 'roomLevel' ? 'room-level' : 'room-arena'}]`).forEach((b) => {
+        b.disabled = !host;
+        b.classList.toggle('on', b.dataset[attr] === val);
+        b.setAttribute('aria-pressed', String(b.dataset[attr] === val));
+      });
+    }
     $('room-start').hidden = !host;
     if (host) status(guests.length ? `${people} players in the room.` : 'Share the code with a friend. You can also start now against CPU bats.');
   }
 
   function lobbyMessage() {
-    return { t: 'lobby', code, cpus, players: [0, ...guests.map((g, k) => k + 1)] };
+    return { t: 'lobby', code, cpus, level, arenaMode, players: [0, ...guests.map((g, k) => k + 1)] };
   }
   function sendLobby() {
     guests.forEach((g, k) => link.send(g.id, { ...lobbyMessage(), you: k + 1 }));
@@ -254,9 +262,9 @@
     if (role !== 'host') return;
     playing = true;
     const total = 1 + guests.length + cpus;
-    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot }); });
+    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode }); });
     window.EchoGame.startDuel({
-      mode: 'host', remotes: guests.length, cpus, online: true,
+      mode: 'host', remotes: guests.length, cpus, level, arenaMode, online: true,
       net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
       onResult: (result) => guests.forEach((g) => link.send(g.id, { t: 'end', result })),
       rematch: startMatch,
@@ -308,6 +316,8 @@
       case 'lobby':
         mySlot = msg.you;
         cpus = msg.cpus;
+        if (msg.level) level = msg.level;
+        if (msg.arenaMode) arenaMode = msg.arenaMode;
         roster = msg.players.map((slot) => ({ slot, me: slot === mySlot }));
         show('room');
         renderRoom();
@@ -323,7 +333,7 @@
         playing = true;
         mySlot = msg.slot;
         window.EchoGame.startDuel({
-          mode: 'client', mySlot: msg.slot, total: msg.total, online: true,
+          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, online: true,
           net: { send: (m) => link?.send(m) },
           lobby: backToLobby,
           leave: () => leave(),
@@ -381,6 +391,18 @@
   $('join-form').addEventListener('submit', (e) => { e.preventDefault(); joinRoom($('join-code').value); });
   $('join-code').addEventListener('input', (e) => { e.target.value = cleanCode(e.target.value); });
   $('room-start').addEventListener('click', startMatch);
+  document.querySelectorAll('[data-room-level]').forEach((b) => b.addEventListener('click', () => {
+    if (role !== 'host') return;
+    level = b.dataset.roomLevel;
+    renderRoom();
+    sendLobby();
+  }));
+  document.querySelectorAll('[data-room-arena]').forEach((b) => b.addEventListener('click', () => {
+    if (role !== 'host') return;
+    arenaMode = b.dataset.roomArena;
+    renderRoom();
+    sendLobby();
+  }));
   document.querySelectorAll('[data-room-cpus]').forEach((b) => b.addEventListener('click', () => {
     if (role !== 'host') return;
     cpus = +b.dataset.roomCpus;

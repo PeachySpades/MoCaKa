@@ -159,6 +159,7 @@ button.link {
 .picker { display: flex; align-items: center; gap: 6px; }
 .picker span { font: 600 0.8rem/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim); margin-right: 4px; }
 button.chip {
+  white-space: nowrap;
   min-width: 44px;
   min-height: 40px;
   padding: 8px 12px;
@@ -230,6 +231,11 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
   .modes { gap: 8px; }
   .modes button { padding: 11px 30px; }
   .code { font-size: 2.2rem; }
+  /* the battle and room setup have lots of options: keep them on one screen */
+  #battle-screen .lede, #battle-screen .eyebrow { display: none; }
+  .pickers { gap: 6px 18px; }
+  .picker span { font-size: 0.7rem; }
+  button.chip { min-height: 34px; min-width: 38px; padding: 5px 10px; font-size: 0.85rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -118,65 +118,159 @@
     warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
   };
 
-  // Battle music: a looping minor-key groove (Am F Dm E) with drums, bass,
-  // arpeggio and a soft pad, scheduled slightly ahead on the audio clock.
+  // Music: a small jazz combo, synthesized on the fly. Electric piano comps
+  // the chords, a walking bass plays quarter notes, brushes and a ride
+  // cymbal swing the eighths, and a vibraphone noodles a short phrase now
+  // and then. Each game mode has its own tune; notes are scheduled slightly
+  // ahead on the audio clock so timing stays tight.
   const music = (() => {
-    const STEP = 60 / 120 / 4;
     const hz = (m) => 440 * 2 ** ((m - 69) / 12);
-    const CHORDS = [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]];
-    const BASS = [33, 29, 26, 28];
-    const BASS_STEPS = [0, 3, 6, 8, 10, 11, 14];
-    const ARP = [0, 1, 2, 1, 2, 0, 1, 2, 0, 1, 2, 1, 2, 0, 2, 1];
-    let timer = null, bus = null, next = 0, step = 0;
-    function voice(m, t, dur, type, vol, cutoff) {
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.type = type; o.frequency.value = hz(m);
-      let out = o;
-      if (cutoff) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff; out = o.connect(f); }
+    // chords: [bass root, [piano voicing], [scale for the vibes]]
+    const C = (root, voicing, scale) => ({ root, voicing, scale });
+    const TUNES = {
+      // up-tempo minor swing: Am7 Am7 Dm7 Dm7 Bm7b5 E7 Am7 E7alt
+      battle: { bpm: 152, swing: 0.64, ride: true, vibes: 0.5, chords: [
+        C(45, [55, 60, 64, 67], [69, 72, 74, 76, 79]), C(45, [55, 60, 64, 69], [69, 72, 74, 76, 79]),
+        C(38, [53, 57, 60, 64], [62, 65, 69, 72, 74]), C(38, [53, 57, 60, 65], [62, 65, 67, 69, 72]),
+        C(47, [57, 62, 65, 69], [71, 74, 77, 79]), C(40, [56, 62, 65, 68], [68, 71, 74, 76, 77]),
+        C(45, [55, 60, 64, 67], [69, 72, 74, 76, 79]), C(40, [56, 60, 62, 65], [68, 71, 72, 76]),
+      ] },
+      // slow and cool for exploring: Cmaj7 Am7 Dm7 G7, Em7 A7 Dm7 G13
+      explore: { bpm: 84, swing: 0.62, ride: false, vibes: 0.35, chords: [
+        C(36, [52, 55, 59, 62], [72, 74, 76, 79, 81]), C(45, [55, 60, 64, 67], [69, 72, 74, 76, 79]),
+        C(38, [53, 57, 60, 64], [69, 72, 74, 77]), C(43, [53, 57, 59, 64], [71, 74, 76, 77, 79]),
+        C(40, [55, 59, 62, 66], [71, 74, 76, 79]), C(45, [55, 61, 64, 67], [69, 73, 76, 79]),
+        C(38, [53, 57, 60, 64], [69, 72, 74, 77]), C(43, [53, 59, 64, 65], [71, 74, 76, 79]),
+      ] },
+      // medium bounce for Cave Run: Fmaj7 D7 Gm7 C7, Am7 D7 Gm7 C7
+      run: { bpm: 124, swing: 0.63, ride: true, vibes: 0.45, chords: [
+        C(41, [57, 60, 64, 65], [72, 74, 76, 77, 79]), C(38, [54, 57, 60, 64], [69, 72, 74, 78]),
+        C(43, [53, 58, 62, 65], [70, 74, 77, 79]), C(36, [52, 58, 62, 64], [70, 72, 74, 76, 79]),
+        C(45, [55, 60, 64, 67], [69, 72, 74, 76]), C(38, [54, 57, 60, 64], [69, 72, 74, 78]),
+        C(43, [53, 58, 62, 65], [70, 74, 77, 79]), C(36, [52, 58, 62, 64], [70, 72, 74, 76]),
+      ] },
+    };
+    let timer = null, bus = null, tune = null, style = null, next = 0, step = 0, phrase = null;
+
+    function env(g, t, vol, attack, decay) {
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.02, dur / 4));
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-      out.connect(g).connect(bus);
-      o.start(t); o.stop(t + dur + 0.02);
+      g.gain.exponentialRampToValueAtTime(vol, t + attack);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
     }
-    function kick(t) {
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.frequency.setValueAtTime(140, t);
-      o.frequency.exponentialRampToValueAtTime(42, t + 0.16);
-      g.gain.setValueAtTime(0.5, t);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    // electric piano: a sine with a quieter bell partial, soft attack, long fade
+    function piano(m, t, vol, dur) {
+      const g = ac.createGain(), f = ac.createBiquadFilter();
+      f.type = 'lowpass'; f.frequency.value = 2200;
+      for (const [mult, v] of [[1, 1], [2, 0.18], [3.01, 0.05]]) {
+        const o = ac.createOscillator(), og = ac.createGain();
+        o.frequency.value = hz(m) * mult; o.detune.value = (Math.random() - 0.5) * 6;
+        og.gain.value = v;
+        o.connect(og).connect(g);
+        o.start(t); o.stop(t + dur + 0.05);
+      }
+      env(g, t, vol, 0.012, dur);
+      g.connect(f).connect(bus);
+    }
+    // upright-ish bass: triangle + sine, plucked
+    function bass(m, t, vol) {
+      const g = ac.createGain(), f = ac.createBiquadFilter();
+      f.type = 'lowpass'; f.frequency.value = 520;
+      for (const [type, mult, v] of [['triangle', 1, 1], ['sine', 2, 0.3]]) {
+        const o = ac.createOscillator(), og = ac.createGain();
+        o.type = type; o.frequency.value = hz(m) * mult; og.gain.value = v;
+        o.connect(og).connect(g); o.start(t); o.stop(t + 0.6);
+      }
+      env(g, t, vol, 0.01, 0.5);
+      g.connect(f).connect(bus);
+    }
+    // vibraphone: pure sine with a slow shimmer
+    function vibes(m, t, vol) {
+      const o = ac.createOscillator(), g = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain();
+      o.frequency.value = hz(m);
+      lfo.frequency.value = 5.5; lg.gain.value = vol * 0.35;
+      lfo.connect(lg).connect(g.gain);
+      env(g, t, vol, 0.006, 0.9);
       o.connect(g).connect(bus);
-      o.start(t); o.stop(t + 0.25);
+      o.start(t); o.stop(t + 1); lfo.start(t); lfo.stop(t + 1);
     }
+    function drums(kind, t, vol) {
+      if (kind === 'kick') {
+        const o = ac.createOscillator(), g = ac.createGain();
+        o.frequency.setValueAtTime(90, t); o.frequency.exponentialRampToValueAtTime(48, t + 0.12);
+        env(g, t, vol, 0.005, 0.16);
+        o.connect(g).connect(bus); o.start(t); o.stop(t + 0.2);
+        return;
+      }
+      const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+      src.buffer = noiseBuf;
+      if (kind === 'ride') { f.type = 'highpass'; f.frequency.value = 7000; env(g, t, vol, 0.002, 0.28); }
+      else if (kind === 'hat') { f.type = 'highpass'; f.frequency.value = 8000; env(g, t, vol, 0.002, 0.05); }
+      else { f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.6; env(g, t, vol, 0.03, 0.22); }   // brush swish
+      src.connect(f).connect(g).connect(bus);
+      src.start(t, Math.random() * 0.3); src.stop(t + 0.4);
+    }
+
+    // one eighth note: beat = which quarter in the bar (0..3), off = the swung "and"
     function play(s, t) {
-      const bar = Math.floor(s / 16) % 4, k = s % 16, chord = CHORDS[bar];
-      if (k % 4 === 0) kick(t);
-      if (k === 4 || k === 12) hiss(0.16, 0.16, 1200, t, bus, 'bandpass');
-      if (k % 2 === 1) hiss(0.04, 0.05, 7000, t, bus);
-      if (BASS_STEPS.includes(k)) voice(BASS[bar] + (k === 10 ? 12 : 0), t, STEP * 1.6, 'sawtooth', 0.12, 420);
-      // the arpeggio sits out every fourth bar so the loop breathes
-      if (s % 64 < 48) voice(chord[ARP[k]] + 12, t, 0.14, 'square', 0.028, 2600);
-      if (k === 0) chord.forEach((m) => voice(m, t, STEP * 16, 'triangle', 0.035));
+      const beat8 = s % 8, bar = Math.floor(s / 8) % tune.chords.length;
+      const ch = tune.chords[bar], nextCh = tune.chords[(bar + 1) % tune.chords.length];
+      const onBeat = beat8 % 2 === 0, q = beat8 >> 1;
+      // walking bass on every beat: root, chord tones, then a step into the next root
+      if (onBeat) {
+        const tones = ch.voicing.map((m) => ch.root + ((m - ch.root) % 12 + 12) % 12).filter((m) => m !== ch.root);
+        const pick = () => tones[Math.floor(Math.random() * tones.length)];
+        const walk = [ch.root, pick(), pick(), nextCh.root + (Math.random() < 0.5 ? 1 : -1)];
+        bass(walk[q], t, 0.22);
+      }
+      // drums: ride "ding, ding-a ding", hat on 2 and 4, brushes, a feathered kick
+      if (tune.ride) {
+        if (onBeat) drums('ride', t, q % 2 ? 0.05 : 0.04);
+        else if (q === 1 || q === 3) drums('ride', t, 0.03);
+      } else if (!onBeat) drums('ride', t, 0.015);
+      if (onBeat && (q === 1 || q === 3)) { drums('hat', t, 0.05); drums('brush', t, tune.ride ? 0.05 : 0.07); }
+      if (onBeat && q === 0) drums('kick', t, 0.12);
+      // piano comps: Charleston hits (beat 1, and the "and" of 2), sometimes an anticipation on the "and" of 4
+      const vol = 0.045;
+      const comp = (beat8 === 0 && Math.random() < 0.8) || beat8 === 3 || (beat8 === 7 && Math.random() < 0.3);
+      if (comp) {
+        const v = beat8 === 7 ? nextCh.voicing : ch.voicing;
+        v.forEach((m, k) => piano(m, t + k * 0.008, vol, beat8 === 0 ? 1.1 : 0.45));
+      }
+      // vibes: every few bars, a short phrase walking through the chord's scale
+      if (beat8 === 0 && !phrase && Math.random() < tune.vibes * 0.5) phrase = { left: 4 + Math.floor(Math.random() * 6), i: Math.floor(Math.random() * ch.scale.length) };
+      if (phrase && Math.random() < 0.7) {
+        phrase.i = Math.max(0, Math.min(ch.scale.length - 1, phrase.i + (Math.random() < 0.5 ? -1 : 1) * (Math.random() < 0.3 ? 2 : 1)));
+        vibes(ch.scale[phrase.i], t, 0.05);
+        if (--phrase.left <= 0) phrase = null;
+      }
     }
     function schedule() {
-      while (next < ac.currentTime + 0.15) { play(step, next); next += STEP; step = (step + 1) % 128; }
+      const eighth = 60 / tune.bpm / 2;
+      while (next < ac.currentTime + 0.2) {
+        const swung = step % 2 ? eighth * 2 * (tune.swing - 0.5) : 0;
+        play(step, next + swung);
+        next += eighth;
+        step++;
+      }
+    }
+    function stop() {
+      if (!timer) return;
+      clearInterval(timer); timer = null; style = null;
+      const old = bus;
+      old.gain.setTargetAtTime(0.0001, ac.currentTime, 0.15);
+      setTimeout(() => old.disconnect(), 1200);
     }
     return {
-      // idempotent: call every frame with whether music should be playing
-      set(on) {
-        if (on && !timer && ac && ac.state === 'running') {
-          bus = ac.createGain();
-          bus.gain.value = 1;
-          bus.connect(musicBus);
-          next = ac.currentTime + 0.08; step = 0;
-          timer = setInterval(schedule, 30);
-          schedule();
-        } else if (!on && timer) {
-          clearInterval(timer); timer = null;
-          const old = bus;
-          old.gain.setTargetAtTime(0.0001, ac.currentTime, 0.12);
-          setTimeout(() => old.disconnect(), 800);
-        }
+      // idempotent: call every frame with the tune that should be playing, or false
+      set(want) {
+        if (!want) { stop(); return; }
+        if (want === style || !ac || ac.state !== 'running') return;
+        stop();
+        style = want; tune = TUNES[want];
+        bus = ac.createGain(); bus.gain.value = 1; bus.connect(musicBus);
+        next = ac.currentTime + 0.1; step = 0; phrase = null;
+        timer = setInterval(schedule, 40);
+        schedule();
       },
     };
   })();
@@ -975,12 +1069,14 @@
   $('end-button').addEventListener('click', primaryAction);
   $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
   // Battle setup: how many players share this device, and how many CPU bats join (2–4 bats in total)
-  const pick = { humans: 1, cpus: 1 };
+  const pick = { humans: 1, cpus: 1, level: store.get('echo-cpu-level') || 'normal', arenaMode: store.get('echo-arena-mode') || 'shift' };
   function renderPickers() {
     document.querySelectorAll('[data-humans]').forEach((b) => {
       b.classList.toggle('on', +b.dataset.humans === pick.humans);
       b.setAttribute('aria-pressed', String(+b.dataset.humans === pick.humans));
     });
+    document.querySelectorAll('[data-level]').forEach((b) => { b.classList.toggle('on', b.dataset.level === pick.level); b.setAttribute('aria-pressed', String(b.dataset.level === pick.level)); });
+    document.querySelectorAll('[data-arena]').forEach((b) => { b.classList.toggle('on', b.dataset.arena === pick.arenaMode); b.setAttribute('aria-pressed', String(b.dataset.arena === pick.arenaMode)); });
     document.querySelectorAll('[data-cpus]').forEach((b) => {
       const n = +b.dataset.cpus, ok = pick.humans + n >= 2 && pick.humans + n <= 4;
       b.disabled = !ok;
@@ -997,6 +1093,12 @@
   document.querySelectorAll('[data-cpus]').forEach((b) => b.addEventListener('click', () => {
     pick.cpus = +b.dataset.cpus;
     renderPickers();
+  }));
+  document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('click', () => {
+    pick.level = b.dataset.level; store.set('echo-cpu-level', pick.level); renderPickers();
+  }));
+  document.querySelectorAll('[data-arena]').forEach((b) => b.addEventListener('click', () => {
+    pick.arenaMode = b.dataset.arena; store.set('echo-arena-mode', pick.arenaMode); renderPickers();
   }));
   renderPickers();
   $('duel-start').addEventListener('click', () => startDuel(pick));
@@ -1027,8 +1129,10 @@
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
-    // music only plays during a running battle (the battle turns it on each frame)
-    if (!(mode === 'duel' && state === 'duel') || portrait.matches || document.hidden) music.set(false);
+    // each mode has its own tune; the battle picks its own each frame
+    if (portrait.matches || document.hidden) music.set(false);
+    else if (state === 'play') music.set(mode === 'run' ? 'run' : 'explore');
+    else if (!(mode === 'duel' && state === 'duel')) music.set(false);
     if (mode === 'duel' && state === 'duel') {
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
       if (!portrait.matches && !document.hidden) window.EchoDuel.frame(dt, ctx, W, H);

@@ -21,7 +21,22 @@
   // stuns longer, but costs 2 echoes and misses anything off to the side.
   // Letting go early just squeaks as usual.
   const BEAM_CHARGE = 0.7, BEAM_LEN = 15, BEAM_WIDTH = 0.3, BEAM_STUN = 2.3, BEAM_COST = 2, BEAM_LIFE = 0.4, BEAM_COOLDOWN = 0.8, CHARGE_SLOW = 0.55;
-  const SHIFT_EVERY = 25, SHIFT_WARNING = 3, SHIFT_FADE = 0.9, OPEN_SKY_CHANCE = 0.3;
+  const SHIFT_FADE = 0.9, OPEN_SKY_CHANCE = 0.3;
+  // Arena modes, picked before a match:
+  //   shift  every 25s the cave jumps to the next arena (sometimes Open Sky)
+  //   morph  the cave slowly reshapes itself, a few walls at a time, into the next one
+  //   chaos  the cave jumps every 9 seconds
+  //   sky    Open Sky the whole match: no cave at all
+  const ARENA_MODES = {
+    shift: { every: 25, warning: 3 },
+    morph: { every: 0 },
+    chaos: { every: 9, warning: 2 },
+    sky: { every: 0 },
+  };
+  const MORPH_STEP = 0.3, MORPH_PAUSE = 5, NO_SHIFT = 9999;
+  let arenaMode = 'shift';
+  const shiftEvery = () => ARENA_MODES[arenaMode].every || NO_SHIFT;
+  const shiftWarning = () => ARENA_MODES[arenaMode].warning || 0;
   const EAT_PULL = 0.35, EAT_TIME = 1.1;
   const SNAPSHOT_EVERY = 0.05;
   const POWERS = {
@@ -71,6 +86,7 @@
     arena = a;
     lit = new Float32Array(w * h);
     litBy = new Uint8Array(w * h);
+    tileGlow = new Float32Array(w * h);
     crystals = a.crystalSpots.map((c) => ({ ...c, on: false, timer: 0.5 + Math.random() * 2.5, phase: Math.random() * 6 }));
     powerups = [];
     ambient = Array.from({ length: 46 }, () => ({
@@ -114,7 +130,7 @@
   let beams = [], beamId = 0;
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
   let lit, litBy;
-  let clock = 0, countdown = 0, over = false, banner = null, shiftTimer = SHIFT_EVERY, shift = null;
+  let clock = 0, countdown = 0, over = false, banner = null, shiftTimer = NO_SHIFT, shift = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, snapTimer = 0, outbox = [], ringId = 0, ended = false;
   const remoteInput = new Map();         // slot -> { ix, iy }
 
@@ -132,6 +148,8 @@
     mode = o.mode || 'local';
     net = o.net || null;
     onEnd = o.onEnd || null;
+    cpuLevel = CPU_LEVELS[o.level] || CPU_LEVELS.normal;
+    arenaMode = ARENA_MODES[o.arenaMode] ? o.arenaMode : 'shift';
     bats = [];
     if (mode === 'local') {
       localCount = Math.max(1, Math.min(4, o.humans || 1));
@@ -152,7 +170,8 @@
       for (let i = 0; i < (o.total || 2); i++) bats.push(makeBat(i, i === o.mySlot ? 'local' : 'remote', 0));
     }
     const caves = arenaKinds(false);
-    loadArena(mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)]);
+    loadArena(arenaMode === 'sky' ? arenaKinds(true)[0] : mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)]);
+    morph = arenaMode === 'morph' && mode !== 'client' ? { target: -1, timer: 0, pause: MORPH_PAUSE } : null;
     bats.forEach((b, k) => {
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
@@ -160,7 +179,7 @@
     rings = []; beams = []; particles = []; popups = []; eats = []; outbox = [];
     remoteInput.clear();
     clock = 0; countdown = 3; over = false; ended = false; shift = null; slowmo = 0; shake = 0;
-    shiftTimer = SHIFT_EVERY; powerTimer = 6 + Math.random() * 3; snapTimer = 0;
+    shiftTimer = shiftEvery(); powerTimer = 6 + Math.random() * 3; snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     keys.clear();
     sticks.clear();
@@ -184,6 +203,7 @@
     else if (ev.k === 'feathers') {
       for (let k = 0; k < 4; k++) particles.push({ x: ev.x, y: ev.y, vx: ev.face * (1 + Math.random()), vy: -0.5 - Math.random(), life: 1, rgb: ev.rgb, size: 6, feather: true });
     } else if (ev.k === 'slowmo') slowmo = ev.t;
+    else if (ev.k === 'tiles') for (const [k, v] of ev.c) { if (arena.grid[k] !== v) { arena.grid[k] = v; tileGlow[k] = 1; } }
   }
   function burst(x, y, rgb, n, speed = 3, size = 4) {
     for (let k = 0; k < n; k++) {
@@ -346,20 +366,51 @@
   }
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 
+  // CPU levels. CPUs play fair: like you, they only know where a rival is
+  // when sound shows it (a lit spot, a squeak or dash they hear, a stunned
+  // bat's dizzy stars) or it's right next to them. Otherwise they hunt from
+  // the last place they noticed it, or roam and squeak to look around.
+  const CPU_LEVELS = {
+    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3 },
+    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5 },
+    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7 },
+  };
+  let cpuLevel = CPU_LEVELS.normal;
+  function randomOpenSpot() {
+    const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
+    return spots[Math.floor(Math.random() * spots.length)];
+  }
   function cpuInput(b, dt) {
-    const ai = b.ai;
+    const ai = b.ai, lv = cpuLevel;
+    ai.known = ai.known || new Map();
     const foes = bats.filter((o) => o !== b && !o.dead);
     if (!foes.length) return { ix: 0, iy: 0 };
-    foes.sort((p, q) => dist(p, b) - dist(q, b));
-    const nearest = foes[0];
+    // what this bat can perceive right now
+    for (const o of foes) {
+      const noticed = o.stun > 0 || o.seen > 0.25 || litAt(o.x, o.y) > 0.35 || dist(o, b) < lv.sense;
+      if (noticed) ai.known.set(o.i, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, age: 0, bat: o });
+    }
+    for (const [i, k] of ai.known) {
+      k.age += dt;
+      if (k.age > lv.memory || k.bat.dead) ai.known.delete(i);
+    }
+    const known = [...ai.known.values()].sort((p, q) => dist(p, b) - dist(q, b));
+    const fresh = known.filter((k) => k.age < 0.4);
     const snack = foes.find((o) => o.stun > 0 && dist(o, b) < 9);
     let target = snack;
-    if (!target) target = powerups.filter((p) => dist(p, b) < 6).sort((p, q) => dist(p, b) - dist(q, b))[0];
+    if (!target) target = powerups.filter((p) => dist(p, b) < lv.power && litAt(p.x, p.y) + (dist(p, b) < 2.5 ? 1 : 0) > 0.2).sort((p, q) => dist(p, b) - dist(q, b))[0];
     if (!target && b.echoes === 0) target = crystals.filter((c) => c.on).sort((p, q) => dist(p, b) - dist(q, b))[0];
+    if (!target && known.length) {
+      // head for where a rival was last noticed, circling a little
+      if (!ai.wander || Math.random() < dt * 0.4) ai.wander = { dx: (Math.random() - 0.5) * 4, dy: (Math.random() - 0.5) * 3 };
+      const k = known[0];
+      target = { x: k.x + ai.wander.dx * Math.min(1, k.age), y: k.y + ai.wander.dy * Math.min(1, k.age) };
+      if (solid(Math.floor(target.x), Math.floor(target.y))) target = k;
+    }
     if (!target) {
-      if (!ai.wander || Math.random() < dt * 0.4) ai.wander = { dx: (Math.random() - 0.5) * 6, dy: (Math.random() - 0.5) * 4 };
-      target = { x: nearest.x + ai.wander.dx, y: nearest.y + ai.wander.dy };
-      if (solid(Math.floor(target.x), Math.floor(target.y))) target = nearest;
+      // nobody noticed: roam the cave
+      if (!ai.roam || dist(ai.roam, b) < 1 || Math.random() < dt * 0.25) ai.roam = randomOpenSpot() || { x: b.x, y: b.y };
+      target = ai.roam;
     }
     ai.repath -= dt;
     if (ai.repath <= 0) { ai.path = bfsPath(b.x, b.y, target.x, target.y); ai.repath = 0.25; }
@@ -367,29 +418,37 @@
     const next = ai.path[0] || target;
     const dx = next.x - b.x, dy = next.y - b.y, len = Math.hypot(dx, dy) || 1;
 
-    // a charged beam fires at its target once ready (or fizzles into a squeak if the target hid)
+    // a charged beam fires where the target was last noticed (or fizzles into a squeak if it's gone)
     if (b.charging && ai.beamAt) {
-      const t = ai.beamAt;
       if (b.charge >= BEAM_CHARGE) {
-        const tx = t.x - b.x, ty = t.y - b.y, d = Math.hypot(tx, ty) || 1;
+        const k = ai.known.get(ai.beamAt.i);
         b.charging = false; b.charge = 0; ai.beamAt = null;
-        if (!t.dead && d < BEAM_LEN && castRay(b.x, b.y, tx / d, ty / d, d) >= d - 0.3) fireBeam(b, { ux: tx / d, uy: ty / d });
-        else squeak(b);
+        if (k) {
+          const lead = lv.aimErr < 0.1 ? 0.25 : 0;   // hard CPUs lead a moving target a little
+          const ax = k.x + k.vx * lead - b.x, ay = k.y + k.vy * lead - b.y, d = Math.hypot(ax, ay) || 1;
+          const err = (Math.random() - 0.5) * 2 * lv.aimErr, c = Math.cos(err), sn = Math.sin(err);
+          const ux = (ax * c - ay * sn) / d, uy = (ax * sn + ay * c) / d;
+          if (d < BEAM_LEN && castRay(b.x, b.y, ux, uy, d) >= d - 0.3) fireBeam(b, { ux, uy });
+          else squeak(b);
+        } else squeak(b);
       }
     }
     ai.think -= dt;
     if (ai.think <= 0) {
-      ai.think = 0.35;
-      if (!b.charging && !snack && (b.echoes >= BEAM_COST || b.power === 'frenzy') && b.cooldown <= 0) {
-        const far = foes.find((o) => o.safe <= 0 && o.stun <= 0 && dist(o, b) > RING_MAX * 0.7 && dist(o, b) < BEAM_LEN - 2
-          && castRay(b.x, b.y, (o.x - b.x) / dist(o, b), (o.y - b.y) / dist(o, b), dist(o, b)) >= dist(o, b) - 0.3);
-        if (far && Math.random() < 0.5) { ai.beamAt = far; startCharge(b); }
+      ai.think = lv.think * (0.8 + Math.random() * 0.4);
+      const canShoot = b.echoes > 0 || b.power === 'frenzy';
+      if (lv.beam && !b.charging && !snack && (b.echoes >= BEAM_COST || b.power === 'frenzy') && b.cooldown <= 0) {
+        const far = fresh.find((k) => k.bat.safe <= 0 && k.bat.stun <= 0 && dist(k, b) > RING_MAX * 0.7 && dist(k, b) < BEAM_LEN - 2
+          && castRay(b.x, b.y, (k.x - b.x) / dist(k, b), (k.y - b.y) / dist(k, b), dist(k, b)) >= dist(k, b) - 0.3);
+        if (far && Math.random() < lv.beam) { ai.beamAt = far.bat; startCharge(b); }
       }
-      const shootable = foes.some((o) => o.safe <= 0 && o.stun <= 0 && dist(o, b) < RING_MAX * 0.7);
-      if (shootable && !b.charging && (b.echoes > 0 || b.power === 'frenzy') && Math.random() < 0.4) squeak(b);
-      if (snack && dist(snack, b) < 4 && b.dashCd <= 0 && Math.random() < 0.6) dash(b, dx / len, dy / len);
+      const shootable = fresh.some((k) => k.bat.safe <= 0 && k.bat.stun <= 0 && dist(k, b) < RING_MAX * 0.7);
+      if (shootable && !b.charging && canShoot && Math.random() < lv.squeak) squeak(b);
+      // lost everyone: sometimes squeak just to look around
+      else if (!known.length && !b.charging && b.echoes > 2 && Math.random() < lv.search) squeak(b);
+      if (snack && dist(snack, b) < 4 && b.dashCd <= 0 && Math.random() < lv.dash) dash(b, dx / len, dy / len);
     }
-    const speed = snack ? 1 : 0.8;
+    const speed = (snack ? 1 : 0.85) * lv.speed;
     return { ix: (dx / len) * speed, iy: (dy / len) * speed };
   }
 
@@ -546,10 +605,45 @@
     }
   }
 
+  // Morph mode: every few moments a handful of tiles turn into the next
+  // arena's layout, never closing on a bat, until the whole cave has become it.
+  function updateMorph(dt) {
+    if (!morph) return;
+    if (morph.pause > 0) { morph.pause -= dt; if (morph.pause <= 0) morph.target = nextArenaIndex(); return; }
+    morph.timer -= dt;
+    if (morph.timer > 0) return;
+    morph.timer = MORPH_STEP;
+    const def = window.ECHO_ARENAS[morph.target], { w, h, grid } = arena, diff = [];
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      if (grid[y * w + x] !== (def.map[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
+    }
+    if (!diff.length) {
+      const keepLit = lit, keepBy = litBy, keepPowers = powerups;
+      loadArena(morph.target);
+      lit = keepLit; litBy = keepBy; powerups = keepPowers;
+      fx({ k: 'banner', text: arena.def.name, rgb: arena.theme.wall, t: 2 });
+      morph.pause = MORPH_PAUSE;
+      return;
+    }
+    const changes = [];
+    for (let n = 0; n < 3 && diff.length; n++) {
+      const k = diff.splice(Math.floor(Math.random() * diff.length), 1)[0];
+      const v = grid[k] ? 0 : 1, cx = (k % w) + 0.5, cy = Math.floor(k / w) + 0.5;
+      if (v && bats.some((b) => !b.dead && Math.abs(b.x - cx) < 1 && Math.abs(b.y - cy) < 1)) continue;
+      changes.push([k, v]);
+      if (v) {
+        powerups = powerups.filter((p) => Math.floor(p.x) !== k % w || Math.floor(p.y) !== Math.floor(k / w));
+        for (const c of crystals) if (Math.floor(c.x) === k % w && Math.floor(c.y) === Math.floor(k / w)) { c.on = false; c.timer = 99; }
+      }
+    }
+    if (changes.length) fx({ k: 'tiles', c: changes });
+  }
+
   function respawn(b) {
     const foes = bats.filter((o) => o !== b && !o.dead);
     const score = (s) => foes.length ? Math.min(...foes.map((o) => Math.hypot(o.x - s.x, o.y - s.y))) : 0;
-    const s = arena.spawns.slice().sort((p, q) => score(q) - score(p))[0];
+    const free = arena.spawns.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
+    const s = (free.length ? free : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
     Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0 });
   }
 
@@ -566,7 +660,7 @@
   }
 
   function spawnPowerup() {
-    const spots = arena.open.filter((p) => bats.every((b) => b.dead || dist(p, b) > 5) && powerups.every((q) => dist(p, q) > 4));
+    const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)) && bats.every((b) => b.dead || dist(p, b) > 5) && powerups.every((q) => dist(p, q) > 4));
     if (!spots.length) return;
     const s = spots[Math.floor(Math.random() * spots.length)];
     powerups.push({ x: s.x, y: s.y, type: POWER_TYPES[Math.floor(Math.random() * POWER_TYPES.length)], phase: Math.random() * 6 });
@@ -603,11 +697,12 @@
         return;
       }
       shiftTimer -= rawDt;
-      if (shiftTimer <= SHIFT_WARNING && shiftTimer + rawDt > SHIFT_WARNING) {
-        fx({ k: 'banner', text: 'The cave is shifting!', rgb: arena.theme.wall, t: SHIFT_WARNING });
+      if (shiftTimer <= shiftWarning() && shiftTimer + rawDt > shiftWarning()) {
+        fx({ k: 'banner', text: 'The cave is shifting!', rgb: arena.theme.wall, t: shiftWarning() });
         fx({ k: 'sfx', n: 'warn' });
       }
-      if (shiftTimer <= 0) { shift = { t: 0, swapped: false }; shiftTimer = SHIFT_EVERY; }
+      if (shiftTimer <= 0) { shift = { t: 0, swapped: false }; shiftTimer = shiftEvery(); }
+      updateMorph(rawDt);
     }
 
     for (const b of bats) {
@@ -639,7 +734,7 @@
         const acc = ACCEL * (fast ? 1.3 : 1);
         b.vx += ix * acc * dt; b.vy += iy * acc * dt;
       } else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
-      const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1);
+      const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1) * (b.ctrl === 'cpu' ? cpuLevel.speed : 1);
       const sp = Math.hypot(b.vx, b.vy);
       if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
@@ -742,6 +837,7 @@
     shake = Math.max(0, shake - dt);
     if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
     updateAmbient(dt);
+    if (tileGlow) for (let k = 0; k < tileGlow.length; k++) if (tileGlow[k] > 0) tileGlow[k] = Math.max(0, tileGlow[k] - dt * 0.6);
     for (const p of popups) p.t += dt;
     popups = popups.filter((p) => p.t < p.life);
     for (const p of particles) {
@@ -756,7 +852,7 @@
   const r2 = (v) => Math.round(v * 100) / 100;
   function snapshot() {
     const s = {
-      t: 's', a: arenaIndex, st: r2(shiftTimer), sh: shift ? r2(shift.t) : -1, cd: r2(countdown), over,
+      t: 's', a: arenaIndex, am: arenaMode, st: r2(shiftTimer), sh: shift ? r2(shift.t) : -1, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
         r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1]),
       bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
@@ -773,6 +869,7 @@
   function applySnapshot(s) {
     if (mode !== 'client' || !active) return;
     if (s.a !== arenaIndex) loadArena(s.a);
+    if (s.am) arenaMode = s.am;
     shiftTimer = s.st;
     shift = s.sh >= 0 ? { t: s.sh, swapped: true } : null;
     countdown = s.cd;
@@ -907,6 +1004,17 @@
       ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), s * 0.6, 0, Math.PI * 2); ctx.fill();
     }
 
+    // Morph mode: tiles that just changed shimmer faintly, so you can feel the cave moving
+    for (let k = 0; k < tileGlow.length; k++) {
+      const g = tileGlow[k];
+      if (g < 0.02) continue;
+      const x = X(k % arena.w), y = Y(Math.floor(k / arena.w));
+      if (arena.grid[k]) { ctx.fillStyle = `rgba(${th.fill}, ${g * 0.5})`; ctx.fillRect(x, y, PX + 0.5, PX + 0.5); }
+      ctx.strokeStyle = `rgba(${th.wall}, ${g * 0.35})`;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x + 1, y + 1, PX - 2, PX - 2);
+    }
+
     // walls: nothing in the dark, bright where sound or a nearby bat's senses reach
     for (let ty = 0; ty < arena.h; ty++) {
       for (let tx = 0; tx < arena.w; tx++) {
@@ -1012,7 +1120,7 @@
     }
 
     // the shift warning pulses the screen edge instead of revealing the map
-    if (shiftTimer < SHIFT_WARNING && !over && !shift) {
+    if (shiftTimer < shiftWarning() && !over && !shift) {
       const a = 0.25 + 0.25 * Math.sin(clock * 14);
       ctx.strokeStyle = `rgba(${th.wall}, ${a})`;
       ctx.lineWidth = 6;
@@ -1209,7 +1317,8 @@
     ctx.font = `600 ${Math.max(11, size * 0.7)}px ${FONT}`;
     ctx.fillStyle = 'rgba(232, 236, 255, 0.55)';
     const secs = Math.max(0, Math.ceil(shiftTimer));
-    ctx.fillText(`${arena.def.name}  ·  first to ${WIN_SCORE} bites  ·  cave shifts in ${secs}s`, W / 2, H - Math.max(11, H * 0.03));
+    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `cave shifts in ${secs}s`;
+    ctx.fillText(`${arena.def.name}  ·  first to ${WIN_SCORE} bites  ·  ${tail}`, W / 2, H - Math.max(11, H * 0.03));
 
     const mid = oy + (arena.h * PX) / 2;
     if (countdown > 0) {
@@ -1263,7 +1372,7 @@
   function frame(dt, context, width, height) {
     ctx = context; W = width; H = height;
     if (active) { if (mode === 'client') clientUpdate(dt); else update(dt); }
-    window.EchoAudio?.music?.set(active && !over && !document.hidden);
+    window.EchoAudio?.music?.set(active && !over && !document.hidden && 'battle');
     if (arena) render();
   }
 
