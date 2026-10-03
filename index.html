@@ -31,6 +31,7 @@
     <div class="modes">
       <button id="play-button" type="button">Explore<small id="best-cave">Explore one cave</small></button>
       <button id="run-button" type="button" class="alt">Cave Run<small id="best-run">Endless side-scroller</small></button>
+      <button id="battle-button" type="button" class="alt battle">Battle<small>Stun and eat a rival</small></button>
     </div>
   </div>
 </section>
@@ -47,6 +48,23 @@
   </div>
 </section>
 
+<section id="battle-screen" class="overlay" hidden>
+  <div class="panel">
+    <p class="eyebrow">Battle</p>
+    <h2>Bat Brawl</h2>
+    <p class="lede">Hit your rival with a squeak to stun them, then fly into them to take a bite. First to 3 bites wins. Echoes are scarce, so grab the crystals.</p>
+    <div class="modes">
+      <button id="duel-cpu" type="button">vs CPU<small>Practice on your own</small></button>
+      <button id="duel-2p" type="button" class="alt battle">2 players<small>Share one screen</small></button>
+    </div>
+    <ul class="legend">
+      <li><span class="dot mo"></span>Mo: left half of the screen, or WASD to fly and F to squeak</li>
+      <li><span class="dot ka"></span>Ka: right half of the screen, or arrow keys to fly and Enter to squeak</li>
+    </ul>
+    <button id="duel-back" type="button" class="link">Back</button>
+  </div>
+</section>
+
 <section id="rotate-screen" class="overlay">
   <div class="panel">
     <div class="phone" aria-hidden="true"></div>
@@ -56,5 +74,6 @@
 <!-- END GAME MARKUP -->
 <script src="src/level.js"></script>
 <script src="src/game.js"></script>
+<script src="src/duel.js"></script>
 </body>
 </html>

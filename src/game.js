@@ -67,8 +67,10 @@
     crash() { tone(180, 40, 0.35, 'triangle', 0.12); },
     empty() { tone(260, 180, 0.12, 'sine', 0.06); },
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
+    chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
   };
+  window.EchoAudio = { sfx, unlock: unlockAudio };
 
   // ---- Level -------------------------------------------------------------
   let L;          // the current level's runtime state
@@ -126,8 +128,9 @@
   }
 
   // ---- Game state --------------------------------------------------------
-  let state = 'title';          // title | play | win | lose
-  let mode = 'cave';            // cave (explore a hand-made cave) | run (side-scroller)
+  let state = 'title';          // title | play | win | lose | duel
+  let mode = 'cave';            // cave (explore a hand-made cave) | run (side-scroller) | duel (battle)
+  let duelCpu = true;
   let levelIndex = 0;
   let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
 
@@ -160,6 +163,7 @@
 
   addEventListener('keydown', (e) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (state === 'duel' || mode === 'duel') return;   // the battle handles its own keys
     if (state !== 'play') {
       if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) primaryAction();
       return;
@@ -801,6 +805,7 @@
   function showOverlay(which) {
     $('title-screen').hidden = which !== 'title';
     $('end-screen').hidden = which !== 'end';
+    $('battle-screen').hidden = which !== 'battle';
   }
 
   function enterGame(newMode) {
@@ -812,13 +817,42 @@
 
   function primaryAction() {
     unlockAudio();
-    if (state === 'title') enterGame('cave');
+    if (mode === 'duel') startDuel(duelCpu);
+    else if (state === 'title') enterGame('cave');
     else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
+  }
+
+  function startDuel(cpu) {
+    unlockAudio();
+    try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
+    try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
+    mode = 'duel';
+    duelCpu = cpu;
+    state = 'duel';
+    L = null;
+    showOverlay(null);
+    window.EchoDuel.start({ cpu, onEnd: endDuel });
+  }
+
+  function endDuel({ winner, color, scores, cpu }) {
+    sfx.win();
+    $('end-title').textContent = cpu && winner === 'CPU' ? 'The CPU ate you!' : `${winner} wins!`;
+    $('end-stars').textContent = `${scores[0]} – ${scores[1]}`;
+    $('end-stars').setAttribute('aria-label', `Score ${scores[0]} to ${scores[1]}`);
+    $('end-detail').innerHTML = `<li class="got">${winner} took ${Math.max(...scores)} bites first</li>`;
+    $('end-button').textContent = 'Rematch';
+    showOverlay('end');
   }
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
+  $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
+  $('duel-cpu').addEventListener('click', () => startDuel(true));
+  $('duel-2p').addEventListener('click', () => startDuel(false));
+  $('duel-back').addEventListener('click', () => showOverlay('title'));
   $('menu-button').addEventListener('click', () => {
+    window.EchoDuel.stop();
+    mode = 'cave';
     state = 'title';
     L = null;
     showOverlay('title');
@@ -838,6 +872,12 @@
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    if (mode === 'duel' && state === 'duel') {
+      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+      if (!portrait.matches && !document.hidden) window.EchoDuel.frame(dt, ctx, W, H);
+      requestAnimationFrame(frame);
+      return;
+    }
     if (state === 'play' && !portrait.matches && !document.hidden) update(dt);
     else if (state === 'win' || state === 'lose') {
       clock += dt;
