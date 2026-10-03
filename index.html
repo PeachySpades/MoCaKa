@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Echo Caves</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0d1f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Echo Caves">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nunito:wght@600;700;800&family=Righteous&display=swap">
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+<!-- BEGIN GAME MARKUP -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-bat" viewBox="0 0 64 40">
+      <path fill="currentColor" d="M32 9c-3 0-5 1-6 3l-2-6-2 8C16 8 8 7 1 12c5 1 9 4 10 9 3-2 7-2 10 0 1-2 3-3 5-2 1 5 3 9 6 9s5-4 6-9c2-1 4 0 5 2 3-2 7-2 10 0 1-5 5-8 10-9-7-5-15-4-21 2l-2-8-2 6c-1-2-3-3-6-3z"/>
+      <circle cx="28.5" cy="17" r="2.4" fill="#fff"/><circle cx="35.5" cy="17" r="2.4" fill="#fff"/>
+      <circle cx="29" cy="17.4" r="1.1" fill="#12142a"/><circle cx="36" cy="17.4" r="1.1" fill="#12142a"/>
+    </symbol>
+    <symbol id="i-echo" viewBox="0 0 48 48">
+      <circle cx="12" cy="24" r="5" fill="currentColor"/>
+      <path d="M20 14a14 14 0 0 1 0 20M27 8a22 22 0 0 1 0 32M34 3a30 30 0 0 1 0 42" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="i-run" viewBox="0 0 48 48">
+      <path d="M8 10l14 14-14 14M24 10l14 14-14 14" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-fang" viewBox="0 0 48 48">
+      <path d="M6 10h36c0 8-4 12-8 12l-3 16-5-16h-4l-5 16-3-16c-4 0-8-4-8-12z" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-globe" viewBox="0 0 48 48">
+      <g fill="none" stroke="currentColor" stroke-width="4"><circle cx="24" cy="24" r="18"/><ellipse cx="24" cy="24" rx="8" ry="18"/><path d="M6 24h36M10 14h28M10 34h28"/></g>
+    </symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 17.5a3 3 0 1 1-2-2.8V5l11-2v11.5a3 3 0 1 1-2-2.8V6.5l-7 1.3z" fill="currentColor"/></symbol>
+  </defs>
+</svg>
+
+<canvas id="game3d" aria-hidden="true" style="display:none"></canvas>
+<canvas id="game" aria-label="Echo Caves game"></canvas>
+<button id="sound-toggle" class="round" type="button" aria-label="Sound" aria-pressed="true"><svg><use href="#i-note"/></svg></button>
+<button id="pause-button" class="round" type="button" aria-label="Pause" hidden><svg><use href="#i-pause"/></svg></button>
+
+<section id="title-screen" class="overlay">
+  <div class="card wide">
+    <h1 class="logo">Echo <span>Caves!</span></h1>
+    <p class="lede">Moka the bat is lost in the dark. Squeak to see, but every squeak wakes the cave.</p>
+    <div class="mode-grid">
+      <button id="play-button" type="button" class="mode" style="--c: var(--echo)">
+        <svg><use href="#i-echo"/></svg><b>Explore</b><small id="best-cave">Explore one cave</small>
+      </button>
+      <button id="run-button" type="button" class="mode" style="--c: var(--ca)">
+        <svg><use href="#i-run"/></svg><b>Cave Run</b><small id="best-run">Endless side-scroller</small>
+      </button>
+      <button id="battle-button" type="button" class="mode" style="--c: var(--ka)">
+        <svg><use href="#i-fang"/></svg><b>Battle</b><small>You vs CPU bats</small>
+      </button>
+      <button id="online-button" type="button" class="mode" style="--c: var(--yellow)">
+        <svg><use href="#i-globe"/></svg><b>Online</b><small>Friends join with a code</small>
+      </button>
+    </div>
+  </div>
+</section>
+
+<section id="battle-screen" class="overlay" hidden>
+  <div class="card wide">
+    <div class="setup-head">
+      <h2 class="logo">Bat <span>Brawl!</span></h2>
+      <div class="arena-pick">
+        <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
+        <div class="arena-text"><b id="arena-name">Shifting</b><small id="arena-desc">A new cave every 25s</small></div>
+        <div class="arrows">
+          <button id="arena-prev" type="button" class="round sm" aria-label="Previous arena">‹</button>
+          <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
+        </div>
+      </div>
+    </div>
+    <div class="slots">
+      <div class="slot you" style="--c: var(--mo)">
+        <span class="tag">P1</span><span class="badge">You</span>
+        <svg class="avatar"><use href="#i-bat"/></svg>
+        <b>Mo</b><span class="ready">Ready!</span>
+      </div>
+      <button type="button" class="slot" data-slot="1" style="--c: var(--ka)"><span class="tag">P2</span><svg class="avatar"><use href="#i-bat"/></svg><b>Ka</b><span class="add">+ Add CPU</span></button>
+      <button type="button" class="slot" data-slot="2" style="--c: var(--ca)"><span class="tag">P3</span><svg class="avatar"><use href="#i-bat"/></svg><b>Ca</b><span class="add">+ Add CPU</span></button>
+      <button type="button" class="slot" data-slot="3" style="--c: var(--bo)"><span class="tag">P4</span><svg class="avatar"><use href="#i-bat"/></svg><b>Bo</b><span class="add">+ Add CPU</span></button>
+    </div>
+    <div class="segs">
+    <div class="seg" role="group" aria-label="CPU level">
+      <span>CPU</span>
+      <button type="button" class="chip" data-level="easy">Easy</button>
+      <button type="button" class="chip" data-level="normal">Normal</button>
+      <button type="button" class="chip" data-level="hard">Hard</button>
+    </div>
+    <div class="seg" role="group" aria-label="View">
+      <span>View</span>
+      <button type="button" class="chip" data-view="3d">3D</button>
+      <button type="button" class="chip" data-view="2d">2D</button>
+    </div>
+    </div>
+    <div class="actions">
+      <button id="duel-back" type="button" class="btn ghost">Back</button>
+      <button id="duel-start" type="button" class="btn primary">Let's fight ›</button>
+    </div>
+  </div>
+</section>
+
+<section id="online-screen" class="overlay" hidden>
+  <div class="card">
+    <h2 class="logo">Online <span>Brawl!</span></h2>
+    <div id="online-home" class="stack">
+      <p class="lede">Make a room and share its code, or type a friend's code to join. One phone per player.</p>
+      <button id="room-create" type="button" class="btn yellow">Create room</button>
+      <form id="join-form" class="join">
+        <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
+        <button id="join-go" type="submit" class="btn">Join</button>
+      </form>
+    </div>
+    <div id="online-room" class="stack" hidden>
+      <p class="small">Room code</p>
+      <p id="room-code" class="code" aria-live="polite"></p>
+      <ul id="room-players" class="roster"></ul>
+      <div class="seg" role="group" aria-label="CPU bats">
+        <span>CPUs</span>
+        <button type="button" class="chip" data-room-cpus="0">0</button>
+        <button type="button" class="chip" data-room-cpus="1">1</button>
+        <button type="button" class="chip" data-room-cpus="2">2</button>
+        <button type="button" class="chip" data-room-cpus="3">3</button>
+      </div>
+      <div class="seg" role="group" aria-label="CPU level">
+        <span>Level</span>
+        <button type="button" class="chip" data-room-level="easy">Easy</button>
+        <button type="button" class="chip" data-room-level="normal">Normal</button>
+        <button type="button" class="chip" data-room-level="hard">Hard</button>
+      </div>
+      <div class="seg" role="group" aria-label="Arena">
+        <span>Arena</span>
+        <button type="button" class="chip" data-room-arena="shift">Shifting</button>
+        <button type="button" class="chip" data-room-arena="morph">Morphing</button>
+        <button type="button" class="chip" data-room-arena="chaos">Chaos</button>
+        <button type="button" class="chip" data-room-arena="sky">Open sky</button>
+      </div>
+      <div class="seg" role="group" aria-label="View">
+        <span>View</span>
+        <button type="button" class="chip" data-view="3d">3D</button>
+        <button type="button" class="chip" data-view="2d">2D</button>
+      </div>
+      <div class="actions">
+        <button id="room-leave" type="button" class="btn ghost">Leave room</button>
+        <button id="room-start" type="button" class="btn primary">Let's fight ›</button>
+      </div>
+    </div>
+    <p id="online-status" class="small" role="status"></p>
+    <button id="online-back" type="button" class="btn ghost">Back</button>
+  </div>
+</section>
+
+<section id="end-screen" class="overlay" hidden>
+  <div class="card">
+    <h2 id="end-title" class="logo">Out of the dark!</h2>
+    <p id="end-stars" class="stars"></p>
+    <ul id="end-detail" class="checklist"></ul>
+    <p id="end-wait" class="small" hidden>Waiting for the host to start a rematch…</p>
+    <div class="actions">
+      <button id="menu-button" type="button" class="btn ghost">Menu</button>
+      <button id="end-button" type="button" class="btn primary">Play again</button>
+    </div>
+  </div>
+</section>
+
+<section id="pause-screen" class="overlay" hidden>
+  <div class="card narrow">
+    <h2 id="pause-title" class="logo">Paused</h2>
+    <p id="pause-note" class="small" hidden>The match keeps going for everyone else.</p>
+    <div class="stack">
+      <button id="pause-resume" type="button" class="btn primary">Resume</button>
+      <button id="pause-restart" type="button" class="btn">Restart</button>
+      <button id="pause-view" type="button" class="btn">Switch to 2D view</button>
+      <button id="pause-menu" type="button" class="btn ghost">Main menu</button>
+    </div>
+  </div>
+</section>
+
+<section id="rotate-screen" class="overlay">
+  <div class="card narrow">
+    <div class="phone" aria-hidden="true"></div>
+    <p class="lede">Turn your phone sideways</p>
+  </div>
+</section>
+<!-- END GAME MARKUP -->
+<script src="src/level.js"></script>
+<script src="src/arenas.js"></script>
+<script src="src/game.js"></script>
+<script src="src/vendor/three.min.js"></script>
+<script src="src/duel3d.js"></script>
+<script src="src/duel.js"></script>
+<script src="src/net.js"></script>
+</body>
+</html>
