@@ -52,14 +52,29 @@
   <div class="panel">
     <p class="eyebrow">Battle</p>
     <h2>Bat Brawl</h2>
-    <p class="lede">Hit your rival with a squeak to stun them, then fly into them to take a bite. First to 3 bites wins. Echoes are scarce, so grab the crystals.</p>
-    <div class="modes">
-      <button id="duel-cpu" type="button">vs CPU<small>Practice on your own</small></button>
-      <button id="duel-2p" type="button" class="alt battle">2 players<small>Share one screen</small></button>
+    <p class="lede">Stun a rival with a squeak, then fly into them for a bite. First to 3 bites wins. The cave shifts every 25 seconds.</p>
+    <div class="pickers">
+      <div class="picker" role="group" aria-label="Players on this device">
+        <span>Players</span>
+        <button type="button" class="chip" data-humans="1">1</button>
+        <button type="button" class="chip" data-humans="2">2</button>
+        <button type="button" class="chip" data-humans="3">3</button>
+        <button type="button" class="chip" data-humans="4">4</button>
+      </div>
+      <div class="picker" role="group" aria-label="CPU bats">
+        <span>CPU bats</span>
+        <button type="button" class="chip" data-cpus="0">0</button>
+        <button type="button" class="chip" data-cpus="1">1</button>
+        <button type="button" class="chip" data-cpus="2">2</button>
+        <button type="button" class="chip" data-cpus="3">3</button>
+      </div>
     </div>
-    <ul class="legend">
-      <li><span class="dot mo"></span>Mo: left half of the screen, or WASD to fly and F to squeak</li>
-      <li><span class="dot ka"></span>Ka: right half of the screen, or arrow keys to fly and Enter to squeak</li>
+    <button id="duel-start" type="button">Start</button>
+    <ul class="legend keys">
+      <li><span class="dot mo"></span>Mo: WASD, F to squeak</li>
+      <li><span class="dot ka"></span>Ka: arrow keys, Enter to squeak</li>
+      <li><span class="dot ca"></span>Ca: IJKL, H to squeak</li>
+      <li><span class="dot bo"></span>Bo: number pad 8456, 0 to squeak</li>
     </ul>
     <button id="duel-back" type="button" class="link">Back</button>
   </div>
@@ -73,6 +88,7 @@
 </section>
 <!-- END GAME MARKUP -->
 <script src="src/level.js"></script>
+<script src="src/arenas.js"></script>
 <script src="src/game.js"></script>
 <script src="src/duel.js"></script>
 </body>

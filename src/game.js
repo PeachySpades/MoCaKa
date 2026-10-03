@@ -68,6 +68,8 @@
     empty() { tone(260, 180, 0.12, 'sine', 0.06); },
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
     chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); },
+    slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
+    burp() { tone(140, 90, 0.28, 'sawtooth', 0.06); tone(110, 70, 0.2, 'sawtooth', 0.04, 0.12); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
   };
   window.EchoAudio = { sfx, unlock: unlockAudio };
@@ -130,7 +132,7 @@
   // ---- Game state --------------------------------------------------------
   let state = 'title';          // title | play | win | lose | duel
   let mode = 'cave';            // cave (explore a hand-made cave) | run (side-scroller) | duel (battle)
-  let duelCpu = true;
+  let duelCfg = { humans: 1, cpus: 1 };
   let levelIndex = 0;
   let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
 
@@ -817,38 +819,65 @@
 
   function primaryAction() {
     unlockAudio();
-    if (mode === 'duel') startDuel(duelCpu);
+    if (mode === 'duel') startDuel(duelCfg);
     else if (state === 'title') enterGame('cave');
     else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
   }
 
-  function startDuel(cpu) {
+  function startDuel(cfg) {
     unlockAudio();
     try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
     try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
     mode = 'duel';
-    duelCpu = cpu;
+    duelCfg = { ...cfg };
     state = 'duel';
     L = null;
     showOverlay(null);
-    window.EchoDuel.start({ cpu, onEnd: endDuel });
+    window.EchoDuel.start({ ...cfg, onEnd: endDuel });
   }
 
-  function endDuel({ winner, color, scores, cpu }) {
+  function endDuel({ winner, winnerCpu, standings, humans }) {
     sfx.win();
-    $('end-title').textContent = cpu && winner === 'CPU' ? 'The CPU ate you!' : `${winner} wins!`;
-    $('end-stars').textContent = `${scores[0]} – ${scores[1]}`;
-    $('end-stars').setAttribute('aria-label', `Score ${scores[0]} to ${scores[1]}`);
-    $('end-detail').innerHTML = `<li class="got">${winner} took ${Math.max(...scores)} bites first</li>`;
+    $('end-title').textContent = winnerCpu && humans === 1 ? `${winner} (CPU) ate everyone!` : `${winner} wins!`;
+    $('end-stars').textContent = standings.map((p) => p.score).join(' – ');
+    $('end-stars').setAttribute('aria-label', 'Final bites ' + standings.map((p) => `${p.name} ${p.score}`).join(', '));
+    $('end-detail').innerHTML = standings
+      .map((p, k) => `<li class="${k === 0 ? 'got' : ''}" style="color:${p.color}">${p.name}${p.cpu ? ' (CPU)' : ''}: ${p.score} bite${p.score === 1 ? '' : 's'}</li>`)
+      .join('');
     $('end-button').textContent = 'Rematch';
     showOverlay('end');
   }
+
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
   $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
-  $('duel-cpu').addEventListener('click', () => startDuel(true));
-  $('duel-2p').addEventListener('click', () => startDuel(false));
+  // Battle setup: how many players share this device, and how many CPU bats join (2–4 bats in total)
+  const pick = { humans: 1, cpus: 1 };
+  function renderPickers() {
+    document.querySelectorAll('[data-humans]').forEach((b) => {
+      b.classList.toggle('on', +b.dataset.humans === pick.humans);
+      b.setAttribute('aria-pressed', String(+b.dataset.humans === pick.humans));
+    });
+    document.querySelectorAll('[data-cpus]').forEach((b) => {
+      const n = +b.dataset.cpus, ok = pick.humans + n >= 2 && pick.humans + n <= 4;
+      b.disabled = !ok;
+      b.classList.toggle('on', n === pick.cpus);
+      b.setAttribute('aria-pressed', String(n === pick.cpus));
+    });
+  }
+  document.querySelectorAll('[data-humans]').forEach((b) => b.addEventListener('click', () => {
+    pick.humans = +b.dataset.humans;
+    if (pick.humans + pick.cpus > 4) pick.cpus = 4 - pick.humans;
+    if (pick.humans + pick.cpus < 2) pick.cpus = 1;
+    renderPickers();
+  }));
+  document.querySelectorAll('[data-cpus]').forEach((b) => b.addEventListener('click', () => {
+    pick.cpus = +b.dataset.cpus;
+    renderPickers();
+  }));
+  renderPickers();
+  $('duel-start').addEventListener('click', () => startDuel(pick));
   $('duel-back').addEventListener('click', () => showOverlay('title'));
   $('menu-button').addEventListener('click', () => {
     window.EchoDuel.stop();

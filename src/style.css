@@ -12,6 +12,8 @@
   --crystal: #96f0ff;
   --mo: #8b6cff;
   --ka: #ff7ad9;
+  --ca: #9dff6a;
+  --bo: #ffb347;
   --display: "Chakra Petch", "Trebuchet MS", system-ui, sans-serif;
   color-scheme: dark;
 }
@@ -151,6 +153,24 @@ button.link {
 }
 .dot.mo { background: var(--mo); box-shadow: 0 0 10px var(--mo); }
 .dot.ka { background: var(--ka); box-shadow: 0 0 10px var(--ka); }
+.dot.ca { background: var(--ca); box-shadow: 0 0 10px var(--ca); }
+.dot.bo { background: var(--bo); box-shadow: 0 0 10px var(--bo); }
+.pickers { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 24px; }
+.picker { display: flex; align-items: center; gap: 6px; }
+.picker span { font: 600 0.8rem/1 var(--display); letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-dim); margin-right: 4px; }
+button.chip {
+  min-width: 44px;
+  min-height: 40px;
+  padding: 8px 12px;
+  font-size: 1rem;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: inset 0 0 0 2px rgba(154, 166, 200, 0.4);
+}
+button.chip.on { color: var(--cave); background: var(--echo); box-shadow: 0 0 14px rgba(74, 222, 255, 0.45); }
+button.chip:disabled { opacity: 0.3; cursor: not-allowed; }
+.keys { grid-template-columns: repeat(2, auto); column-gap: 20px; }
+@media (pointer: coarse) { .keys { display: none; } }
 .modes { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
 button:hover { filter: brightness(1.1); }
 button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }

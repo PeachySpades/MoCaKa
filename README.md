@@ -10,7 +10,7 @@ Echoes are limited. Each cave gives Moka a set number of squeaks, and glowing cr
 
 - **Explore**: a hand-made cave. Collect the glowing moths and fly to the green light. You earn one star for escaping, one for finding every moth, and one for finishing with enough echoes left.
 - **Cave Run**: an endless side-scroller. The screen scrolls right on its own and speeds up over time. If a wall pins Moka against the left edge, the dark catches you. Each run is a newly generated tunnel, and your best distance is saved.
-- **Battle (Bat Brawl)**: two bats in a dark arena. Hit your rival with a squeak to stun them, then fly into them to take a bite. First to 3 bites wins. Play against the CPU, or with 2 players on one screen: on touch screens Mo uses the left half and Ka the right half, and on a keyboard Mo uses WASD + F and Ka uses the arrow keys + Enter.
+- **Battle (Bat Brawl)**: 2 to 4 bats in a dark arena. Hit a rival with a squeak to stun them, then fly into them for a bite (with a chomp-and-burp animation). First to 3 bites wins. Every 25 seconds the cave shifts into a different themed arena: Crystal Grotto, Lava Hollow, Mossy Den or Frozen Cavern. Pick 1–4 players on one device and fill the rest with CPU bats. On touch screens the screen is split into one zone per player (halves, thirds or quarters). On a keyboard: Mo uses WASD + F, Ka uses the arrow keys + Enter, Ca uses IJKL + H, and Bo uses the number pad 8456 + 0.
 
 ### Controls
 
@@ -34,5 +34,6 @@ npx serve .
 - `index.html` contains the page, menus and meta tags for adding to the home screen.
 - `src/game.js` contains the game loop, input, hazards and rendering on a single canvas.
 - `src/level.js` contains the Explore cave maps, drawn as text with one character per tile (the key is at the top of the file), and the Cave Run tunnel generator.
-- `src/duel.js` contains Bat Brawl: the arena, stun and eat rules, split-screen controls and the CPU rival.
+- `src/arenas.js` contains the Bat Brawl arena maps and their color themes.
+- `src/duel.js` contains Bat Brawl: stun and eat rules, the eating animation, arena shifts, split-screen controls and the CPU bats.
 - `src/style.css` styles the menus and overlays.
