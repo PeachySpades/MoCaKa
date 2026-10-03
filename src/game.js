@@ -1418,7 +1418,6 @@
     $('title-screen').hidden = which !== 'title';
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
-    $('multi-screen').hidden = which !== 'multi';
     $('powers-screen').hidden = true;
     window.EchoBackdrop?.altar?.(which !== 'battle');
     if (which !== 'battle') { myPreview?.dispose?.(); myPreview = null; }   // free the lobby's 3D bat   // the lobby's bottom bar sits where the altar is
@@ -1536,9 +1535,8 @@
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
-  // Multiplayer: Title → pick a game (Bites, Last Bite, Co-op Run) → the lobby
-  $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('multi'); });
-  $('multi-back').addEventListener('click', () => showOverlay('title'));
+  // Multiplayer: the title card opens the lobby; its tabs pick Bites, Last Bite or Co-op Run
+  $('battle-button').addEventListener('click', () => { unlockAudio(); openLobby(); });
   // The lobby: one screen for CPU matches and online rooms (net.js drives the room part).
   // Seats fill in order: the people in the room (just you when offline), then CPU bats.
   const BAT_SEATS = [
@@ -1648,7 +1646,7 @@
         const host = room && k === 0;
         const name = p.me ? `You${host || !room ? ' <svg aria-label="leader"><use href="#i-crown"/></svg>' : ''}` : 'Friend';
         return `<div class="slot you" style="--c: ${bat.c}">${num}${host && !p.me ? '<span class="host-tag">Host</span>' : ''}`
-          + `<canvas class="seat-bat" data-seat-bat="${k}"></canvas><b>${name}</b>`
+          + `<div class="seat-art"><canvas class="seat-bat" data-seat-bat="${k}"></canvas></div><b>${name}</b>`
           + '<span class="pill ok ready"><svg><use href="#i-check"/></svg>Ready</span></div>';
       }
       if (cpu) {
@@ -1657,7 +1655,7 @@
             + `<span>${LEVEL_NAMES[lv]}</span><button type="button" data-lv="1" data-seat="${k}" aria-label="Harder" ${!edit || i === 2 ? 'disabled' : ''}>›</button></div>`;
         return `<div class="slot on" style="--c: ${bat.c}">${num}`
           + (edit ? `<button type="button" class="x" data-remove="${k}" aria-label="Remove CPU">✕</button>` : '')
-          + `<canvas class="seat-bat" data-seat-bat="${k}"></canvas><b>${coop ? 'Buddy' : 'CPU'}</b>${steps}</div>`;
+          + `<div class="seat-art"><canvas class="seat-bat" data-seat-bat="${k}"></canvas></div><b>${coop ? 'Buddy' : 'CPU'}</b>${steps}</div>`;
       }
       // the last empty seat invites a friend (when there's room for one), the rest add CPU bats
       const invite = room?.role !== 'guest' && empties >= 2 && k === 3;
@@ -1864,7 +1862,6 @@
     changed();
     renderMyBat();
   };
-  document.querySelectorAll('[data-go-rule]').forEach((b) => b.addEventListener('click', () => { unlockAudio(); openLobby(b.dataset.goRule); }));
   $('seats').addEventListener('click', (e) => {
     if (!canEdit()) return;
     const n = people().length;
@@ -1923,7 +1920,7 @@
   });
   $('duel-back').addEventListener('click', () => {
     if (room) window.EchoNet.leave();
-    else { window.EchoNet?.clearStatus?.(); showOverlay('multi'); }
+    else { window.EchoNet?.clearStatus?.(); showOverlay('title'); }
   });
   $('menu-button').addEventListener('click', () => {
     if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }

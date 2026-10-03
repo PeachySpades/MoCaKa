@@ -709,3 +709,40 @@ button.chip.on:disabled { opacity: 0.85; }
 }
 #title-screen .mode .icon-gap { margin-bottom: auto; }
 .mode > :not(.art) { position: relative; }
+/* the seat's bat drawing never sizes its card (Safari grows a canvas sized from its own pixels) */
+.slot .seat-art { position: relative; width: 100%; height: 100%; min-height: 36px; }
+.slot .seat-art canvas { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; }
+/* short screens (a phone browser with its toolbars): back button and game tabs share the top row */
+@media (max-height: 360px) {
+  .card.lobby { grid-template-columns: auto minmax(0, 1fr) minmax(12rem, 14.5rem); grid-template-areas: "back tabs side" "seats seats side" "room room start"; gap: 5px 8px; }
+  .lobby-head { display: contents; }
+  .lobby-head .hero.mini, .lobby-head .headcount { display: none; }
+  .lobby-head .back { grid-area: back; align-self: center; }
+  .mode-tabs { padding: 2px; }
+  .tab { padding: 3px; }
+  .tab small { display: none; }
+  .lobby .slot { padding: 20px 3px 4px; }
+  .slot .plus { width: 30px; height: 30px; font-size: 1.2rem; }
+  .slot small { display: none; }
+  .side .bat-stage { min-height: 56px; }
+  .quick-parts { gap: 3px; }
+  .btn.fight { padding: 4px 10px; font-size: 1rem; }
+  .lobby #start-hint { display: none; }
+  .room-bar .btn.sm, .room-bar .join input { padding-top: 5px; padding-bottom: 5px; }
+  .code-tiles b { width: 24px; height: 28px; font-size: 1rem; }
+}
+@media (max-height: 360px) {
+  .tab b { font-size: 0.9rem; white-space: nowrap; }
+  .room-bar .btn { white-space: nowrap; }
+}
+@media (max-height: 360px) and (max-width: 620px) {
+  .card.lobby { grid-template-columns: auto minmax(0, 1fr) 11rem; }
+  .tab b { font-size: 0.78rem; }
+  .room-label { display: none; }
+  .room-bar .btn.sm { padding-left: 9px; padding-right: 9px; font-size: 0.8rem; }
+  .join input { width: 5ch; font-size: 0.85rem; }
+}
+@media (max-height: 360px) {
+  .card.lobby { grid-template-rows: auto minmax(0, 1fr) auto; }
+  .tab { align-content: center; }
+}

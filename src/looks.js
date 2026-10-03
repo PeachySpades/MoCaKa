@@ -1652,6 +1652,26 @@
 @media (max-height:420px){.lk-row{height:40px;grid-template-columns:clamp(58px,9.5vw,76px) 30px minmax(0,1fr) 30px}.lk-track{height:32px}.lk-row .lk-btn{width:30px;min-width:30px;height:30px}
   .lk-foot .lk-back,.lk-foot .lk-done{height:38px}.lk-head .lk-btn{height:36px}.lk-mini canvas{width:56px;height:32px}}
 @media (max-aspect-ratio:1/1){.lk-panel{grid-template-columns:1fr;grid-template-rows:minmax(0,40%) minmax(0,1fr)}}
+/* phones held sideways: every slider on screen at once, two per line, buttons up top */
+@media (max-height:460px) and (min-aspect-ratio:1/1){
+  .lk-panel{grid-template-columns:minmax(0,36%) minmax(0,1fr);gap:8px}
+  .lk-right{grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"head foot" "rows rows";gap:6px}
+  .lk-head{grid-area:head}.lk-foot{grid-area:foot;justify-content:flex-end}.lk-rows{grid-area:rows}
+  .lk-head h2{display:none}
+  .lk-head .lk-btn,.lk-foot .lk-back,.lk-foot .lk-done{height:34px;font-size:.92rem}
+  .lk-foot .lk-done{min-width:0;padding:0 20px}.lk-foot .lk-back{padding:0 10px}
+  .lk-rows{grid-template-columns:1fr 1fr;gap:5px;padding:0;overflow:hidden;align-content:stretch;grid-auto-rows:minmax(0,1fr)}
+  .lk-row{height:auto;min-height:0;grid-template-columns:26px minmax(0,1fr) 26px;grid-template-rows:auto minmax(0,1fr);grid-template-areas:"lab lab lab" "prev track next";
+    gap:0 2px;padding:3px 4px 3px;border-radius:12px}
+  .lk-row .lk-lab{grid-area:lab;font-size:.58rem;padding-left:4px;line-height:1.1}
+  .lk-row .lk-prev{grid-area:prev}.lk-row .lk-next{grid-area:next}.lk-track{grid-area:track;height:100%;min-height:22px}
+  .lk-row .lk-btn{width:26px;min-width:26px;height:26px}
+  .lk-row .lk-btn svg{width:13px;height:13px}
+  .lk-chip{font-size:.78rem}
+  .lk-count{display:none}
+  .lk-blurb span{display:none}
+  .lk-mini{display:none}
+}
 `;
   const ICONS = {
     prev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',

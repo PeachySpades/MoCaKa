@@ -361,7 +361,8 @@
 
   // The POWER button, left of DASH: shows the special power you hold
   const specialButton = () => { const d = dashButton(); return { x: d.x - d.r - 52, y: d.y + 30, r: 34 }; };
-  const specialShown = () => localCount === 1 && countdown <= 0 && !spectating() && (touchUsed || !!localBat(0)?.held);
+  // it appears only while you hold a special, on phones and computers alike
+  const specialShown = () => localCount === 1 && countdown <= 0 && !spectating() && !!localBat(0)?.held;
   const inSpecialButton = (cx, cy) => {
     if (!specialShown()) return false;
     const rect = canvas.getBoundingClientRect(), b = specialButton();
@@ -2417,9 +2418,19 @@
   }
 
   // The POWER button: shows the special power you hold, glowing when it's ready
+  let specialSeen = null, specialPopAt = 0;
   function drawSpecialButton() {
     const bt = specialButton(), me = localBat(0);
     if (!me) return;
+    // pop in with a little bounce when a new special arrives
+    if (me.held !== specialSeen) { specialSeen = me.held; specialPopAt = clock; }
+    const u = Math.min(1, (clock - specialPopAt) / 0.35), pop = u < 1 ? 1 + Math.sin(u * Math.PI) * 0.35 - (1 - u) * 0.6 : 1;
+    ctx.save();
+    ctx.translate(bt.x, bt.y); ctx.scale(pop, pop); ctx.translate(-bt.x, -bt.y);
+    drawSpecialFace(bt, me);
+    ctx.restore();
+  }
+  function drawSpecialFace(bt, me) {
     const type = me.held, pw = type ? POWERS[type] : null, ready = !!pw && me.specialCd <= 0 && me.stun <= 0 && !me.dead;
     const rgb = pw ? pw.rgb : '150, 130, 255', pulse = ready ? 0.5 + 0.5 * Math.sin(clock * 6) : 0;
     if (ready) glow(bt.x, bt.y, bt.r * 2, rgb, 0.22 + 0.18 * pulse);

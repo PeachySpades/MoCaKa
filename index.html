@@ -91,36 +91,6 @@
   </div>
 </section>
 
-<!-- Multiplayer: pick a game, then the lobby -->
-<section id="multi-screen" class="overlay menu" hidden>
-  <div class="card wide multi">
-    <button id="multi-back" type="button" class="btn ghost back corner"><span aria-hidden="true">‹</span> Back</button>
-    <header class="hero">
-      <div class="sonar-bat" aria-hidden="true"><svg class="waves"><use href="#i-waves"/></svg><svg class="mascot"><use href="#i-bat"/></svg></div>
-      <h1 class="logo">Multi<span>player</span></h1>
-      <p class="tagline">Choose a mode and play with friends!</p>
-    </header>
-    <div class="mode-grid tall">
-      <button type="button" class="mode tall" data-go-rule="bites" style="--c: var(--echo)">
-        <canvas class="art" data-art="bites" aria-hidden="true"></canvas>
-        <b>Bites</b><em>Free-for-all mayhem!</em><small>Grab power-ups, outfly everyone, and get the most bites.</small>
-        <span class="go"><svg><use href="#i-arrow"/></svg></span>
-      </button>
-      <button type="button" class="mode tall" data-go-rule="survivor" style="--c: var(--ca)">
-        <canvas class="art" data-art="last" aria-hidden="true"></canvas>
-        <b>Last Bite</b><em>Last bat standing!</em><small>Survive each round and be the final bat.</small>
-        <span class="go"><svg><use href="#i-arrow"/></svg></span>
-      </button>
-      <button type="button" class="mode tall" data-go-rule="coop" style="--c: var(--ka)">
-        <canvas class="art" data-art="coop" aria-hidden="true"></canvas>
-        <b>Co-op Run</b><em>Fly together, go further!</em><small>Team up to get through a monster cave: race to the end or hunt them down.</small>
-        <span class="go"><svg><use href="#i-arrow"/></svg></span>
-      </button>
-    </div>
-    <div class="pill-note"><svg><use href="#i-group"/></svg><span>Different bats. More fun together!</span></div>
-  </div>
-</section>
-
 <!-- The lobby: one screen for CPU matches and online rooms. Seats fill with you,
      friends who join by code, and CPU bats. -->
 <section id="battle-screen" class="overlay menu" hidden>
