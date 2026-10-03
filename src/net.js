@@ -41,9 +41,22 @@
     return peerLib;
   }
   // ?peer=host:port points at a self-hosted PeerJS server (used by the tests)
+  // Several STUN servers to find a route between phones, plus PeerJS's free
+  // relays (UDP, TCP and TLS) for networks that block direct connections.
+  const ICE = {
+    iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+      {
+        urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478',
+          'turn:eu-0.turn.peerjs.com:3478?transport=tcp', 'turn:us-0.turn.peerjs.com:3478?transport=tcp',
+          'turns:eu-0.turn.peerjs.com:443', 'turns:us-0.turn.peerjs.com:443'],
+        username: 'peerjs', credential: 'peerjsp',
+      },
+    ],
+  };
   function peerOptions() {
     const p = params.get('peer');
-    if (!p) return { debug: 0 };
+    if (!p) return { debug: 0, config: ICE };
     const [host, port] = p.split(':');
     return { host, port: +port || 9000, path: '/', secure: location.protocol === 'https:', debug: 0 };
   }
@@ -71,9 +84,12 @@
       });
       // lost contact with the broker: open connections still work, new guests can't find us
       peer.on('disconnected', () => { try { peer.reconnect(); } catch { /* gone for good */ } });
+      // phones drop the broker connection when the screen locks or the app switches; rejoin on return
+      const wake = () => { if (!document.hidden && peer.disconnected && !peer.destroyed) { try { peer.reconnect(); } catch { /* gone for good */ } } };
+      document.addEventListener('visibilitychange', wake);
       return {
         send(id, msg) { const c = conns.get(id); if (c?.open) c.send(msg); },
-        close() { for (const c of conns.values()) c.close(); peer.destroy(); },
+        close() { document.removeEventListener('visibilitychange', wake); for (const c of conns.values()) c.close(); peer.destroy(); },
       };
     },
     async join(code, h) {
@@ -84,10 +100,13 @@
         peer.on('error', () => reject(new Error('broker')));
       }), 10000, 'broker');
       const conn = peer.connect(ID_PREFIX + code, { reliable: true });
-      await withTimeout(new Promise((resolve, reject) => {
-        conn.on('open', resolve);
-        peer.on('error', (e) => reject(new Error(e.type === 'peer-unavailable' ? 'nobody' : 'broker')));
-      }), 12000, 'nobody');
+      // no reply at all means the room exists but the two devices couldn't find a route to each other
+      try {
+        await withTimeout(new Promise((resolve, reject) => {
+          conn.on('open', resolve);
+          peer.on('error', (e) => reject(new Error(e.type === 'peer-unavailable' ? 'nobody' : 'broker')));
+        }), 20000, 'noroute');
+      } catch (e) { peer.destroy(); throw e; }
       let closed = false;
       const end = () => { if (!closed) { closed = true; h.onClose(); } };
       conn.on('data', h.onData);
@@ -155,6 +174,7 @@
   }
   function errorText(e) {
     if (e.message === 'nobody') return `No room called ${code}. Check the code and try again.`;
+    if (e.message === 'noroute') return `Found room ${code} but couldn't connect to it. Make sure the host still has the game open on screen, then try again. Joining from the same Wi-Fi helps.`;
     if (e.message === 'full') return 'That room is full.';
     if (e.message === 'started') return 'That match already started. Ask the host to come back to the lobby.';
     if (window.ECHO_PREVIEW) return "Online rooms can't connect from this preview. Open the game from its web address to play online.";
@@ -192,7 +212,7 @@
       });
     }
     $('room-start').hidden = !host;
-    if (host) status(guests.length ? `${people} players in the room.` : 'Share the code with a friend. You can also start now against CPU bats.');
+    if (host) status(guests.length ? `${people} players in the room.` : 'Share the code with a friend and keep this screen open while they join. You can also start now against CPU bats.');
   }
 
   function lobbyMessage() {
