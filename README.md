@@ -14,7 +14,7 @@ Echoes are limited. Each cave gives Moka a set number of squeaks, and glowing cr
   - **3D or 2D**: battles are drawn in 3D by default, with a camera that follows your bat so the cave fills the screen. Switch to the flat top-down view on the setup screen or from the pause menu.
   - **Arena modes**: Shifting (the cave jumps to a new arena every 25 seconds), Morphing (the cave slowly reshapes itself, a few walls at a time, into the next arena), Chaos (a new arena every 9 seconds) or Open Sky (no cave at all).
   - **CPU levels**: Easy, Normal or Hard. CPU bats play fair: they only know where you are when sound reveals you, you squeak or dash nearby, or you're right next to them; otherwise they hunt from where they last noticed you.
-  - **Music and sound**: every mode has its own jazz tune (piano, walking bass, brushes and vibes) plus sounds for stuns, blocks, power-ups and the countdown, all synthesized in the browser. The ♪ button in the bottom-left corner turns sound on or off.
+  - **Music and sound**: every mode has its own upbeat jazz tune played by a full band (trumpet, saxes and trombone, piano, walking bass, guitar, vibes and drums) plus sounds for stuns, blocks, power-ups and the countdown, all synthesized in the browser. The ♪ button in the bottom-left corner turns sound on or off.
   - **Sonic beam**: hold squeak (the squeak key, or a second finger on a touch screen), then let go to fire a long, narrow beam the way you're flying. It reaches much farther than a squeak ring and stuns longer, but costs 2 echoes and only hits what's straight ahead. Letting go early just squeaks.
   - **Dash**: a quick burst of speed with a short cooldown. Flick your finger, press the DASH button, or use the dash key.
   - **Power-ups** appear in the dark every few seconds: Mega Screech (your next squeak is huge and stuns longer), Speed (6 seconds), Shield (blocks one stun) and Echo Frenzy (5 seconds of free, rapid squeaks).
@@ -48,6 +48,7 @@ npx serve .
 - `src/net.js` contains online rooms: room codes, the lobby, and the connection between players.
 - `src/vendor/peerjs.min.js` is PeerJS 1.5.5 (MIT), loaded only when you open Online.
 - `src/vendor/three.min.js` is three.js r158 (MIT), used for the 3D battle view.
+- `src/music.js` is the synthesized jazz band: four 32-bar tunes, one per mode.
 - `src/style.css` styles the menus and overlays.
 
 ### How online works
