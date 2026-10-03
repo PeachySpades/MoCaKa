@@ -16,6 +16,11 @@
   const START_ECHOES = 4, MAX_ECHOES = 6, CRYSTAL_ECHOES = 2;
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
   const WIN_SCORE = 3;
+  // Sonic beam: hold squeak to charge, let go to fire a narrow beam straight
+  // ahead (the way you're flying). It reaches much farther than a ring and
+  // stuns longer, but costs 2 echoes and misses anything off to the side.
+  // Letting go early just squeaks as usual.
+  const BEAM_CHARGE = 0.7, BEAM_LEN = 15, BEAM_WIDTH = 0.3, BEAM_STUN = 2.3, BEAM_COST = 2, BEAM_LIFE = 0.4, BEAM_COOLDOWN = 0.8, CHARGE_SLOW = 0.55;
   const SHIFT_EVERY = 25, SHIFT_WARNING = 3, SHIFT_FADE = 0.9, OPEN_SKY_CHANCE = 0.3;
   const EAT_PULL = 0.35, EAT_TIME = 1.1;
   const SNAPSHOT_EVERY = 0.05;
@@ -106,6 +111,7 @@
   // ---- State -------------------------------------------------------------
   let active = false, mode = 'local', viewer = -1, net = null, onEnd = null;
   let localCount = 1;                    // humans on this device (local mode)
+  let beams = [], beamId = 0;
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
   let lit, litBy;
   let clock = 0, countdown = 0, over = false, banner = null, shiftTimer = SHIFT_EVERY, shift = null;
@@ -116,7 +122,7 @@
     return {
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       echoes: START_ECHOES, cooldown: 0, stun: 0, safe: 0, dead: 0, score: 0, seen: 0, mouth: 0, puff: 0,
-      dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false,
+      dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false, charging: false, charge: 0,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
@@ -151,13 +157,14 @@
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
     });
-    rings = []; particles = []; popups = []; eats = []; outbox = [];
+    rings = []; beams = []; particles = []; popups = []; eats = []; outbox = [];
     remoteInput.clear();
     clock = 0; countdown = 3; over = false; ended = false; shift = null; slowmo = 0; shake = 0;
     shiftTimer = SHIFT_EVERY; powerTimer = 6 + Math.random() * 3; snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     keys.clear();
     sticks.clear();
+    chargers.clear();
     active = true;
   }
   function stop() { active = false; }
@@ -189,6 +196,7 @@
   const keys = new Set();
   const sticks = new Map();      // pointerId -> stick owned by a local player slot
   const STICK_RANGE = 56;
+  const chargers = new Map();    // pointerId -> slot, for a second finger held down to charge a beam
   const canvas = document.getElementById('game');
   let W = 0, H = 0;
 
@@ -202,12 +210,19 @@
     keys.add(e.code);
     if (e.repeat) return;
     for (let slot = 0; slot < localCount; slot++) {
-      if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'squeak');
+      if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'charge');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
     }
   });
-  addEventListener('keyup', (e) => keys.delete(e.code));
-  addEventListener('blur', () => { keys.clear(); sticks.clear(); });
+  addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+    if (!active) return;
+    for (let slot = 0; slot < localCount; slot++) {
+      const sq = keysFor(slot, 'squeak');
+      if (sq.includes(e.code) && !sq.some((k) => keys.has(k))) act(slot, 'release');
+    }
+  });
+  addEventListener('blur', () => { keys.clear(); sticks.clear(); chargers.clear(); });
 
   // A dash button for the single-player-per-device layouts, on touch screens
   let touchUsed = matchMedia('(pointer: coarse)').matches;
@@ -235,7 +250,7 @@
     if (e.pointerType === 'touch') touchUsed = true;
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
-    if ([...sticks.values()].some((s) => s.owner === owner)) { act(owner, 'squeak'); return; }
+    if ([...sticks.values()].some((s) => s.owner === owner)) { chargers.set(e.pointerId, owner); act(owner, 'charge'); return; }
     sticks.set(e.pointerId, { owner, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
     canvas.setPointerCapture?.(e.pointerId);
   });
@@ -246,6 +261,7 @@
     if (Math.hypot(s.x - s.sx, s.y - s.sy) > 14) s.moved = true;
   });
   const endStick = (e) => {
+    if (chargers.has(e.pointerId)) { act(chargers.get(e.pointerId), 'release'); chargers.delete(e.pointerId); return; }
     const s = sticks.get(e.pointerId);
     if (!s) return;
     const dt = performance.now() - s.t, dx = s.x - s.sx, dy = s.y - s.sy, d = Math.hypot(dx, dy);
@@ -281,7 +297,13 @@
       if (a === 'squeak' && b.echoes <= 0) applyFx({ k: 'sfx', n: 'empty' });
       return;
     }
-    if (a === 'squeak') squeak(b); else dash(b, dx, dy);
+    doAct(b, a, dx, dy);
+  }
+  function doAct(b, a, dx, dy) {
+    if (a === 'squeak') squeak(b);
+    else if (a === 'charge') startCharge(b);
+    else if (a === 'release') releaseCharge(b);
+    else if (a === 'dash') dash(b, dx, dy);
   }
 
   // ---- Online hooks (host side) -----------------------------------------
@@ -289,7 +311,7 @@
     const b = bats[slot];
     if (!b || b.ctrl !== 'remote' || mode !== 'host') return;
     if (msg.t === 'in') remoteInput.set(slot, { ix: +msg.ix || 0, iy: +msg.iy || 0 });
-    else if (msg.t === 'act') { if (msg.a === 'squeak') squeak(b); else if (msg.a === 'dash') dash(b, msg.dx, msg.dy); }
+    else if (msg.t === 'act' && ['squeak', 'charge', 'release', 'dash'].includes(msg.a)) doAct(b, msg.a, msg.dx, msg.dy);
   }
   function dropRemote(slot) {
     const b = bats[slot];
@@ -345,11 +367,26 @@
     const next = ai.path[0] || target;
     const dx = next.x - b.x, dy = next.y - b.y, len = Math.hypot(dx, dy) || 1;
 
+    // a charged beam fires at its target once ready (or fizzles into a squeak if the target hid)
+    if (b.charging && ai.beamAt) {
+      const t = ai.beamAt;
+      if (b.charge >= BEAM_CHARGE) {
+        const tx = t.x - b.x, ty = t.y - b.y, d = Math.hypot(tx, ty) || 1;
+        b.charging = false; b.charge = 0; ai.beamAt = null;
+        if (!t.dead && d < BEAM_LEN && castRay(b.x, b.y, tx / d, ty / d, d) >= d - 0.3) fireBeam(b, { ux: tx / d, uy: ty / d });
+        else squeak(b);
+      }
+    }
     ai.think -= dt;
     if (ai.think <= 0) {
       ai.think = 0.35;
+      if (!b.charging && !snack && (b.echoes >= BEAM_COST || b.power === 'frenzy') && b.cooldown <= 0) {
+        const far = foes.find((o) => o.safe <= 0 && o.stun <= 0 && dist(o, b) > RING_MAX * 0.7 && dist(o, b) < BEAM_LEN - 2
+          && castRay(b.x, b.y, (o.x - b.x) / dist(o, b), (o.y - b.y) / dist(o, b), dist(o, b)) >= dist(o, b) - 0.3);
+        if (far && Math.random() < 0.5) { ai.beamAt = far; startCharge(b); }
+      }
       const shootable = foes.some((o) => o.safe <= 0 && o.stun <= 0 && dist(o, b) < RING_MAX * 0.7);
-      if (shootable && (b.echoes > 0 || b.power === 'frenzy') && Math.random() < 0.4) squeak(b);
+      if (shootable && !b.charging && (b.echoes > 0 || b.power === 'frenzy') && Math.random() < 0.4) squeak(b);
       if (snack && dist(snack, b) < 4 && b.dashCd <= 0 && Math.random() < 0.6) dash(b, dx / len, dy / len);
     }
     const speed = snack ? 1 : 0.8;
@@ -370,6 +407,78 @@
     b.mega = false;
     rings.push({ id: ++ringId, x: b.x, y: b.y, r: 0, owner: b.i, hit: new Set(), max: mega ? MEGA_RING : RING_MAX, stun: mega ? MEGA_STUN : STUN_TIME, big: mega });
     fx({ k: 'sfx', n: mega ? 'crash' : 'squeak' });
+  }
+
+  function startCharge(b) {
+    if (!canAct(b) || b.charging) return;
+    b.charging = true; b.charge = 0; b.chargeSfx = false;
+  }
+  function releaseCharge(b) {
+    if (!b || !b.charging) return;
+    const full = b.charge >= BEAM_CHARGE;
+    b.charging = false; b.charge = 0;
+    if (!full) { squeak(b); return; }
+    fireBeam(b);
+  }
+  // which way a bat is pointing: where it's flying, or where it faces when still
+  function heading(b) {
+    const sp = Math.hypot(b.vx, b.vy);
+    return sp > 0.6 ? { ux: b.vx / sp, uy: b.vy / sp } : { ux: b.face, uy: 0 };
+  }
+  // walk a line until it hits a wall; returns how far it got
+  function castRay(x, y, ux, uy, max) {
+    let t = 0;
+    while (t < max) { t += 0.1; if (solid(Math.floor(x + ux * t), Math.floor(y + uy * t))) return t - 0.1; }
+    return max;
+  }
+  function fireBeam(b, aim) {
+    if (!canAct(b) || b.cooldown > 0) return;
+    const frenzy = b.power === 'frenzy';
+    if (!frenzy && b.echoes < BEAM_COST) { squeak(b); return; }   // can't afford it: a plain squeak instead
+    if (!frenzy) b.echoes -= BEAM_COST;
+    b.cooldown = BEAM_COOLDOWN;
+    b.seen = 1;
+    const { ux, uy } = aim || heading(b);
+    if (Math.abs(ux) > 0.2) b.face = Math.sign(ux);
+    const len = castRay(b.x, b.y, ux, uy, BEAM_LEN);
+    const beam = { id: ++beamId, x: b.x, y: b.y, ux, uy, len, owner: b.i, t: 0 };
+    beams.push(beam);
+    lightBeam(beam);
+    b.vx -= ux * 2.5; b.vy -= uy * 2.5;   // a little recoil
+    fx({ k: 'sfx', n: 'beam' });
+    fx({ k: 'shake', v: 0.12 });
+    for (const foe of bats) {
+      if (foe === b || foe.dead || foe.safe > 0) continue;
+      const rx = foe.x - b.x, ry = foe.y - b.y, along = rx * ux + ry * uy;
+      if (along < 0 || along > len + R) continue;
+      if (Math.abs(rx * uy - ry * ux) > BEAM_WIDTH + R) continue;
+      foe.seen = 1;
+      if (foe.stun > 0) continue;
+      if (foe.shield) {
+        foe.shield = false;
+        foe.vx = ux * 3; foe.vy = uy * 3;
+        fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
+        fx({ k: 'burst', x: foe.x, y: foe.y, rgb: POWERS.shield.rgb, n: 12 });
+        fx({ k: 'sfx', n: 'block' });
+        continue;
+      }
+      foe.stun = BEAM_STUN;
+      foe.dashT = 0; foe.charging = false; foe.charge = 0;
+      foe.vx = ux * 5; foe.vy = uy * 5;
+      fx({ k: 'burst', x: foe.x, y: foe.y, rgb: '255, 226, 120', n: 14 });
+      fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'ZAP!', rgb: b.rgb, life: 0.8 });
+      fx({ k: 'sfx', n: 'stun' });
+    }
+  }
+  function lightBeam(beam) {
+    const { w } = arena;
+    for (let t = 0; t <= beam.len + 0.6; t += 0.25) {
+      for (const [ox2, oy2] of [[0, 0], [0.6, 0], [-0.6, 0], [0, 0.6], [0, -0.6]]) {
+        const tx = Math.floor(beam.x + beam.ux * t + ox2), ty = Math.floor(beam.y + beam.uy * t + oy2);
+        if (tx < 0 || ty < 0 || tx >= w || ty >= arena.h) continue;
+        lit[ty * w + tx] = 1; litBy[ty * w + tx] = beam.owner;
+      }
+    }
   }
 
   function dash(b, dx, dy) {
@@ -395,7 +504,7 @@
     eats.push({ eater, food: { ...food }, t: 0, chomped: false, burped: false });
     food.dead = RESPAWN_DELAY + EAT_TIME;
     food.stun = 0;
-    food.power = null; food.mega = false; food.shield = false;
+    food.power = null; food.mega = false; food.shield = false; food.charging = false; food.charge = 0;
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
     if (eater.score >= WIN_SCORE) over = true;
@@ -446,7 +555,7 @@
 
   function shiftArena() {
     loadArena(nextArenaIndex());
-    rings = [];
+    rings = []; beams = [];
     bats.forEach((b, k) => {
       const s = arena.spawns[k % arena.spawns.length];
       Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, safe: SPAWN_SAFE, stun: 0, dashT: 0 });
@@ -515,6 +624,13 @@
         else if (b.ctrl === 'remote') ({ ix, iy } = remoteInput.get(b.i) || { ix: 0, iy: 0 });
         else ({ ix, iy } = localInput(b.local));
       }
+      if (b.charging) {
+        if (b.stun > 0 || over) { b.charging = false; b.charge = 0; }
+        else {
+          b.charge += dt;
+          if (b.charge >= BEAM_CHARGE && !b.chargeSfx) { b.chargeSfx = true; if (b.ctrl === 'local') applyFx({ k: 'sfx', n: 'charged' }); }
+        }
+      }
       const fast = b.power === 'speed';
       if (b.dashT > 0) {
         b.dashT -= dt;
@@ -523,7 +639,7 @@
         const acc = ACCEL * (fast ? 1.3 : 1);
         b.vx += ix * acc * dt; b.vy += iy * acc * dt;
       } else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
-      const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1);
+      const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1);
       const sp = Math.hypot(b.vx, b.vy);
       if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
@@ -580,6 +696,8 @@
   // Rings light walls as they pass and, on the host, stun every other bat they reach
   function advanceRings(dt, simulate) {
     for (let k = 0; k < lit.length; k++) if (lit[k] > 0) lit[k] = Math.max(0, lit[k] - dt * 0.75);
+    for (const beam of beams) beam.t += dt;
+    beams = beams.filter((beam) => beam.t < BEAM_LIFE);
     for (const ring of rings) {
       const prev = ring.r;
       ring.r += RING_SPEED * dt;
@@ -640,7 +758,8 @@
     const s = {
       t: 's', a: arenaIndex, st: r2(shiftTimer), sh: shift ? r2(shift.t) : -1, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
-        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT)]),
+        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1]),
+      bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
       p: powerups.map((p) => [r2(p.x), r2(p.y), p.type]),
@@ -664,7 +783,14 @@
       [b.tx, b.ty, b.vx, b.vy, b.face, b.stun, b.dead, b.score, b.echoes, b.safe, b.seen, b.mouth, b.puff, b.dashCd] = v;
       b.power = v[14] || null; b.powerT = v[15]; b.mega = !!v[16]; b.shield = !!v[17];
       b.cpuFlag = !!v[18]; b.dashT = v[19];
+      b.charging = v[20] >= 0; b.charge = Math.max(0, v[20] ?? -1);
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
+    });
+    const knownBeams = new Set(beams.map((m) => m.id));
+    beams = (s.bm || []).map(([id, x, y, ux, uy, len, owner, t]) => {
+      const m = { id, x, y, ux, uy, len, owner, t };
+      if (!knownBeams.has(id)) lightBeam(m);
+      return m;
     });
     const known = new Map(rings.map((g) => [g.id, g]));
     rings = s.r.map(([id, x, y, r, owner, max, big]) => {
@@ -842,6 +968,18 @@
       ctx.beginPath(); ctx.arc(X(ring.x), Y(ring.y), ring.r * PX, 0, Math.PI * 2); ctx.stroke();
     }
 
+    for (const m of beams) {
+      const f = 1 - m.t / BEAM_LIFE, x0 = X(m.x), y0 = Y(m.y), x1 = X(m.x + m.ux * m.len), y1 = Y(m.y + m.uy * m.len);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = `rgba(${BATS[m.owner].rgb}, ${0.35 * f})`;
+      ctx.lineWidth = PX * 0.9 * f + 2;
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * f})`;
+      ctx.lineWidth = Math.max(2, PX * 0.16 * f);
+      ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
+
     for (const e of eats) {
       if (e.t >= EAT_PULL || !e.eater) continue;
       const p = e.t / EAT_PULL, ease = p * p;
@@ -976,6 +1114,12 @@
       ctx.strokeStyle = '#2a0614'; ctx.lineWidth = Math.max(1.5, r * 0.12);
       ctx.beginPath(); ctx.arc(lx * 0.8, r * 0.25, r * 0.35, 0.15 * Math.PI, 0.85 * Math.PI); ctx.stroke();
     }
+    if (b.charging && b.charge > 0.12 && !o.rot) {
+      const k = Math.min(1, b.charge / BEAM_CHARGE), full = k >= 1;
+      ctx.strokeStyle = full ? `rgba(255, 255, 255, ${0.6 + 0.4 * Math.sin(clock * 20)})` : `rgba(${b.rgb}, 0.9)`;
+      ctx.lineWidth = Math.max(2, PX * 0.08);
+      ctx.beginPath(); ctx.arc(0, 0, r * 2, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke();
+    }
     if (b.shield && !o.rot) {
       ctx.strokeStyle = `rgba(${POWERS.shield.rgb}, 0.8)`;
       ctx.lineWidth = Math.max(1.5, PX * 0.06);
@@ -1078,8 +1222,8 @@
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
-        ? 'Drag to fly · tap to squeak · flick or DASH button to dash'
-        : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · flick to dash`;
+        ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or DASH to dash'
+        : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
       ctx.fillText('Grab glowing power-ups: Mega Screech, Speed, Shield, Echo Frenzy', W / 2, mid + size * 3.9);
     } else if (banner) {
@@ -1131,6 +1275,7 @@
     get bats() { return bats; },
     get arena() { return arena; },
     get powerups() { return powerups; },
+    get beams() { return beams; },
     get countdown() { return countdown; },
     setShiftTimer: (s) => { shiftTimer = s; },
     spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },

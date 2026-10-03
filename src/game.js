@@ -113,6 +113,8 @@
     power() { [660, 880, 1100, 1320].forEach((f, i) => tone(f, f * 1.02, 0.1, 'square', 0.035, i * 0.05)); },
     beep() { tone(880, 880, 0.12, 'square', 0.05); },
     go() { tone(1320, 1320, 0.3, 'square', 0.06); tone(660, 660, 0.3, 'square', 0.04); },
+    charged() { tone(1200, 2400, 0.12, 'sine', 0.05); },
+    beam() { tone(2400, 300, 0.35, 'sawtooth', 0.07); tone(1600, 200, 0.3, 'square', 0.04, 0.02); hiss(0.25, 0.08, 3000); },
     warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
   };
 
