@@ -11,7 +11,7 @@
 // size, so modes can call it every frame), drawTrail2D draws its trail,
 // rig3D builds the same bat from three.js primitives for view3d.js,
 // preview3D shows a spinnable 3D bat on any canvas, and openEditor opens the
-// full-screen bat creator (Lego-style sliders), which builds its own DOM and CSS.
+// full-screen "Customize Your Bat" creator, which builds its own DOM and CSS.
 (() => {
   'use strict';
 
@@ -1441,7 +1441,9 @@
   // preview3D(canvas, getLook) -> { refresh(), pop(), dispose(), webgl }. getLook()
   // is read on refresh (and at the start); drag or swipe on the canvas to spin and
   // tumble the bat. Falls back to the 2D bat if WebGL or three.js is missing.
-  function preview3D(canvas, getLook) {
+  // opts.zoom (default 1) below 1 shows the bat smaller with more room around it.
+  function preview3D(canvas, getLook, opts) {
+    const zoom = (opts && opts.zoom) || 1;
     const T = window.THREE;
     let renderer = null;
     if (T) {
@@ -1534,7 +1536,7 @@
         if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) renderer.setSize(w, h, false);
         cam.aspect = w / h;
         const half = Math.tan((15 * Math.PI) / 180);
-        const dist = Math.max(0.95 / half, 1.12 / (half * cam.aspect));
+        const dist = Math.max(0.95 / half, 1.12 / (half * cam.aspect)) / zoom;
         cam.position.set(0, 0.12, dist); cam.lookAt(0, 0.04, 0); cam.updateProjectionMatrix();
         pivot.rotation.order = 'XYZ';
         pivot.rotation.set(pitch, yaw, Math.sin(t * 1.1) * 0.05);
@@ -1558,7 +1560,7 @@
         if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
         const g = canvas.getContext('2d');
         g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
-        const look = curLook, r = Math.min(w / 6, h / 5) * pop, c = Math.cos(yaw);
+        const look = curLook, r = Math.min(w / 6, h / 5) * pop * zoom, c = Math.cos(yaw);
         g.save(); g.translate(w / 2, h * 0.5 + Math.sin(t * 2.2) * r * 0.1); g.scale(Math.max(0.15, Math.abs(c)), 1);
         drawTrail2D(g, look, 0, 0, r, { t, face: c < 0 ? -1 : 1 });
         draw2D(g, look, 0, 0, r, { face: c < 0 ? -1 : 1, flap: t * 1.4, eyesClosed: t % 3.7 < 0.12, angle: pitch * 0.3 });
@@ -1592,224 +1594,409 @@
   }
 
   // ---- The bat creator ----------------------------------------------------------
+  // A full-screen "Customize Your Bat" screen over the painted menu cave: category
+  // cards on the left, the live 3D bat on a stone pedestal in the middle (drag to
+  // tumble it, flick it or use the arrows to step through options) and a grid of
+  // thumbnail tiles on the right showing your bat wearing each option.
+  const GROUPS = [
+    { id: 'body', name: 'Body', short: 'Body', icon: 'body', fields: [['kind', 'Bat'], ['scheme', 'Colours'], ['pattern', 'Pattern']] },
+    { id: 'wings', name: 'Wings', short: 'Wings', icon: 'wings', fields: [['wings', 'Wings']] },
+    { id: 'face', name: 'Face', short: 'Face', icon: 'face', fields: [['eyes', 'Eyes'], ['face', 'Extras'], ['ears', 'Ears']] },
+    { id: 'acc', name: 'Accessories', short: 'Hats', icon: 'hat', fields: [['hat', 'Hats']] },
+    { id: 'fx', name: 'Effects', short: 'Effects', icon: 'fx', fields: [['trail', 'Trails']] },
+  ];
+  // what part of the bat each field's thumbnails frame, in body radii: x0, y0, x1, y1
+  const VIEWS = {
+    full: [-2.5, -2.25, 2.5, 1.6],
+    head: [-1.25, -1.2, 1.25, 0.8],
+    top: [-1.5, -2.4, 1.5, 0.55],
+    trail: [-3.9, -1.75, 1.9, 1.45],
+  };
+  const FIELD_VIEW = { eyes: 'head', face: 'head', hat: 'top', ears: 'top', trail: 'trail' };
+
   const CSS = `
-.lk-overlay{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;box-sizing:border-box;
-  padding:max(8px,env(safe-area-inset-top,0px)) max(12px,env(safe-area-inset-right,0px)) max(8px,env(safe-area-inset-bottom,0px)) max(12px,env(safe-area-inset-left,0px));
-  background:radial-gradient(ellipse at 30% 40%,rgba(60,40,140,.6),rgba(5,6,22,.94) 70%);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
-  font-family:"Fredoka","Nunito","Arial Rounded MT Bold",system-ui,sans-serif;color:#f2f0ff;-webkit-user-select:none;user-select:none;
+.lk-overlay{position:fixed;inset:0;z-index:1000;box-sizing:border-box;overflow:hidden;
+  --pad:10px;--gap:8px;--head:40px;--doneh:52px;--r:18px;--fs:1rem;
+  padding:max(var(--pad),env(safe-area-inset-top,0px)) max(calc(var(--pad) + 4px),env(safe-area-inset-right,0px)) max(var(--pad),env(safe-area-inset-bottom,0px)) max(calc(var(--pad) + 4px),env(safe-area-inset-left,0px));
+  background:radial-gradient(ellipse 60% 70% at 50% 60%,rgba(70,40,170,.22),rgba(5,6,22,.5) 75%,rgba(5,6,22,.72));
+  font-family:"Fredoka","Nunito","Arial Rounded MT Bold",system-ui,sans-serif;color:#f2f0ff;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
   animation:lk-in .22s ease-out}
+.lk-overlay.solid{background:radial-gradient(ellipse at 50% 55%,#3a2496,#1a1050 55%,#070814)}
 @keyframes lk-in{from{opacity:0;transform:scale(1.03)}}
 .lk-overlay *{box-sizing:border-box}
-.lk-panel{display:grid;grid-template-columns:minmax(0,44%) minmax(0,1fr);gap:clamp(8px,1.6vw,18px);width:min(1120px,100%);
-  height:min(660px,calc(100vh - 16px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)));height:min(660px,calc(100dvh - 16px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)))}
-.lk-stage{position:relative;min-height:0;border-radius:22px;overflow:hidden;border:2px solid rgba(150,170,255,.28);
-  background:radial-gradient(ellipse at 50% 45%,rgba(110,90,255,.34),rgba(14,16,48,.8) 70%);box-shadow:inset 0 0 40px rgba(80,60,200,.35),0 0 24px rgba(90,80,255,.18)}
-.lk-stage::before,.lk-stage::after{content:"";position:absolute;left:50%;top:46%;width:70%;aspect-ratio:1;margin-left:-35%;transform:translateY(-50%) scale(.2);border-radius:50%;
-  border:2px solid rgba(120,150,255,.3);opacity:0;animation:lk-sonar 4.4s ease-out infinite;pointer-events:none}
-.lk-stage::after{animation-delay:2.2s}
-@keyframes lk-sonar{0%{transform:translateY(-50%) scale(.2);opacity:.9}100%{transform:translateY(-50%) scale(1.5);opacity:0}}
-.lk-stage canvas.lk-big{position:absolute;inset:0;width:100%;height:100%;z-index:1}
-.lk-mini{position:absolute;z-index:2;right:8px;top:8px;display:grid;justify-items:center;gap:1px;padding:4px 6px 3px;border-radius:12px;background:rgba(5,6,22,.6);border:1px solid rgba(150,170,255,.22);
-  font-size:.62rem;font-weight:600;color:#a9b0e0;letter-spacing:.02em;pointer-events:none}
-.lk-mini canvas{width:70px;height:40px}
-.lk-hint{position:absolute;z-index:2;left:12px;top:10px;font-size:.64rem;font-weight:700;color:#a9b0e0;letter-spacing:.08em;pointer-events:none;opacity:.8}
-.lk-blurb{position:absolute;z-index:2;left:10px;right:10px;bottom:8px;text-align:center;pointer-events:none;line-height:1.15}
-.lk-blurb b{display:block;font-size:clamp(1rem,2.6vw,1.45rem);font-weight:700;text-shadow:0 0 14px rgba(170,150,255,.7)}
-.lk-blurb span{font-size:clamp(.66rem,1.45vw,.84rem);font-weight:500;color:#b9b6ff}
-.lk-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border-radius:999px;border:2px solid rgba(160,150,255,.55);background:rgba(16,16,50,.78);color:#f2f0ff;cursor:pointer;
-  font-family:inherit;font-size:1rem;font-weight:700;line-height:1;padding:0 12px;min-width:40px;height:40px;box-shadow:0 0 14px rgba(120,100,255,.25);transition:transform .1s,box-shadow .2s;touch-action:manipulation}
-.lk-btn:active{transform:scale(.93)}
-.lk-btn:focus-visible{outline:2px solid #4adeff;outline-offset:2px}
-.lk-btn svg{width:20px;height:20px;flex:none}
-.lk-right{display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:7px;min-height:0;min-width:0}
-.lk-head{display:flex;align-items:center;gap:8px}
-.lk-head h2{flex:1;margin:0;font-family:inherit;font-size:clamp(1.1rem,3vw,1.7rem);font-weight:700;line-height:1;color:#f4f2ff;text-shadow:0 0 16px rgba(170,150,255,.6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lk-head h2 span{background:linear-gradient(90deg,#39e3ff,#6aa8ff 45%,#a46bff);-webkit-background-clip:text;background-clip:text;color:transparent}
-.lk-dice{color:#1a1206;border-color:rgba(255,240,180,.7);background:linear-gradient(95deg,#ffd23f,#ff9d4a);box-shadow:0 0 20px rgba(255,190,70,.4)}
+.lk-overlay button{font-family:inherit;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.lk-overlay svg{flex:none}
+.lk-shell{position:relative;width:100%;height:100%;max-width:1320px;margin:0 auto;display:grid;
+  grid-template-columns:clamp(70px,18%,250px) minmax(0,1fr) clamp(200px,38%,500px);
+  grid-template-rows:var(--head) minmax(0,1fr) var(--doneh);
+  grid-template-areas:"back stage dice" "cats stage panel" "cats stage done";gap:var(--gap) calc(var(--gap) + 4px)}
+/* buttons */
+.lk-pill{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:100%;max-height:44px;padding:0 16px 0 10px;border-radius:999px;cursor:pointer;
+  border:2px solid rgba(160,150,255,.5);background:rgba(16,16,50,.62);color:#f2f0ff;font-size:calc(var(--fs)*1.02);font-weight:700;line-height:1;
+  box-shadow:0 0 14px rgba(120,100,255,.22);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:transform .1s,box-shadow .2s}
+.lk-pill:active,.lk-arrow:active,.lk-cat:active,.lk-tile:active,.lk-sub:active{transform:scale(.94)}
+.lk-pill svg{width:1.15em;height:1.15em}
+.lk-overlay button:focus-visible{outline:2px solid #4adeff;outline-offset:2px}
+.lk-back{grid-area:back;justify-self:start;align-self:center}
+.lk-dice{grid-area:dice;justify-self:end;align-self:center;padding:0 14px 0 10px;color:#ffe9a8;border-color:rgba(255,210,63,.55);box-shadow:0 0 14px rgba(255,190,70,.25)}
 .lk-dice.spin svg{animation:lk-spin .45s ease-out}
 @keyframes lk-spin{to{transform:rotate(360deg) scale(1.1)}}
-.lk-rows{min-height:0;overflow-y:auto;overflow-x:hidden;display:grid;align-content:start;gap:5px;padding:2px 2px 10px;scrollbar-width:thin;scrollbar-color:rgba(150,170,255,.4) transparent;overscroll-behavior:contain}
-.lk-row{display:grid;grid-template-columns:clamp(60px,10vw,84px) 36px minmax(0,1fr) 36px;align-items:center;gap:4px;height:44px;padding:0 4px;border-radius:15px;
-  background:rgba(14,16,48,.66);border:1px solid rgba(150,170,255,.2);transition:border-color .15s,box-shadow .15s}
-.lk-row.hot{border-color:rgba(74,222,255,.7);box-shadow:0 0 14px rgba(74,222,255,.3)}
-.lk-row .lk-lab{font-size:clamp(.62rem,1.4vw,.8rem);font-weight:700;color:#a9b0e0;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-left:4px}
-.lk-row .lk-btn{min-width:34px;width:34px;height:34px;padding:0;border-width:1.5px}
-.lk-row .lk-btn svg{width:16px;height:16px}
-.lk-track{position:relative;height:36px;overflow:hidden;touch-action:pan-y;cursor:grab;border-radius:12px;
-  -webkit-mask-image:linear-gradient(90deg,transparent,#000 20%,#000 80%,transparent);mask-image:linear-gradient(90deg,transparent,#000 20%,#000 80%,transparent)}
-.lk-strip{position:absolute;left:0;top:0;height:100%;display:flex;will-change:transform}
-.lk-strip.anim{transition:transform .24s cubic-bezier(.2,.9,.3,1.15)}
-.lk-chip{flex:none;display:flex;align-items:center;justify-content:center;gap:4px;height:100%;padding:0 4px;font-size:clamp(.74rem,1.7vw,.95rem);font-weight:600;color:#8f95c8;
-  white-space:nowrap;overflow:hidden;transition:color .15s,transform .15s;transform:scale(.86)}
-.lk-chip.on{color:#fff;transform:scale(1);text-shadow:0 0 12px rgba(74,222,255,.65)}
-.lk-chip i{flex:none;width:11px;height:11px;border-radius:50%;border:1.5px solid rgba(255,255,255,.6);margin-right:-4px}
-.lk-chip i:nth-of-type(3){margin-right:3px}
-.lk-chip:not(.on) i{display:none}
-.lk-count{position:absolute;right:50%;transform:translateX(50%);bottom:0;font-size:.52rem;font-weight:600;color:#6f76a8;pointer-events:none}
-.lk-foot{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.lk-foot .lk-back{padding:0 18px;height:42px;border-color:transparent;background:transparent;box-shadow:none;color:#c9c6ff;font-size:1.05rem}
-.lk-foot .lk-done{padding:0 30px;height:44px;min-width:9rem;border:0;color:#0a0f2e;font-size:1.15rem;background:linear-gradient(95deg,#3fe2ff,#6f9dff 55%,#9b6bff);box-shadow:0 0 26px rgba(80,200,255,.45)}
-@media (max-height:420px){.lk-row{height:40px;grid-template-columns:clamp(58px,9.5vw,76px) 30px minmax(0,1fr) 30px}.lk-track{height:32px}.lk-row .lk-btn{width:30px;min-width:30px;height:30px}
-  .lk-foot .lk-back,.lk-foot .lk-done{height:38px}.lk-head .lk-btn{height:36px}.lk-mini canvas{width:56px;height:32px}}
-@media (max-aspect-ratio:1/1){.lk-panel{grid-template-columns:1fr;grid-template-rows:minmax(0,40%) minmax(0,1fr)}}
-/* phones held sideways: every slider on screen at once, two per line, buttons up top */
-@media (max-height:460px) and (min-aspect-ratio:1/1){
-  .lk-panel{grid-template-columns:minmax(0,36%) minmax(0,1fr);gap:8px}
-  .lk-right{grid-template-columns:auto minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);grid-template-areas:"head foot" "rows rows";gap:6px}
-  .lk-head{grid-area:head}.lk-foot{grid-area:foot;justify-content:flex-end}.lk-rows{grid-area:rows}
-  .lk-head h2{display:none}
-  .lk-head .lk-btn,.lk-foot .lk-back,.lk-foot .lk-done{height:34px;font-size:.92rem}
-  .lk-foot .lk-done{min-width:0;padding:0 20px}.lk-foot .lk-back{padding:0 10px}
-  .lk-rows{grid-template-columns:1fr 1fr;gap:5px;padding:0;overflow:hidden;align-content:stretch;grid-auto-rows:minmax(0,1fr)}
-  .lk-row{height:auto;min-height:0;grid-template-columns:26px minmax(0,1fr) 26px;grid-template-rows:auto minmax(0,1fr);grid-template-areas:"lab lab lab" "prev track next";
-    gap:0 2px;padding:3px 4px 3px;border-radius:12px}
-  .lk-row .lk-lab{grid-area:lab;font-size:.58rem;padding-left:4px;line-height:1.1}
-  .lk-row .lk-prev{grid-area:prev}.lk-row .lk-next{grid-area:next}.lk-track{grid-area:track;height:100%;min-height:22px}
-  .lk-row .lk-btn{width:26px;min-width:26px;height:26px}
-  .lk-row .lk-btn svg{width:13px;height:13px}
-  .lk-chip{font-size:.78rem}
-  .lk-count{display:none}
-  .lk-blurb span{display:none}
-  .lk-mini{display:none}
+.lk-done{grid-area:done;justify-self:end;align-self:stretch;width:min(100%,15rem);max-height:none;padding:0 18px;gap:10px;border-radius:999px;
+  border:3px solid #7dff4a;background:linear-gradient(180deg,rgba(30,70,20,.88),rgba(10,30,10,.92));color:#f4ffe9;font-size:calc(var(--fs)*1.4);
+  box-shadow:0 0 24px rgba(125,255,74,.5),inset 0 0 16px rgba(125,255,74,.25);text-shadow:0 0 10px rgba(125,255,74,.55)}
+.lk-done svg{width:1em;height:1em;color:#b8ff8a}
+/* left: category cards */
+.lk-cats{grid-area:cats;display:flex;flex-direction:column;gap:calc(var(--gap) * .8);min-height:0}
+.lk-cat{flex:1 1 0;min-height:0;max-height:66px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:calc(var(--r) * .8);cursor:pointer;text-align:left;
+  border:2px solid rgba(150,170,255,.24);background:linear-gradient(180deg,rgba(30,30,84,.7),rgba(12,12,40,.78));color:#e9e6ff;
+  font-size:var(--fs);font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:border-color .15s,box-shadow .15s,transform .1s}
+.lk-cat svg{width:1.7em;height:1.7em;color:var(--ic);filter:drop-shadow(0 0 5px color-mix(in srgb,var(--ic) 60%,transparent))}
+.lk-cat span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lk-cat .s{display:none}
+.lk-cat.on{border-color:#4adeff;color:#fff;background:linear-gradient(180deg,rgba(40,70,140,.72),rgba(14,24,64,.82));
+  box-shadow:0 0 16px rgba(74,222,255,.55),inset 0 0 14px rgba(74,222,255,.22)}
+/* centre: the bat on its pedestal */
+.lk-stage{grid-area:stage;position:relative;min-height:0;min-width:0;container-type:size}
+.lk-stage canvas{position:absolute;left:0;width:100%;height:100%;top:0}
+@supports (height:1cqw){.lk-stage canvas{height:min(100%,80cqw);top:clamp(0px,calc(50% - 36cqw),calc(100% - 80cqw))}}
+.lk-ped{pointer-events:none}
+.lk-big{z-index:1}
+.lk-title{position:absolute;z-index:2;left:0;right:0;top:0;text-align:center;pointer-events:none;line-height:1.1}
+.lk-title h2{display:inline-block;max-width:100%;margin:0;font-size:calc(var(--fs)*1.85);font-size:min(calc(var(--fs)*1.85),7.4cqw);font-weight:700;color:#fff;white-space:nowrap;text-shadow:0 2px 0 rgba(20,10,60,.6),0 0 18px rgba(170,150,255,.55)}
+.lk-title p{display:block;margin:2px auto 0;width:max-content;max-width:100%;font-size:calc(var(--fs)*.9);font-weight:500;color:#d6d0ff;text-shadow:0 1px 4px #000}
+.lk-arrow{position:absolute;z-index:3;top:50%;width:var(--arrow,42px);height:var(--arrow,42px);margin-top:calc(var(--arrow,42px) / -2);display:grid;place-items:center;padding:0;border-radius:50%;cursor:pointer;
+  border:2px solid rgba(190,200,255,.55);background:rgba(16,16,50,.72);color:#fff;box-shadow:0 0 14px rgba(120,100,255,.35);transition:transform .1s}
+.lk-arrow svg{width:50%;height:50%}
+.lk-prev{left:2%}.lk-next{right:2%}
+.lk-namebox{position:absolute;z-index:3;left:0;right:0;bottom:0;display:grid;justify-items:center;gap:5px;pointer-events:none}
+.lk-name{min-width:9.5em;max-width:100%;padding:.42em 1.2em;border-radius:999px;text-align:center;font-size:calc(var(--fs)*1.12);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  background:rgba(14,14,44,.86);border:2px solid rgba(150,170,255,.3);box-shadow:0 4px 14px rgba(0,0,0,.4),0 0 12px rgba(120,100,255,.2)}
+.lk-dots{display:flex;align-items:center;gap:6px;height:12px;padding:0 8px;border-radius:999px;background:rgba(10,10,34,.55)}
+.lk-dots i{width:6px;height:6px;border-radius:50%;background:rgba(200,200,255,.45)}
+.lk-dots i.on{width:9px;height:9px;background:#fff;box-shadow:0 0 6px #fff}
+.lk-dots b{font-size:.72rem;font-weight:600;color:#cfd0ff;letter-spacing:.04em}
+/* right: option tiles */
+.lk-panel{grid-area:panel;display:flex;flex-direction:column;gap:calc(var(--gap) * .8);min-height:0;padding:calc(var(--gap) + 2px);border-radius:var(--r);
+  background:linear-gradient(180deg,rgba(26,26,76,.62),rgba(10,10,36,.72));border:2px solid rgba(150,170,255,.26);
+  box-shadow:0 0 22px rgba(90,80,255,.18),inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.lk-subs{flex:none;display:flex;gap:5px;padding:3px;border-radius:999px;background:rgba(6,8,30,.55);border:1px solid rgba(150,170,255,.18)}
+.lk-sub{flex:1 1 0;min-width:0;height:calc(var(--fs)*1.9);padding:0 6px;border-radius:999px;border:0;background:transparent;color:#a9b0e0;font-size:calc(var(--fs)*.86);font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lk-sub.on{color:#06202a;background:linear-gradient(95deg,#4adeff,#7fb8ff);box-shadow:0 0 12px rgba(74,222,255,.5)}
+.lk-subs.one .lk-sub{cursor:default}
+.lk-grid{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:grid;grid-template-columns:repeat(var(--cols,4),minmax(0,1fr));align-content:start;gap:calc(var(--gap) * .8);
+  padding:2px;margin:-2px;scrollbar-width:thin;scrollbar-color:rgba(150,170,255,.4) transparent;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+.lk-tile{position:relative;aspect-ratio:1/.86;min-width:0;padding:0;border-radius:calc(var(--r) * .7);cursor:pointer;
+  border:2px solid rgba(150,170,255,.2);background:radial-gradient(ellipse at 50% 40%,rgba(70,60,150,.55),rgba(14,14,44,.9) 75%);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);transition:border-color .15s,box-shadow .15s,transform .1s}
+.lk-tile canvas{position:absolute;inset:2px;width:calc(100% - 4px);height:calc(100% - 4px);pointer-events:none}
+.lk-tile.on{border-color:#4adeff;box-shadow:0 0 12px rgba(74,222,255,.65),inset 0 0 12px rgba(74,222,255,.25)}
+.lk-tile .ck{position:absolute;right:3px;top:3px;width:clamp(15px,24%,26px);aspect-ratio:1;border-radius:50%;display:none;place-items:center;
+  background:#2fb8ff;border:2px solid #fff;color:#fff;box-shadow:0 0 8px rgba(74,222,255,.8)}
+.lk-tile .ck svg{width:62%;height:62%}
+.lk-tile.on .ck{display:grid}
+/* tall screens: the cards and tiles stop growing */
+@media (min-height:560px){.lk-overlay{--pad:16px;--gap:12px;--head:46px;--doneh:62px;--r:20px;--fs:1.1rem}.lk-cat{max-height:72px}}
+/* phones held sideways */
+@media (max-height:460px){
+  .lk-overlay{--pad:8px;--gap:7px;--head:36px;--doneh:44px;--r:16px;--fs:.92rem;--arrow:36px}
+  .lk-title p{font-size:calc(var(--fs)*.8)}
+}
+@media (max-height:400px){
+  .lk-overlay{--pad:6px;--gap:6px;--head:32px;--doneh:40px;--r:14px;--fs:.84rem;--arrow:32px}
+  .lk-shell{grid-template-columns:clamp(64px,15%,150px) minmax(0,1fr) clamp(190px,40%,330px)}
+  .lk-title p{display:none}
+  .lk-title h2{font-size:calc(var(--fs)*1.6);font-size:min(calc(var(--fs)*1.6),7.4cqw)}
+  .lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:2px 4px;text-align:center;font-size:calc(var(--fs)*.84)}
+  .lk-cat svg{width:1.75em;height:1.75em}
+  .lk-cat .l{display:none}.lk-cat .s{display:block}
+  .lk-pill{padding:0 12px 0 8px}
+  .lk-dots{height:10px}
+  .lk-name{padding:.36em 1em}
+}
+@media (max-height:400px) and (min-width:760px){.lk-cat{flex-direction:row;justify-content:flex-start;gap:7px;padding:0 9px;text-align:left;font-size:var(--fs)}.lk-cat svg{width:1.6em;height:1.6em}}
+@media (max-height:400px) and (max-width:620px){.lk-shell{grid-template-columns:58px minmax(0,1fr) clamp(180px,42%,300px)}.lk-cat .s{font-size:.66rem}}
+@media (max-aspect-ratio:1/1){
+  .lk-shell{grid-template-columns:1fr 1fr;grid-template-rows:var(--head) auto minmax(0,1fr) minmax(0,1.1fr) var(--doneh);
+    grid-template-areas:"back dice" "cats cats" "stage stage" "panel panel" "done done"}
+  .lk-cats{flex-direction:row}.lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:6px 2px;font-size:calc(var(--fs)*.78);text-align:center}
+  .lk-cat .l{display:none}.lk-cat .s{display:block}
+  .lk-done{justify-self:stretch;width:auto}
 }
 `;
   const ICONS = {
     prev: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>',
     next: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5 5L20 6"/></svg>',
     dice: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="3.5" y="3.5" width="17" height="17" rx="4"/><g fill="currentColor" stroke="none"><circle cx="8.3" cy="8.3" r="1.6"/><circle cx="15.7" cy="8.3" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="8.3" cy="15.7" r="1.6"/><circle cx="15.7" cy="15.7" r="1.6"/></g></svg>',
+    body: '<svg viewBox="0 0 64 40"><path fill="currentColor" d="M32 9c-3 0-5 1-6 3l-2-6-2 8C16 8 8 7 1 12c5 1 9 4 10 9 3-2 7-2 10 0 1-2 3-3 5-2 1 5 3 9 6 9s5-4 6-9c2-1 4 0 5 2 3-2 7-2 10 0 1-5 5-8 10-9-7-5-15-4-21 2l-2-8-2 6c-1-2-3-3-6-3z"/></svg>',
+    wings: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.5 19.5C4 11 10 4.5 21.5 3.5c-1.2 3.4-1.1 6.6.2 9.8-2.3-1.1-4.4-.9-5.6 1.1-1.1-1.6-3.2-2.1-4.9-1.1-.9 2.6-4.5 5-8.7 6.2z"/><path d="M21.5 3.5L9 14" stroke="rgba(10,10,40,.45)" stroke-width="1.3"/></svg>',
+    face: '<svg viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M1.5 9.2C1.5 7.4 2.7 6.3 4.4 6.3c2.8 0 4.6 1.6 7.6 1.6s4.8-1.6 7.6-1.6c1.7 0 2.9 1.1 2.9 2.9 0 4.4-2.6 7.6-6 7.6-2.1 0-3.4-1.3-4.5-2.9-1.1 1.6-2.4 2.9-4.5 2.9-3.4 0-6-3.2-6-7.6zM7.3 8.6a2.4 2.1 0 1 0 0 4.2 2.4 2.1 0 1 0 0-4.2zm9.4 0a2.4 2.1 0 1 0 0 4.2 2.4 2.1 0 1 0 0-4.2z"/></svg>',
+    hat: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M7.5 4.5c0-.8.7-1.5 1.5-1.5h6c.8 0 1.5.7 1.5 1.5v9h-9z"/><path fill="rgba(10,10,40,.5)" d="M7.5 10.5h9v2.2h-9z"/><path fill="currentColor" d="M2.5 16c0-1.1 1.6-2 3.5-2h12c1.9 0 3.5.9 3.5 2s-1.6 2.2-3.5 2.2H6c-1.9 0-3.5-1.1-3.5-2.2z"/></svg>',
+    fx: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 2l1.8 5.2L17 9l-5.2 1.8L10 16l-1.8-5.2L3 9l5.2-1.8z"/><path d="M18.5 13l.95 2.55L22 16.5l-2.55.95L18.5 20l-.95-2.55L15 16.5l2.55-.95z"/><circle cx="5" cy="19" r="1.6"/></svg>',
   };
+  const ICON_COL = { body: '#6fe7ff', wings: '#ff7ad9', face: '#d08bff', hat: '#ff8ae0', fx: '#b9a8ff' };
+
+  // a copy of look wearing option id of field f (a new kind brings its own parts and colours)
+  function withOpt(look, f, id) {
+    if (f === 'kind') {
+      const d = defaults(id);
+      return clean({ ...d, hat: look.hat === (KIND_HAT[look.kind] || 'none') ? d.hat : look.hat, face: look.face, trail: look.trail });
+    }
+    return clean({ ...look, [f]: id });
+  }
+
+  // thumbnails: drawn once per look, field and pixel size, kept for the visit
+  const thumbs = new Map();
+  function thumb(look, field, w, h) {
+    const id = `${key(look)}@${field}@${w}x${h}`;
+    let c = thumbs.get(id);
+    if (c) return c;
+    c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    const [x0, y0, x1, y1] = VIEWS[FIELD_VIEW[field] || 'full'];
+    const r = Math.min(w / (x1 - x0), h / (y1 - y0));
+    const cx = w / 2 - ((x0 + x1) / 2) * r, cy = h / 2 - ((y0 + y1) / 2) * r;
+    if (field === 'trail') drawTrail2D(g, look, cx, cy, r * 1.25, { t: 0.42, face: 1, vx: 1, vy: -0.12 });
+    draw2D(g, look, cx, cy, r, { face: 1, flap: 0.12, noCache: true });
+    thumbs.set(id, c);
+    if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
+    return c;
+  }
+
+  // the stone pedestal under the 3D bat, matched to preview3D's camera and glow ring
+  function paintPedestal(cv, look, zoom) {
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return null;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    const g = cv.getContext('2d');
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const half = Math.tan((15 * Math.PI) / 180), a = w / h;
+    const dist = Math.max(0.95 / half, 1.12 / (half * a)) / zoom;
+    const cam = [0, 0.12, dist], f0 = [0, -0.08, -dist], fl = Math.hypot(f0[1], f0[2]);
+    const F = [0, f0[1] / fl, f0[2] / fl], U = [0, -F[2], F[1]]; // up, at right angles to the view
+    const up = U[1] < 0 ? [0, -U[1], -U[2]] : U;
+    const P = (x, y, z) => {
+      const v = [x - cam[0], y - cam[1], z - cam[2]];
+      const zc = v[1] * F[1] + v[2] * F[2], yc = v[1] * up[1] + v[2] * up[2];
+      return [w / 2 + (x / (zc * half * a)) * (w / 2), h / 2 - (yc / (zc * half)) * (h / 2)];
+    };
+    const R = 0.98, Y = -0.64, TH = 0.2;
+    const [cx, cy] = P(0, Y, 0), rx = P(R, Y, 0)[0] - cx;
+    const ry = Math.max(4, (P(0, Y, R)[1] - P(0, Y, -R)[1]) / 2);
+    const depth = P(0, Y - TH, R)[1] - P(0, Y, R)[1];
+    g.clearRect(0, 0, w, h);
+    // soft purple glow behind and below
+    let gr = g.createRadialGradient(cx, cy, rx * 0.2, cx, cy, rx * 1.5);
+    gr.addColorStop(0, 'rgba(150,100,255,.5)'); gr.addColorStop(0.5, 'rgba(110,70,230,.2)'); gr.addColorStop(1, 'rgba(80,40,200,0)');
+    g.fillStyle = gr; g.save(); g.translate(cx, cy); g.scale(1, 0.62); g.beginPath(); g.arc(0, 0, rx * 1.5, 0, Math.PI * 2); g.fill(); g.restore();
+    // the side of the stone, a little lumpy
+    const seg = 28, lump = (i) => 1 + Math.sin(i * 2.7) * 0.012 + Math.sin(i * 5.3) * 0.008;
+    g.beginPath();
+    for (let i = 0; i <= seg; i++) {
+      const t = Math.PI * (i / seg), k = lump(i);
+      g.lineTo(cx + Math.cos(t) * rx * k * -1, cy + Math.sin(t) * ry * k + depth * (0.92 + Math.sin(i * 3.1) * 0.08));
+    }
+    for (let i = seg; i >= 0; i--) { const t = Math.PI * (i / seg); g.lineTo(cx - Math.cos(t) * rx, cy + Math.sin(t) * ry); }
+    g.closePath();
+    gr = g.createLinearGradient(0, cy, 0, cy + ry + depth);
+    gr.addColorStop(0, '#3b3170'); gr.addColorStop(0.5, '#251d4e'); gr.addColorStop(1, '#130e2c');
+    g.fillStyle = gr; g.fill();
+    // stone joints down the side
+    g.strokeStyle = 'rgba(8,5,26,.55)'; g.lineWidth = Math.max(1, rx * 0.012);
+    for (const u of [-0.72, -0.38, 0.05, 0.44, 0.78]) {
+      const x = cx + u * rx, y = cy + Math.sqrt(Math.max(0, 1 - u * u)) * ry;
+      g.beginPath(); g.moveTo(x, y + 1); g.lineTo(x + rx * 0.02, y + depth * 0.9); g.stroke();
+    }
+    // the flat top
+    gr = g.createRadialGradient(cx - rx * 0.2, cy - ry * 0.4, rx * 0.05, cx, cy, rx * 1.05);
+    gr.addColorStop(0, '#6a5cae'); gr.addColorStop(0.55, '#4a3e8c'); gr.addColorStop(1, '#2f2766');
+    g.fillStyle = gr;
+    g.beginPath(); g.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(190,175,255,.5)'; g.lineWidth = Math.max(1, rx * 0.012);
+    g.beginPath(); g.ellipse(cx, cy, rx * 0.995, ry * 0.99, 0, Math.PI * 1.02, Math.PI * 1.98); g.stroke();
+    // cracks and an inner carved ring
+    g.strokeStyle = 'rgba(20,14,50,.5)'; g.lineWidth = Math.max(1, rx * 0.01);
+    g.beginPath(); g.ellipse(cx, cy, rx * 0.8, ry * 0.8, 0, 0, Math.PI * 2); g.stroke();
+    g.beginPath();
+    g.moveTo(cx - rx * 0.62, cy - ry * 0.2); g.lineTo(cx - rx * 0.45, cy - ry * 0.05); g.lineTo(cx - rx * 0.5, cy + ry * 0.3);
+    g.moveTo(cx + rx * 0.5, cy - ry * 0.45); g.lineTo(cx + rx * 0.35, cy - ry * 0.2); g.lineTo(cx + rx * 0.42, cy + ry * 0.12);
+    g.stroke();
+    // a faint glow of the bat's own colour on top
+    gr = g.createRadialGradient(cx, cy, 0, cx, cy, rx * 0.75);
+    gr.addColorStop(0, shade(look.body, 0.2, 0.4)); gr.addColorStop(1, shade(look.body, 0, 0));
+    g.fillStyle = gr; g.save(); g.translate(cx, cy); g.scale(1, ry / rx); g.beginPath(); g.arc(0, 0, rx * 0.75, 0, Math.PI * 2); g.fill(); g.restore();
+    return { cx, cy, rx, ry, bottom: cy + ry + depth };
+  }
 
   let ed = null; // the open editor, if any
   function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  const fieldName = (f) => { for (const G of GROUPS) for (const [id, n] of G.fields) if (id === f) return n; return f; };
 
   // onClose(look, { cancelled }): Done saves and passes the new look; Back passes the saved one
   function openEditor(onClose) {
     if (ed) ed.close(false);
     if (!document.getElementById('lk-style')) { const st = el('style'); st.id = 'lk-style'; st.textContent = CSS; document.head.appendChild(st); }
-    const state = { look: mine() };
+    const state = { look: mine(), group: 0, sub: GROUPS.map(() => 0) };
     const root = el('div', 'lk-overlay');
-    root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', 'Make your bat');
+    root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', 'Customize your bat');
     root.innerHTML = `
-      <div class="lk-panel">
-        <div class="lk-stage"><canvas class="lk-big" aria-label="Your bat. Drag to spin it."></canvas>
-          <div class="lk-hint">DRAG TO SPIN</div>
-          <div class="lk-mini" title="How big it looks in a game"><canvas aria-hidden="true"></canvas>in game</div>
-          <div class="lk-blurb" aria-live="polite"><b></b><span></span></div></div>
-        <div class="lk-right">
-          <div class="lk-head"><h2>Make your <span>bat</span></h2>
-            <button class="lk-btn lk-dice" aria-label="Random bat">${ICONS.dice}<span>Random</span></button></div>
-          <div class="lk-rows"></div>
-          <div class="lk-foot"><button class="lk-btn lk-back">Back</button><button class="lk-btn lk-done">Done</button></div>
-        </div>
+      <div class="lk-shell">
+        <button class="lk-pill lk-back" aria-label="Back without saving">${ICONS.prev}<span>Back</span></button>
+        <button class="lk-pill lk-dice" aria-label="Random bat">${ICONS.dice}<span>Random</span></button>
+        <nav class="lk-cats" role="tablist" aria-label="Parts">${GROUPS.map((G, i) => `<button class="lk-cat" role="tab" data-i="${i}" style="--ic:${ICON_COL[G.icon]}" aria-label="${G.name}">${ICONS[G.icon]}<span class="l">${G.name}</span><span class="s">${G.short}</span></button>`).join('')}</nav>
+        <section class="lk-stage">
+          <canvas class="lk-ped" aria-hidden="true"></canvas>
+          <canvas class="lk-big" aria-label="Your bat. Drag to spin it, flick it sideways to change."></canvas>
+          <div class="lk-title"><h2>Customize Your Bat</h2><p>Make it yours. Look fierce.</p></div>
+          <button class="lk-arrow lk-prev" aria-label="Previous option">${ICONS.prev}</button>
+          <button class="lk-arrow lk-next" aria-label="Next option">${ICONS.next}</button>
+          <div class="lk-namebox"><div class="lk-name" aria-live="polite"></div><div class="lk-dots" aria-hidden="true"></div></div>
+        </section>
+        <section class="lk-panel">
+          <div class="lk-subs" role="tablist"></div>
+          <div class="lk-grid" role="listbox"></div>
+        </section>
+        <button class="lk-pill lk-done" aria-label="Done, save my bat">${ICONS.check}<span>Done</span></button>
       </div>`;
     document.body.appendChild(root);
     const $ = (s) => root.querySelector(s);
-    const big = $('.lk-big'), miniC = $('.lk-mini canvas'), rowsEl = $('.lk-rows');
+    const big = $('.lk-big'), ped = $('.lk-ped'), stage = $('.lk-stage'), grid = $('.lk-grid'), subsEl = $('.lk-subs');
+    const nameEl = $('.lk-name'), dotsEl = $('.lk-dots'), namebox = $('.lk-namebox');
+    const cats = [...root.querySelectorAll('.lk-cat')];
+
+    // the painted menu cave (backdrop.js) sits just under the creator while it is open
+    const bd = document.getElementById('backdrop'), bdZ = bd ? bd.style.zIndex : '';
+    if (bd) bd.style.zIndex = '999';
+    const solid = () => root.classList.toggle('solid', !bd || bd.hidden);
+    solid();
 
     // keep the game from reacting to touches and keys while the creator is open
     const stop = (e) => e.stopPropagation();
     for (const ty of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove', 'touchend', 'mousedown', 'mouseup', 'click', 'wheel']) root.addEventListener(ty, stop);
-    let focusRow = 0;
     const onKey = (e) => {
       if (!ed) return;
       e.stopPropagation();
       if (e.type !== 'keydown') return;
       if (e.key === 'Escape') { e.preventDefault(); close(false); }
-      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); rows[focusRow].step(e.key === 'ArrowLeft' ? -1 : 1); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-        e.preventDefault();
-        focusRow = (focusRow + (e.key === 'ArrowUp' ? -1 : 1) + rows.length) % rows.length;
-        rows[focusRow].el.scrollIntoView({ block: 'nearest' });
-        hot();
-      }
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); step(e.key === 'ArrowLeft' ? -1 : 1); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); pickGroup((state.group + (e.key === 'ArrowUp' ? -1 : 1) + GROUPS.length) % GROUPS.length); }
     };
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('keyup', onKey, true);
-    const hot = () => rows.forEach((r, i) => r.el.classList.toggle('hot', i === focusRow));
 
-    const preview = preview3D(big, () => state.look);
+    const ZOOM = 0.8;
+    const preview = preview3D(big, () => state.look, { zoom: ZOOM });
+    const field = () => GROUPS[state.group].fields[state.sub[state.group]][0];
+    const list = () => OPTIONS[field()];
 
     function setField(f, id) {
-      if (f === 'kind') {
-        // a new kind brings its own body parts and colours; hats, face extras and trails stay
-        const d = defaults(id), L = state.look;
-        state.look = clean({ ...d, hat: L.hat === (KIND_HAT[L.kind] || 'none') ? d.hat : L.hat, face: L.face, trail: L.trail });
-      } else state.look = clean({ ...state.look, [f]: id });
+      state.look = withOpt(state.look, f, id);
       preview.refresh();
       update();
     }
-
-    // one Lego-style slider per part: drag or swipe the strip, tap a neighbour, or use the arrows
-    const rows = CATEGORIES.map(({ field, name }, ri) => {
-      const list = OPTIONS[field];
-      const row = el('div', 'lk-row');
-      row.innerHTML = `<span class="lk-lab">${name}</span><button class="lk-btn lk-prev" aria-label="Previous ${name}">${ICONS.prev}</button>
-        <div class="lk-track" role="listbox" aria-label="${name}"><div class="lk-strip"></div><span class="lk-count"></span></div>
-        <button class="lk-btn lk-next" aria-label="Next ${name}">${ICONS.next}</button>`;
-      rowsEl.appendChild(row);
-      const track = row.querySelector('.lk-track'), strip = row.querySelector('.lk-strip'), count = row.querySelector('.lk-count');
-      const items = field === 'scheme' ? [...list, { id: 'custom', name: 'Custom' }] : list;
-      strip.innerHTML = items.map((o) => `<div class="lk-chip" role="option">${o.body ? `<i style="background:${o.body}"></i><i style="background:${o.wing}"></i><i style="background:${o.belly}"></i>` : ''}${esc(o.name)}</div>`).join('');
-      const chips = [...strip.children];
-      const R = { el: row, field, drag: 0 };
-      const chipW = () => Math.max(70, track.clientWidth * 0.46);
-      const index = () => Math.max(0, items.findIndex((o) => o.id === state.look[field]));
-      R.place = (anim) => {
-        const cw = chipW(), i = index(), custom = field === 'scheme' && state.look.scheme === 'custom';
-        chips.forEach((c, k) => { c.style.width = cw + 'px'; c.classList.toggle('on', k === i); c.setAttribute('aria-selected', String(k === i)); });
-        // the custom colour chip only shows while your colours are custom
-        if (field === 'scheme') chips[chips.length - 1].style.display = custom ? '' : 'none';
-        strip.classList.toggle('anim', !!anim);
-        strip.style.transform = `translateX(${track.clientWidth / 2 - (i + 0.5) * cw + R.drag}px)`;
-        count.textContent = custom ? '' : `${i + 1} / ${list.length}`;
-      };
-      R.step = (d) => {
-        const n = list.length;
-        let i = list.findIndex((o) => o.id === state.look[field]);
-        i = i < 0 ? (d > 0 ? 0 : n - 1) : (((i + d) % n) + n) % n;
-        setField(field, list[i].id);
-      };
-      const focus = () => { focusRow = ri; hot(); };
-      row.querySelector('.lk-prev').addEventListener('click', () => { focus(); R.step(-1); });
-      row.querySelector('.lk-next').addEventListener('click', () => { focus(); R.step(1); });
-      // drag: the strip follows your finger, then snaps to the nearest option
-      let start = null;
-      track.addEventListener('pointerdown', (e) => { start = { x: e.clientX, y: e.clientY, id: e.pointerId, moved: false }; focus(); });
-      track.addEventListener('pointermove', (e) => {
-        if (!start || e.pointerId !== start.id) return;
-        const dx = e.clientX - start.x, dy = e.clientY - start.y;
-        if (!start.moved && Math.abs(dx) > 6 && Math.abs(dx) > Math.abs(dy)) {
-          start.moved = true;
-          try { track.setPointerCapture(e.pointerId); } catch (er) { /* fine */ }
-        }
-        if (start.moved) { R.drag = dx; R.place(false); }
-      });
-      track.addEventListener('pointerup', (e) => {
-        if (!start || e.pointerId !== start.id) return;
-        const s = start; start = null;
-        const cw = chipW();
-        if (s.moved) {
-          const steps = Math.max(-(list.length - 1), Math.min(list.length - 1, Math.round(-R.drag / cw)));
-          R.drag = 0;
-          if (steps) R.step(steps); else R.place(true);
-        } else {
-          // a tap on a neighbour picks it
-          const r = track.getBoundingClientRect(), off = e.clientX - (r.left + r.width / 2);
-          if (Math.abs(off) > cw / 2) R.step(Math.sign(off) * Math.round(Math.abs(off) / cw));
-        }
-      });
-      track.addEventListener('pointercancel', (e) => { if (start && e.pointerId === start.id) { start = null; R.drag = 0; R.place(true); } });
-      return R;
-    });
-    hot();
-
-    function update() {
-      const L = state.look, k = KINDS.find((x) => x.id === L.kind);
-      $('.lk-blurb b').textContent = k.name;
-      $('.lk-blurb span').textContent = k.blurb;
-      for (const r of rows) r.place(true);
+    function step(d) {
+      const f = field(), L = list(), n = L.length;
+      let i = L.findIndex((o) => o.id === state.look[f]);
+      i = i < 0 ? (d > 0 ? 0 : n - 1) : (((i + d) % n) + n) % n;
+      setField(f, L[i].id);
+      const t = tiles[i];
+      if (t) t.el.scrollIntoView({ block: 'nearest' });
     }
+
+    // ---- tiles, drawn lazily: only the ones on screen, a few per frame
+    let tiles = [], queue = new Set();
+    const io = 'IntersectionObserver' in window ? new IntersectionObserver((ents) => {
+      for (const e of ents) { const t = e.target._lk; if (t) { t.seen = e.isIntersecting; if (t.seen && t.dirty) queue.add(t); } }
+    }, { root: grid, rootMargin: '60px' }) : null;
+    function paintTile(t) {
+      const c = t.cv, w = c.clientWidth, h = c.clientHeight;
+      if (!w || !h) return false;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2), W = Math.round(w * dpr), H = Math.round(h * dpr);
+      const src = thumb(t.look, t.field, W, H);
+      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
+      const g = c.getContext('2d');
+      g.clearRect(0, 0, W, H); g.drawImage(src, 0, 0);
+      t.dirty = false; t.el.dataset.drawn = '1';
+      return true;
+    }
+    function buildGrid() {
+      if (io) io.disconnect();
+      queue.clear();
+      const f = field();
+      grid.setAttribute('aria-label', fieldName(f));
+      grid.innerHTML = '';
+      tiles = list().map((o, i) => {
+        const b = el('button', 'lk-tile', `<canvas aria-hidden="true"></canvas><span class="ck" aria-hidden="true">${ICONS.check}</span>`);
+        b.setAttribute('role', 'option'); b.setAttribute('aria-label', o.name); b.title = o.name;
+        b.addEventListener('click', () => setField(f, o.id));
+        grid.appendChild(b);
+        const t = { el: b, cv: b.firstChild, field: f, id: o.id, i, look: null, k: '', dirty: true, seen: !io };
+        b._lk = t;
+        if (io) io.observe(b);
+        return t;
+      });
+      grid.scrollTop = 0;
+      syncGrid();
+      const on = tiles.find((t) => t.el.classList.contains('on'));
+      if (on) requestAnimationFrame(() => on.el.scrollIntoView({ block: 'nearest' }));
+    }
+    function syncGrid() {
+      const f = field();
+      for (const t of tiles) {
+        const on = state.look[f] === t.id;
+        t.el.classList.toggle('on', on); t.el.setAttribute('aria-selected', String(on));
+        const look = withOpt(state.look, f, t.id), k = key(look);
+        if (k !== t.k) { t.look = look; t.k = k; t.dirty = true; }
+        if (t.dirty && t.seen) queue.add(t);
+      }
+    }
+    function pickGroup(i) {
+      state.group = i;
+      cats.forEach((c, k) => { c.classList.toggle('on', k === i); c.setAttribute('aria-selected', String(k === i)); });
+      const G = GROUPS[i];
+      subsEl.classList.toggle('one', G.fields.length < 2);
+      subsEl.innerHTML = G.fields.map(([f, n], k) => `<button class="lk-sub${k === state.sub[i] ? ' on' : ''}" role="tab" data-k="${k}">${esc(n)}</button>`).join('');
+      buildGrid();
+      update();
+    }
+    cats.forEach((c, i) => c.addEventListener('click', () => pickGroup(i)));
+    subsEl.addEventListener('click', (e) => {
+      const b = e.target.closest('.lk-sub');
+      if (!b) return;
+      const k = +b.dataset.k;
+      if (k === state.sub[state.group]) return;
+      state.sub[state.group] = k;
+      [...subsEl.children].forEach((s, j) => s.classList.toggle('on', j === k));
+      buildGrid();
+      update();
+    });
+
+    let pedKey = '', pedSize = '';
+    function update() {
+      const f = field(), L = list(), i = L.findIndex((o) => o.id === state.look[f]);
+      nameEl.textContent = i >= 0 ? L[i].name : f === 'scheme' ? 'Custom colours' : fieldName(f);
+      if (L.length <= 7) dotsEl.innerHTML = L.map((o, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
+      else dotsEl.innerHTML = `<b>${i >= 0 ? i + 1 : '–'} / ${L.length}</b>`;
+      syncGrid();
+      const pk = state.look.body;
+      if (pk !== pedKey) { pedKey = pk; pedSize = ''; }
+    }
+
+    $('.lk-prev').addEventListener('click', () => step(-1));
+    $('.lk-next').addEventListener('click', () => step(1));
+    // a quick sideways flick on the bat changes the option; a slow drag just tumbles it
+    let flick = null;
+    big.addEventListener('pointerdown', (e) => { flick = { x: e.clientX, y: e.clientY, id: e.pointerId, t: performance.now() }; });
+    big.addEventListener('pointerup', (e) => {
+      if (!flick || e.pointerId !== flick.id) return;
+      const dx = e.clientX - flick.x, dy = e.clientY - flick.y, dt = performance.now() - flick.t;
+      flick = null;
+      if (dt < 380 && Math.abs(dx) > Math.max(40, big.clientWidth * 0.14) && Math.abs(dx) > Math.abs(dy) * 1.6) step(dx < 0 ? 1 : -1);
+    });
+    big.addEventListener('pointercancel', () => { flick = null; });
 
     $('.lk-dice').addEventListener('click', (e) => {
       state.look = random(null);
@@ -1820,41 +2007,47 @@
     $('.lk-back').addEventListener('click', () => close(false));
     $('.lk-done').addEventListener('click', () => close(true));
 
-    // the in-game-size bat, with its trail
+    // one loop: draws waiting thumbnails (a few ms a frame) and keeps the pedestal fitted
     let raf = 0;
-    const t0 = performance.now();
-    function frame(now) {
+    function frame() {
       raf = requestAnimationFrame(frame);
-      const t = (now - t0) / 1000;
-      const dpr = Math.min(3, window.devicePixelRatio || 1), w = miniC.clientWidth, h = miniC.clientHeight;
-      if (!w || !h) return;
-      if (miniC.width !== Math.round(w * dpr)) { miniC.width = Math.round(w * dpr); miniC.height = Math.round(h * dpr); }
-      const g = miniC.getContext('2d');
-      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
-      const r = Math.min(h / 3.6, 9), x = w * 0.62, y = h * 0.55 + Math.sin(t * 3) * 1.5;
-      drawTrail2D(g, state.look, x, y, r, { t, face: 1, vx: 1, vy: 0 });
-      draw2D(g, state.look, x, y, r, { face: 1, flap: t * 2.9 });
+      solid();
+      const sz = stage.clientWidth + 'x' + stage.clientHeight;
+      if (sz !== pedSize) {
+        pedSize = sz;
+        const p = paintPedestal(ped, state.look, ZOOM);
+        if (p) {
+          // the name sits on the front of the stone, but never off the bottom
+          const nb = namebox.offsetHeight, top = Math.min(stage.clientHeight - nb, ped.offsetTop + p.cy + p.ry * 0.55);
+          namebox.style.bottom = 'auto'; namebox.style.top = Math.max(0, top) + 'px';
+        }
+        for (const t of tiles) if (t.seen) { t.dirty = true; queue.add(t); }
+      }
+      const t0 = performance.now();
+      for (const t of queue) {
+        queue.delete(t);
+        if (t.el.isConnected && t.dirty) paintTile(t);
+        if (performance.now() - t0 > 6) break;
+      }
     }
     raf = requestAnimationFrame(frame);
-    const onResize = () => { for (const r of rows) r.place(false); };
-    window.addEventListener('resize', onResize);
 
     function close(done) {
       if (!ed) return;
       ed = null;
       cancelAnimationFrame(raf);
+      if (io) io.disconnect();
       preview.dispose();
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('keyup', onKey, true);
-      window.removeEventListener('resize', onResize);
+      if (bd) bd.style.zIndex = bdZ;
       root.remove();
       const result = done ? save(state.look) : mine();
       if (typeof onClose === 'function') onClose(result, { cancelled: !done });
     }
     ed = { close, root };
-    update();
-    requestAnimationFrame(() => onResize());
-    setTimeout(() => { const d = $('.lk-done'); if (d && !matchMedia('(pointer: coarse)').matches) d.focus({ preventScroll: true }); }, 50);
+    pickGroup(0);
+    setTimeout(() => { const d = $('.lk-done'); if (d && ed && !matchMedia('(pointer: coarse)').matches) d.focus({ preventScroll: true }); }, 50);
     return ed;
   }
 
