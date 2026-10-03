@@ -41,6 +41,7 @@
   </defs>
 </svg>
 
+<canvas id="game3d" aria-hidden="true" style="display:none"></canvas>
 <canvas id="game" aria-label="Echo Caves game"></canvas>
 <button id="sound-toggle" class="round" type="button" aria-label="Sound" aria-pressed="true"><svg><use href="#i-note"/></svg></button>
 <button id="pause-button" class="round" type="button" aria-label="Pause" hidden><svg><use href="#i-pause"/></svg></button>
@@ -89,11 +90,18 @@
       <button type="button" class="slot" data-slot="2" style="--c: var(--ca)"><span class="tag">P3</span><svg class="avatar"><use href="#i-bat"/></svg><b>Ca</b><span class="add">+ Add CPU</span></button>
       <button type="button" class="slot" data-slot="3" style="--c: var(--bo)"><span class="tag">P4</span><svg class="avatar"><use href="#i-bat"/></svg><b>Bo</b><span class="add">+ Add CPU</span></button>
     </div>
+    <div class="segs">
     <div class="seg" role="group" aria-label="CPU level">
       <span>CPU</span>
       <button type="button" class="chip" data-level="easy">Easy</button>
       <button type="button" class="chip" data-level="normal">Normal</button>
       <button type="button" class="chip" data-level="hard">Hard</button>
+    </div>
+    <div class="seg" role="group" aria-label="View">
+      <span>View</span>
+      <button type="button" class="chip" data-view="3d">3D</button>
+      <button type="button" class="chip" data-view="2d">2D</button>
+    </div>
     </div>
     <div class="actions">
       <button id="duel-back" type="button" class="btn ghost">Back</button>
@@ -137,6 +145,11 @@
         <button type="button" class="chip" data-room-arena="chaos">Chaos</button>
         <button type="button" class="chip" data-room-arena="sky">Open sky</button>
       </div>
+      <div class="seg" role="group" aria-label="View">
+        <span>View</span>
+        <button type="button" class="chip" data-view="3d">3D</button>
+        <button type="button" class="chip" data-view="2d">2D</button>
+      </div>
       <div class="actions">
         <button id="room-leave" type="button" class="btn ghost">Leave room</button>
         <button id="room-start" type="button" class="btn primary">Let's fight ›</button>
@@ -167,6 +180,7 @@
     <div class="stack">
       <button id="pause-resume" type="button" class="btn primary">Resume</button>
       <button id="pause-restart" type="button" class="btn">Restart</button>
+      <button id="pause-view" type="button" class="btn">Switch to 2D view</button>
       <button id="pause-menu" type="button" class="btn ghost">Main menu</button>
     </div>
   </div>
@@ -182,6 +196,8 @@
 <script src="src/level.js"></script>
 <script src="src/arenas.js"></script>
 <script src="src/game.js"></script>
+<script src="src/vendor/three.min.js"></script>
+<script src="src/duel3d.js"></script>
 <script src="src/duel.js"></script>
 <script src="src/net.js"></script>
 </body>

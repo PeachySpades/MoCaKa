@@ -145,7 +145,12 @@
   }
 
   // o: { mode, humans, cpus, remotes, mySlot, net, onEnd }
+  // '3d' draws the battle with three.js (duel3d.js); '2d' is the flat top-down view
+  let view = '3d';
+  const in3d = () => view === '3d' && window.EchoDuel3D && window.EchoDuel3D.supported;
+
   function start(o = {}) {
+    window.EchoDuel3D?.reset?.();
     mode = o.mode || 'local';
     net = o.net || null;
     onEnd = o.onEnd || null;
@@ -985,12 +990,29 @@
     ctx.setLineDash([]);
   }
 
+  // crystals and power-ups stay hidden too, until sound or a bat's senses find them
+  function seenAt(x, y) {
+    let a = litAt(x, y);
+    for (const b of senses()) a = Math.max(a, Math.max(0, Math.min(1, 1 - (Math.hypot(x - b.x, y - b.y) - 1) / 1.5)));
+    return Math.min(1, a * 1.2);
+  }
+
+  const BAT_RGB = BATS.map((b) => b.rgb.split(',').map((v) => +v / 255));
   function render() {
+    if (in3d()) {
+      const follow = viewer >= 0 ? bats[viewer] : localBat(0);
+      const ok = window.EchoDuel3D.render({
+        W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams, crystals, powerups, eats, shake, follow,
+        batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE, EAT_PULL,
+      });
+      if (ok) { render3dOverlay(follow); return; }
+    }
+    window.EchoDuel3D?.hide();
     const th = arena.theme;
     ctx.fillStyle = th.bg;
     ctx.fillRect(0, 0, W, H);
-    const top = Math.max(54, H * 0.15);
-    const bottom = Math.max(22, H * 0.06);
+    // the map fills the screen; the scoreboard and arena info float over its border walls
+    const top = 4, bottom = 4;
     PX = Math.min(W / arena.w, (H - top - bottom) / arena.h);
     const sx = shake > 0 ? (Math.random() - 0.5) * shake * 30 : 0, sy = shake > 0 ? (Math.random() - 0.5) * shake * 30 : 0;
     ox = (W - arena.w * PX) / 2 + sx;
@@ -1047,12 +1069,6 @@
       }
     }
 
-    // crystals and power-ups stay hidden too, until sound or a bat's senses find them
-    const seenAt = (x, y) => {
-      let a = litAt(x, y);
-      for (const b of near) a = Math.max(a, Math.max(0, Math.min(1, 1 - (Math.hypot(x - b.x, y - b.y) - 1) / 1.5)));
-      return Math.min(1, a * 1.2);
-    };
     for (const c of crystals) {
       if (!c.on) continue;
       const a = seenAt(c.x, c.y);
@@ -1123,6 +1139,80 @@
       ctx.fillText(p.text, X(p.x), Y(p.y - k * 0.6));
     }
 
+    drawScreen();
+  }
+
+  // The 3D view draws the world; labels, sparks and the HUD go on the flat canvas on top
+  function render3dOverlay(follow) {
+    const P = window.EchoDuel3D.project;
+    ctx.clearRect(0, 0, W, H);
+    const c = P(follow ? follow.x : arena.w / 2, follow ? follow.y : arena.h / 2);
+    PX = c.s;
+    ox = 0; oy = H / 2 - (arena.h * PX) / 2;
+    const th = arena.theme;
+    for (const p of ambient) {
+      const l = litAt(p.x, p.y);
+      if (l < 0.05) continue;
+      const q = P(p.x, p.y, 0.3 + (p.phase % 1) * 0.6);
+      if (q.off) continue;
+      ctx.fillStyle = `rgba(${th.ambientRgb}, ${0.55 * l})`;
+      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(1.2, p.size * q.s * 0.6), 0, Math.PI * 2); ctx.fill();
+    }
+    for (const p of particles) {
+      const q = P(p.x, p.y);
+      if (q.off) continue;
+      const size = p.size * q.s / 34;
+      ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
+      if (p.feather) {
+        ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(p.life * 6);
+        ctx.beginPath(); ctx.ellipse(0, 0, size, size * 0.4, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+      } else ctx.fillRect(q.x - size / 2, q.y - size / 2, size, size);
+    }
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (const b of bats) {
+      if (b.dead) continue;
+      const v = batVisible(b);
+      if (v < 0.03 || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)) continue;
+      const q = P(b.x, b.y), s = q.s;
+      if (q.off) continue;
+      ctx.globalAlpha = b.ctrl === 'local' || viewer === b.i ? 1 : v;
+      if (b.charging && b.charge > 0.12) {
+        const k = Math.min(1, b.charge / BEAM_CHARGE), full = k >= 1;
+        ctx.strokeStyle = full ? `rgba(255, 255, 255, ${0.6 + 0.4 * Math.sin(clock * 20)})` : `rgba(${b.rgb}, 0.9)`;
+        ctx.lineWidth = Math.max(2.5, s * 0.08);
+        ctx.beginPath(); ctx.arc(q.x, q.y, s * 0.75, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke();
+      }
+      if (b.mega) {
+        ctx.strokeStyle = `rgba(${POWERS.mega.rgb}, ${0.5 + 0.4 * Math.sin(clock * 8)})`;
+        ctx.lineWidth = Math.max(1.5, s * 0.05);
+        ctx.beginPath(); ctx.arc(q.x, q.y, s * 0.6, 0, Math.PI * 2); ctx.stroke();
+      }
+      if (b.stun > 0) {
+        ctx.font = `700 ${Math.max(10, s * 0.32)}px ${FONT}`;
+        ctx.fillStyle = '#ffe278';
+        ctx.fillText('STUNNED', q.x, q.y - s * 0.95);
+      }
+      ctx.font = `700 ${Math.max(10, s * 0.3)}px ${FONT}`;
+      ctx.fillStyle = `rgba(${b.rgb}, 0.95)`;
+      const you = viewer === b.i ? ' (you)' : '';
+      ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, q.x, q.y + s * 0.75);
+      ctx.globalAlpha = 1;
+    }
+    for (const p of popups) {
+      const k = p.t / p.life;
+      const pop = p.big ? 1 + 0.6 * Math.max(0, 1 - p.t * 6) : 1;
+      const q = P(p.x, p.y - k * 0.6, 1);
+      if (q.off) continue;
+      ctx.font = `700 ${Math.max(p.big ? 18 : 11, q.s * (p.big ? 0.9 : 0.45)) * pop}px ${FONT}`;
+      ctx.fillStyle = `rgba(${p.rgb}, ${1 - k * k})`;
+      ctx.fillText(p.text, q.x, q.y);
+    }
+    drawScreen();
+  }
+
+  // Screen-space layer shared by both views: warnings, HUD, touch controls, fades
+  function drawScreen() {
+    const th = arena.theme;
     // the shift warning pulses the screen edge instead of revealing the map
     if (shiftTimer < shiftWarning() && !over && !shift) {
       const a = 0.25 + 0.25 * Math.sin(clock * 14);
@@ -1428,6 +1518,8 @@
     get beams() { return beams; },
     get countdown() { return countdown; },
     get over() { return over; },
+    get view() { return view; },
+    setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide(); },
     setPaused: (p) => { paused = p; if (p) { keys.clear(); sticks.clear(); chargers.clear(); } },
     setShiftTimer: (s) => { shiftTimer = s; },
     spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },

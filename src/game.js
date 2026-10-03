@@ -1056,6 +1056,7 @@
     $('pause-title').textContent = online() ? 'Menu' : 'Paused';
     $('pause-note').hidden = !online();
     $('pause-restart').hidden = online();
+    $('pause-view').hidden = mode !== 'duel';
     $('pause-menu').textContent = online() ? 'Leave match' : 'Main menu';
   }
   function resume() { showOverlay(null); }
@@ -1092,6 +1093,7 @@
     state = 'duel';
     L = null;
     showOverlay(null);
+    window.EchoDuel.setView(store.get('echo-view') || '3d');
     window.EchoDuel.start({ ...cfg, onEnd: (result) => { cfg.onResult?.(result); endDuel(result); } });
   }
 
@@ -1184,6 +1186,17 @@
     if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
     toMenu();
   });
+  // 3D or flat view for battles; each device picks its own
+  function setView(v) {
+    v = v === '2d' ? '2d' : '3d';
+    store.set('echo-view', v);
+    window.EchoDuel?.setView(v);
+    document.querySelectorAll('[data-view]').forEach((b) => { b.classList.toggle('on', b.dataset.view === v); b.setAttribute('aria-pressed', String(b.dataset.view === v)); });
+    $('pause-view').textContent = v === '3d' ? 'Switch to 2D view' : 'Switch to 3D view';
+  }
+  document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+  $('pause-view').addEventListener('click', () => { setView(store.get('echo-view') === '2d' ? '3d' : '2d'); resume(); });
+  setView(store.get('echo-view') || '3d');
   $('pause-button').addEventListener('click', openPause);
   $('pause-resume').addEventListener('click', resume);
   $('pause-restart').addEventListener('click', () => {
@@ -1221,6 +1234,7 @@
       requestAnimationFrame(frame);
       return;
     }
+    window.EchoDuel3D?.hide();
     if (state === 'play' && !frozen) update(dt);
     else if (state === 'win' || state === 'lose') {
       clock += dt;
