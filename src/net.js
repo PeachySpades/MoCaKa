@@ -162,7 +162,7 @@
   // Cloudflare room server: relays every message, so it works on mobile data and strict Wi-Fi.
   // Set ROOM_SERVER once the Worker is deployed; the game also uses it automatically when it
   // is itself served by that Worker.
-  const ROOM_SERVER = '';
+  const ROOM_SERVER = 'https://mocaka.mocakaechocaves.workers.dev';
   const relayBase = (() => {
     if (params.get('peer')) return '';   // tests with a local PeerJS server
     const r = params.get('relay') || (/\.workers\.dev$/.test(location.hostname) ? location.origin : ROOM_SERVER);
