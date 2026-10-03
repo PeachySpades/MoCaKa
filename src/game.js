@@ -11,6 +11,9 @@
   const RING_SPEED = 11, RING_MAX = 8.5, SQUEAK_COOLDOWN = 0.45;
   const LIGHT_FADE = 0.7;      // lit walls fade over ~1.4s
   const MAX_HEARTS = 3, HURT_TIME = 1.3;
+  const MAX_ECHOES = 15, CRYSTAL_ECHOES = 3;
+  // Cave Run: the screen scrolls right on its own, speeding up over time
+  const RUN_START_SPEED = 2.0, RUN_MAX_SPEED = 4.0, RUN_SPEEDUP = 0.025;
 
   const COL = {
     bg: '#05060d',
@@ -20,6 +23,7 @@
     exit: '120, 255, 170',
     danger: '255, 84, 104',
     owl: '255, 196, 64',
+    crystal: '150, 240, 255',
     moka: '#8b6cff',
   };
 
@@ -61,6 +65,8 @@
     hurt() { tone(240, 70, 0.3, 'square', 0.07); },
     wake() { tone(320, 160, 0.25, 'sawtooth', 0.035); },
     crash() { tone(180, 40, 0.35, 'triangle', 0.12); },
+    empty() { tone(260, 180, 0.12, 'sine', 0.06); },
+    crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
     win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
   };
 
@@ -74,7 +80,7 @@
     const lv = {
       def, w, h, grid, lit: new Float32Array(w * h),
       start: { x: 1.5, y: 1.5 }, exit: { x: 1.5, y: 1.5 },
-      moths: [], hazards: [],
+      moths: [], crystals: [], hazards: [],
     };
     const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
     const shaft = (x, y) => {
@@ -91,6 +97,7 @@
         if (c === 'S') lv.start = { x: cx, y: cy };
         else if (c === 'E') lv.exit = { x: cx, y: cy };
         else if (c === 'm') lv.moths.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
+        else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
         else if (c === 's') {
           const { top, bot } = shaft(x, y);
           lv.hazards.push({ kind: 'spider', x: cx, y: cy, restY: cy, top: top + 0.45, bot: bot + 0.55, r: 0.3, awake: 0, t: 0, lit: 0 });
@@ -120,17 +127,25 @@
 
   // ---- Game state --------------------------------------------------------
   let state = 'title';          // title | play | win | lose
+  let mode = 'cave';            // cave (explore a hand-made cave) | run (side-scroller)
   let levelIndex = 0;
-  let moka, rings, particles, cam, stats, shake, hintTimer, clock;
+  let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
 
-  function startLevel(i) {
+  function startGame(newMode, i = 0) {
+    mode = newMode;
     levelIndex = i;
-    L = loadLevel(window.ECHO_LEVELS[i]);
-    moka = { x: L.start.x, y: L.start.y, vx: 0, vy: 0, face: 1, hearts: MAX_HEARTS, hurt: 0, cooldown: 0 };
+    L = loadLevel(mode === 'run' ? window.makeRunLevel(Math.floor(Math.random() * 1e9)) : window.ECHO_LEVELS[i]);
+    moka = {
+      x: L.start.x, y: L.start.y, vx: 0, vy: 0, face: 1,
+      hearts: MAX_HEARTS, hurt: 0, cooldown: 0, echoes: L.def.echoes, noEcho: 0,
+    };
     rings = [];
     particles = [];
+    scroll = { x: 0, speed: RUN_START_SPEED };
     cam = { x: moka.x, y: moka.y };
+    if (mode === 'run') cam.x = W / PX / 2;
     stats = { moths: 0, squeaks: 0, time: 0 };
+    endReason = '';
     shake = 0;
     hintTimer = 6;
     clock = 0;
@@ -203,7 +218,14 @@
   // ---- Actions -----------------------------------------------------------
   function squeak() {
     if (state !== 'play' || moka.cooldown > 0) return;
+    if (moka.echoes <= 0) {
+      moka.noEcho = 0.6;
+      moka.cooldown = SQUEAK_COOLDOWN;
+      sfx.empty();
+      return;
+    }
     moka.cooldown = SQUEAK_COOLDOWN;
+    moka.echoes--;
     stats.squeaks++;
     rings.push({ x: moka.x, y: moka.y, r: 0 });
     hintTimer = Math.min(hintTimer, 2.5);
@@ -240,7 +262,7 @@
     shake = 0.35;
     burst(moka.x, moka.y, COL.danger, 14);
     sfx.hurt();
-    if (moka.hearts <= 0) endGame(false);
+    if (moka.hearts <= 0) endGame(false, 'hearts');
   }
 
   function burst(x, y, rgb, n) {
@@ -250,34 +272,57 @@
     }
   }
 
-  function endGame(won) {
+  function endGame(won, reason = '') {
     state = won ? 'win' : 'lose';
+    endReason = reason;
     stick = null;
     keys.clear();
+    if (won) sfx.win();
+    if (mode === 'run') endRun(won);
+    else endCave(won);
+    $('end-button').textContent = won ? 'Play again' : 'Try again';
+    setTimeout(() => { if (state === 'win' || state === 'lose') showOverlay('end'); }, won ? 500 : 700);
+  }
+
+  function endCave(won) {
     if (won) {
-      sfx.win();
       const allMoths = stats.moths === L.moths.length;
-      const underPar = stats.squeaks <= L.def.par;
-      const stars = 1 + (allMoths ? 1 : 0) + (underPar ? 1 : 0);
+      const spare = moka.echoes >= L.def.spare;
+      const stars = 1 + (allMoths ? 1 : 0) + (spare ? 1 : 0);
       const key = 'echo-caves-best-' + levelIndex;
-      const best = Math.max(stars, store.get(key) || 0);
-      store.set(key, best);
+      store.set(key, Math.max(stars, store.get(key) || 0));
       $('end-title').textContent = 'Out of the dark!';
       $('end-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
       $('end-stars').setAttribute('aria-label', stars + ' of 3 stars');
       $('end-detail').innerHTML =
         `<li class="got">Found the exit</li>` +
         `<li class="${allMoths ? 'got' : ''}">Moths ${stats.moths} of ${L.moths.length}</li>` +
-        `<li class="${underPar ? 'got' : ''}">Squeaks ${stats.squeaks}, par ${L.def.par}</li>`;
+        `<li class="${spare ? 'got' : ''}">Echoes left ${moka.echoes}, need ${L.def.spare}</li>`;
     } else {
       $('end-title').textContent = 'Moka needs a rest';
       $('end-stars').textContent = '☆☆☆';
       $('end-stars').setAttribute('aria-label', 'No stars');
       $('end-detail').innerHTML = `<li>Squeak less near sleeping things, or fly past before they wake.</li>`;
     }
-    $('end-button').textContent = won ? 'Play again' : 'Try again';
-    setTimeout(() => { if (state === 'win' || state === 'lose') showOverlay('end'); }, won ? 500 : 700);
   }
+
+  function endRun(won) {
+    const dist = runDistance();
+    const best = Math.max(dist, store.get('echo-caves-run-best') || 0);
+    const isBest = dist >= best && dist > 0;
+    store.set('echo-caves-run-best', best);
+    $('end-title').textContent = won ? 'You flew the whole tunnel!'
+      : endReason === 'dark' ? 'Caught by the dark' : 'Moka needs a rest';
+    $('end-stars').textContent = `${dist} m`;
+    $('end-stars').setAttribute('aria-label', `${dist} metres`);
+    $('end-detail').innerHTML =
+      `<li class="${isBest ? 'got' : ''}">${isBest ? 'New best distance!' : `Best ${best} m`}</li>` +
+      `<li class="${stats.moths ? 'got' : ''}">Moths ${stats.moths}</li>` +
+      (endReason === 'dark' ? `<li>Keep up with the screen. If a wall pins you at the left edge, the dark catches you.</li>` : '');
+    updateBests();
+  }
+
+  const runDistance = () => Math.max(0, Math.floor(moka.x - L.start.x));
 
   // ---- Update ------------------------------------------------------------
   function update(dt) {
@@ -285,6 +330,7 @@
     stats.time += dt;
     moka.cooldown = Math.max(0, moka.cooldown - dt);
     moka.hurt = Math.max(0, moka.hurt - dt);
+    moka.noEcho = Math.max(0, moka.noEcho - dt);
     hintTimer -= dt;
     shake = Math.max(0, shake - dt);
 
@@ -304,6 +350,25 @@
     if (!hitsWall(nx, moka.y, MOKA_R)) moka.x = nx; else moka.vx *= -0.25;
     const ny = moka.y + moka.vy * dt;
     if (!hitsWall(moka.x, ny, MOKA_R)) moka.y = ny; else moka.vy *= -0.25;
+
+    // Cave Run: the left edge of the screen keeps moving right and pushes Moka along
+    if (mode === 'run') {
+      scroll.speed = Math.min(RUN_MAX_SPEED, RUN_START_SPEED + stats.time * RUN_SPEEDUP);
+      scroll.x = Math.min(L.w - W / PX, scroll.x + scroll.speed * dt);
+      const left = scroll.x + MOKA_R + 0.05, right = scroll.x + W / PX - MOKA_R - 0.3;
+      if (moka.x > right) { moka.x = right; moka.vx = Math.min(moka.vx, 0); }
+      if (moka.x < left) {
+        moka.x = left;
+        moka.vx = Math.max(moka.vx, scroll.speed);
+        if (hitsWall(moka.x, moka.y, MOKA_R)) {
+          burst(moka.x, moka.y, COL.danger, 20);
+          sfx.hurt();
+          shake = 0.4;
+          endGame(false, 'dark');
+          return;
+        }
+      }
+    }
 
     // Light fades
     const lit = L.lit;
@@ -377,6 +442,14 @@
         sfx.moth();
       }
     }
+    for (const c of L.crystals) {
+      if (!c.got && Math.hypot(c.x - moka.x, c.y - moka.y) < 0.6) {
+        c.got = true;
+        moka.echoes = Math.min(MAX_ECHOES, moka.echoes + CRYSTAL_ECHOES);
+        burst(c.x, c.y, COL.crystal, 14);
+        sfx.crystal();
+      }
+    }
     if (Math.hypot(L.exit.x - moka.x, L.exit.y - moka.y) < 0.6) endGame(true);
 
     // Particles
@@ -390,7 +463,8 @@
     // Camera follows Moka, clamped to the cave
     const vw = W / PX, vh = H / PX;
     const k = 1 - Math.exp(-dt * 6);
-    cam.x += (moka.x - cam.x) * k;
+    if (mode === 'run') cam.x = scroll.x + vw / 2;
+    else cam.x += (moka.x - cam.x) * k;
     cam.y += (moka.y - cam.y) * k;
     cam.x = L.w <= vw ? L.w / 2 : Math.max(vw / 2, Math.min(L.w - vw / 2, cam.x));
     cam.y = L.h <= vh ? L.h / 2 : Math.max(vh / 2, Math.min(L.h - vh / 2, cam.y));
@@ -484,6 +558,18 @@
       ctx.fill();
     }
 
+    // Echo crystals glow too, so a player low on echoes can steer toward them
+    for (const c of L.crystals) {
+      if (c.got) continue;
+      const cx = toX(c.x), cy = toY(c.y + Math.sin(clock * 2 + c.phase) * 0.1);
+      glow(cx, cy, PX * 0.8, COL.crystal, 0.45);
+      ctx.fillStyle = `rgba(${COL.crystal}, 0.95)`;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy - PX * 0.24); ctx.lineTo(cx + PX * 0.14, cy);
+      ctx.lineTo(cx, cy + PX * 0.24); ctx.lineTo(cx - PX * 0.14, cy);
+      ctx.closePath(); ctx.fill();
+    }
+
     // Hazards: bodies show while lit or close by; awake eyes always show
     for (const h of L.hazards) {
       if (h.kind === 'rock' && h.state === 'gone') continue;
@@ -513,6 +599,14 @@
     }
 
     drawMoka(toX(moka.x), toY(moka.y));
+    if (mode === 'run') {
+      // the creeping dark at the left edge
+      const g = ctx.createLinearGradient(0, 0, PX * 1.6, 0);
+      g.addColorStop(0, 'rgba(255, 84, 104, 0.28)');
+      g.addColorStop(1, 'rgba(255, 84, 104, 0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, PX * 1.6, H);
+    }
     drawHud();
     drawStick();
   }
@@ -646,20 +740,37 @@
     ctx.beginPath(); ctx.arc(pad + size * 0.5, my, size * 0.22, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#e8ecff';
     ctx.textAlign = 'left';
-    ctx.fillText(`${stats.moths} / ${L.moths.length}`, pad + size * 1.3, my);
-    // squeaks
+    ctx.fillText(mode === 'run' ? `${stats.moths}` : `${stats.moths} / ${L.moths.length}`, pad + size * 1.3, my);
+    // echoes left, shown as a row of small rings
+    const low = moka.echoes <= 2;
+    const flash = moka.noEcho > 0 && Math.floor(moka.noEcho * 10) % 2 === 0;
+    const ecol = flash || low ? COL.danger : COL.wall;
     ctx.textAlign = 'right';
-    ctx.fillStyle = stats.squeaks > L.def.par ? `rgb(${COL.danger})` : `rgb(${COL.wall})`;
-    ctx.fillText(`Squeaks ${stats.squeaks}`, W - pad, pad + size * 0.6);
-    ctx.fillStyle = 'rgba(232, 236, 255, 0.55)';
-    ctx.font = `500 ${size * 0.75}px ${HUD_FONT}`;
-    ctx.fillText(`par ${L.def.par}`, W - pad, pad + size * 1.75);
+    ctx.fillStyle = `rgb(${ecol})`;
+    ctx.fillText(`Echoes ${moka.echoes}`, W - pad, pad + size * 0.6);
+    const pr = size * 0.22, gap = size * 0.62;
+    for (let i = 0; i < MAX_ECHOES; i++) {
+      const x = W - pad - pr - (MAX_ECHOES - 1 - i) * gap, y = pad + size * 1.75;
+      ctx.beginPath(); ctx.arc(x, y, pr, 0, Math.PI * 2);
+      const on = MAX_ECHOES - 1 - i < moka.echoes;
+      if (on) { ctx.fillStyle = `rgba(${ecol}, 0.9)`; ctx.fill(); }
+      else { ctx.strokeStyle = 'rgba(232, 236, 255, 0.18)'; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+    if (mode === 'run') {
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#e8ecff';
+      ctx.fillText(`${runDistance()} m`, W / 2, pad + size * 0.6);
+    }
     // first-time hint
     if (hintTimer > 0 && state === 'play') {
       ctx.textAlign = 'center';
       ctx.font = `600 ${size}px ${HUD_FONT}`;
       ctx.fillStyle = `rgba(232, 236, 255, ${Math.min(1, hintTimer) * 0.85})`;
       ctx.fillText(isTouch ? 'Drag to fly  ·  Tap to squeak' : 'Arrow keys or drag to fly  ·  Space or click to squeak', W / 2, H - pad - size);
+      if (mode === 'run') {
+        ctx.font = `500 ${size * 0.85}px ${HUD_FONT}`;
+        ctx.fillText('Keep moving right. The dark is coming.', W / 2, H - pad - size * 2.4);
+      }
     }
   }
 
@@ -692,21 +803,34 @@
     $('end-screen').hidden = which !== 'end';
   }
 
+  function enterGame(newMode) {
+    unlockAudio();
+    try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
+    try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
+    startGame(newMode, 0);
+  }
+
   function primaryAction() {
     unlockAudio();
-    if (state === 'title') {
-      try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
-      try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
-      startLevel(0);
-    } else if (state === 'win' || state === 'lose') {
-      startLevel(levelIndex);
-    }
+    if (state === 'title') enterGame('cave');
+    else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
   }
-  $('play-button').addEventListener('click', primaryAction);
+  $('play-button').addEventListener('click', () => enterGame('cave'));
+  $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
+  $('menu-button').addEventListener('click', () => {
+    state = 'title';
+    L = null;
+    showOverlay('title');
+  });
 
-  const best = store.get('echo-caves-best-0');
-  if (best) $('best').textContent = `Best: ${'★'.repeat(best)}${'☆'.repeat(3 - best)}`;
+  function updateBests() {
+    const best = store.get('echo-caves-best-0');
+    $('best-cave').textContent = best ? `Best ${'★'.repeat(best)}${'☆'.repeat(3 - best)}` : 'Explore one cave';
+    const run = store.get('echo-caves-run-best');
+    $('best-run').textContent = run ? `Best ${run} m` : 'Endless side-scroller';
+  }
+  updateBests();
 
   // ---- Main loop ---------------------------------------------------------
   const portrait = matchMedia('(orientation: portrait) and (pointer: coarse)');
@@ -733,7 +857,8 @@
     get moka() { return moka; },
     get stats() { return stats; },
     get level() { return L; },
-    start: () => startLevel(0),
+    get scroll() { return scroll; },
+    start: (m = 'cave') => startGame(m, 0),
     squeak,
   };
 })();

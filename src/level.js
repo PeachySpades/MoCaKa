@@ -1,21 +1,26 @@
-// Cave 1. One character per tile:
+// Cave maps. One character per tile:
 //   #  rock wall        .  open air      S  Moka's start     E  exit
-//   m  glowing moth     s  sleeping spider (hangs from the ceiling above)
+//   m  glowing moth     e  echo crystal (+3 echoes)
+//   s  sleeping spider (hangs from the ceiling above)
 //   r  loose stalactite (falls when a squeak reaches it)    o  owl on its perch
+//
+// `echoes` is how many squeaks Moka starts with. Finishing with `spare` or
+// more echoes left earns the third star.
 window.ECHO_LEVELS = [
   {
     name: 'Cave 1: First Flight',
-    par: 14,
+    echoes: 10,
+    spare: 3,
     map: [
       '######################################################################',
       '######################################################################',
       '###.......#################################.r...r..###################',
       '##.........#############r....r...........r.........#####...s.......###',
-      '##..........##########...............................###...........###',
+      '##..........##########........e......................###...........###',
       '##...m......#########......#####....m......###.................m....##',
       '##..........##########....#######..........#####.....o..........######',
       '##.S.........#########...#########.....s..#######...................##',
-      '##.............######....##########.......##############.........r..##',
+      '##............e######....##########.......##############....e....r..##',
       '###.............####.....###########.....###############.....##.....##',
       '#####...........s.......####################....m.......s...####..m.##',
       '######..................####################.........#########.....E##',
@@ -26,3 +31,77 @@ window.ECHO_LEVELS = [
     ],
   },
 ];
+
+// Cave Run: a long side-scrolling tunnel, generated fresh from a seed.
+// It gets narrower and busier the further Moka gets.
+window.makeRunLevel = function makeRunLevel(seed, length = 1200) {
+  let s = seed >>> 0;
+  const rand = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
+
+  const H = 14;
+  const cols = [];
+  let top = 3, bot = 11;              // first open row, first floor row
+  let nextMoth = 12, nextCrystal = 20, nextHazard = 26, nextOwl = 160, nextPillar = 40;
+  const pillar = { left: 0, fromTop: false };
+  const prev = { t: top, b: bot };
+
+  for (let x = 0; x < length; x++) {
+    const col = new Array(H).fill('#');
+    const minGap = Math.max(3, 7 - Math.floor(x / 220));
+    if (x > 14 && rand() < 0.4) {
+      top = Math.max(1, Math.min(H - 1 - minGap, top + pick(-1, 1)));
+      bot = Math.max(top + minGap, Math.min(H - 1, bot + pick(-1, 1)));
+      if (bot - top > minGap + 4) bot--;
+    }
+    let t = top, b = bot;
+    // pillars hang from the ceiling or rise from the floor, leaving a 2-tile squeeze
+    if (pillar.left === 0 && x >= nextPillar && b - t >= 5) {
+      pillar.left = pick(1, 2);
+      pillar.fromTop = rand() < 0.5;
+      nextPillar = x + pick(18, 34) - Math.min(10, Math.floor(x / 120));
+    }
+    if (pillar.left > 0) {
+      if (pillar.fromTop) t = b - 2; else b = t + 2;
+      pillar.left--;
+    }
+    // always overlap the previous column by 2 rows so the tunnel never seals
+    if (t > prev.b - 2) t = prev.b - 2;
+    if (b < prev.t + 2) b = prev.t + 2;
+    prev.t = t; prev.b = b;
+    for (let y = t; y < b; y++) col[y] = '.';
+
+    const open = (y) => y >= t && y < b;
+    if (x >= nextMoth) {
+      col[pick(t, b - 1)] = 'm';
+      nextMoth = x + pick(8, 14);
+    } else if (x >= nextCrystal) {
+      col[pick(t, b - 1)] = 'e';
+      nextCrystal = x + pick(24, 34);
+    } else if (x >= nextOwl && b - t >= 4) {
+      col[Math.floor((t + b) / 2)] = 'o';
+      nextOwl = x + pick(70, 110);
+    } else if (x >= nextHazard && b - t >= 3) {
+      const kind = rand() < 0.55 ? 's' : 'r';
+      if (open(t)) col[t] = kind;
+      nextHazard = x + Math.max(6, pick(14, 24) - Math.floor(x / 90));
+    }
+    cols.push(col);
+  }
+  // start and exit
+  cols[4][7] = 'S';
+  for (let x = 0; x < 12; x++) for (let y = 3; y < 11; y++) cols[x][y] = cols[x][y] === 'S' ? 'S' : '.';
+  const last = cols[length - 3];
+  const exitRow = last.findIndex((c) => c !== '#');
+  last[exitRow >= 0 ? exitRow : 7] = 'E';
+
+  const map = [];
+  for (let y = 0; y < H; y++) map.push(cols.map((c) => c[y]).join(''));
+  return { name: 'Cave Run', run: true, echoes: 8, map };
+};

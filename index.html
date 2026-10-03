@@ -22,14 +22,16 @@
   <div class="panel">
     <p class="eyebrow">MoCaKa</p>
     <h1>Echo Caves</h1>
-    <p class="lede">Moka the bat is lost in the dark. Squeak to see the walls, but every squeak wakes the cave.</p>
+    <p class="lede">Moka the bat is lost in the dark. Squeak to see the walls, but echoes are limited and every squeak wakes the cave.</p>
     <ul class="legend">
       <li><span class="dot moth"></span>Collect the glowing moths</li>
-      <li><span class="dot exit"></span>Fly to the green light</li>
+      <li><span class="dot crystal"></span>Grab crystals for more echoes</li>
       <li><span class="dot danger"></span>Dodge spiders, rocks and owls</li>
     </ul>
-    <button id="play-button" type="button">Play</button>
-    <p id="best" class="small"></p>
+    <div class="modes">
+      <button id="play-button" type="button">Explore<small id="best-cave">Explore one cave</small></button>
+      <button id="run-button" type="button" class="alt">Cave Run<small id="best-run">Endless side-scroller</small></button>
+    </div>
   </div>
 </section>
 
@@ -38,7 +40,10 @@
     <h2 id="end-title">Out of the dark!</h2>
     <p id="end-stars" class="stars"></p>
     <ul id="end-detail" class="checklist"></ul>
-    <button id="end-button" type="button">Play again</button>
+    <div class="modes">
+      <button id="end-button" type="button">Play again</button>
+      <button id="menu-button" type="button" class="alt">Menu</button>
+    </div>
   </div>
 </section>
 

@@ -4,7 +4,12 @@
 
 Moka the bat is lost in pitch-black caves. Squeak to send out a ring of sound that lights up the walls for a moment, but every squeak also wakes whatever is sleeping nearby: spiders drop on their threads, loose rocks fall, and owls give chase.
 
-Collect the glowing moths and fly to the green light. You earn one star for escaping, one for finding every moth, and one for using no more squeaks than par.
+Echoes are limited. Each cave gives Moka a set number of squeaks, and glowing crystals add 3 more. When you run out, you fly blind.
+
+### Modes
+
+- **Explore**: a hand-made cave. Collect the glowing moths and fly to the green light. You earn one star for escaping, one for finding every moth, and one for finishing with enough echoes left.
+- **Cave Run**: an endless side-scroller. The screen scrolls right on its own and speeds up over time. If a wall pins Moka against the left edge, the dark catches you. Each run is a newly generated tunnel, and your best distance is saved.
 
 ### Controls
 
@@ -27,5 +32,5 @@ npx serve .
 
 - `index.html` contains the page, menus and meta tags for adding to the home screen.
 - `src/game.js` contains the game loop, input, hazards and rendering on a single canvas.
-- `src/level.js` contains the cave maps, drawn as text with one character per tile. The key is at the top of the file.
+- `src/level.js` contains the Explore cave maps, drawn as text with one character per tile (the key is at the top of the file), and the Cave Run tunnel generator.
 - `src/style.css` styles the menus and overlays.
