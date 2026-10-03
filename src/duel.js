@@ -54,25 +54,57 @@
   let rule = 'bites', round = 1, roundClock = 0, roundEnd = null, storm = false, stormWarned = false, matchWinner = null;
   const EAT_PULL = 0.35, EAT_TIME = 1.1;
   const SNAPSHOT_EVERY = 0.05;
+  // Power-ups. The first four work the moment you grab them. The "special"
+  // ones are held (one at a time; grabbing another swaps it) and used with
+  // the POWER button (E or Q on a keyboard).
   const POWERS = {
-    mega: { label: 'MEGA SCREECH', rgb: '255, 226, 120' },
-    speed: { label: 'SPEED', rgb: '120, 255, 170' },
-    shield: { label: 'SHIELD', rgb: '150, 240, 255' },
-    frenzy: { label: 'ECHO FRENZY', rgb: '255, 120, 200' },
+    mega: { label: 'MEGA SCREECH', rgb: '255, 226, 120', name: 'Mega Screech', desc: 'Your next squeak is huge and stuns longer' },
+    speed: { label: 'SPEED', rgb: '120, 255, 170', name: 'Speed', desc: '6 seconds of faster flying' },
+    shield: { label: 'SHIELD', rgb: '150, 240, 255', name: 'Shield', desc: 'Blocks one stun or bite' },
+    frenzy: { label: 'ECHO FRENZY', rgb: '255, 120, 200', name: 'Echo Frenzy', desc: '5 seconds of free, rapid squeaks' },
+    fire: { label: 'FIREBALL', rgb: '255, 112, 40', name: 'Fireball', desc: 'Shoot a fireball where you fly: it lights the cave and stuns', special: true },
+    thunder: { label: 'THUNDER', rgb: '255, 245, 90', name: 'Thunder', desc: 'Lightning strikes every rival near you (no parrying it)', special: true },
+    wall: { label: 'STONE WALL', rgb: '214, 160, 110', name: 'Stone Wall', desc: 'Raise a wall behind you for 6 seconds', special: true },
+    freeze: { label: 'FREEZE', rgb: '110, 210, 255', name: 'Freeze', desc: 'An ice blast that freezes rivals close to you', special: true },
+    tornado: { label: 'TORNADO', rgb: '190, 255, 235', name: 'Tornado', desc: 'A twister that pulls rivals in and spins them', special: true },
+    ghost: { label: 'GHOST', rgb: '214, 196, 255', name: 'Ghost', desc: 'Fly through cave walls for 5 seconds, half see-through', special: true },
   };
   const POWER_TYPES = Object.keys(POWERS);
+  const POWER_ICONS = { mega: '📣', speed: '⚡', shield: '🛡️', frenzy: '🎶', fire: '🔥', thunder: '🌩️', wall: '🧱', freeze: '❄️', tornado: '🌪️', ghost: '👻' };
+  const toHex = (rgb) => '#' + rgb.split(',').map((v) => (+v).toString(16).padStart(2, '0')).join('');
+  const POWER_LIST = POWER_TYPES.map((id) => ({ id, name: POWERS[id].name, desc: POWERS[id].desc, color: toHex(POWERS[id].rgb), icon: POWER_ICONS[id], special: !!POWERS[id].special }));
+  // how often power-ups appear: [first one after, then every, seconds] and how many can wait on the map
+  const POWER_FREQ = {
+    off: null,
+    low: { first: [10, 14], every: [14, 20], max: 1 },
+    normal: { first: [6, 9], every: [8, 13], max: 2 },
+    high: { first: [3, 5], every: [4, 7], max: 3 },
+  };
+  let powerOn = POWER_TYPES.slice(), powerFreq = POWER_FREQ.normal;
+  const powerWait = (k) => (powerFreq ? powerFreq[k][0] + Math.random() * (powerFreq[k][1] - powerFreq[k][0]) : 1e9);
+  // special power numbers
+  const SPECIAL_CD = 0.35;
+  const FIRE_SPEED = 10, FIRE_LIFE = 1.6, FIRE_R = 0.28, FIRE_STUN = 2, FIRE_KNOCK = 6, FIRE_SPLASH = 1.15, SPLASH_STUN = 1.3;
+  const THUNDER_RANGE = 7, THUNDER_FAR = 11, THUNDER_DELAY = 0.45, THUNDER_STUN = 2.2, THUNDER_REVEAL = 3, BOLT_FX = 0.9;
+  const WALL_LEN = 4, WALL_LIFE = 6, WALL_RISE = 0.3, WALL_CRUMBLE = 0.7, WALL_BACK = 1.6;
+  const FREEZE_R = 3.2, FREEZE_STUN = 2.6, NOVA_FX = 0.55;
+  const TORNADO_LIFE = 4.5, TORNADO_SPEED = 2.4, TORNADO_PULL = 3.6, TORNADO_CORE = 0.65, TORNADO_STUN = 1.6;
+  const GHOST_TIME = 5;
   const BATS = [
     { name: 'Mo', color: '#8b6cff', rgb: '139, 108, 255' },
     { name: 'Ka', color: '#ff7ad9', rgb: '255, 122, 217' },
     { name: 'Ca', color: '#9dff6a', rgb: '157, 255, 106' },
     { name: 'Bo', color: '#ffb347', rgb: '255, 179, 71' },
   ];
+  // what lit a tile (litBy): a bat's slot 0-3, or one of these lights
+  const LIGHT_FIRE = 4, LIGHT_ICE = 5, LIGHT_BOLT = 6;
+  const LIGHT_RGB = [...BATS.map((b) => b.rgb), '255, 140, 50', '140, 220, 255', '255, 250, 190'];
   // keys for each local player slot on a shared keyboard
   const KEYMAP = [
-    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'] },
-    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'] },
-    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'] },
-    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'] },
+    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], special: ['KeyE', 'KeyQ'] },
+    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], special: ['Quote', 'Comma'] },
+    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], special: ['KeyY'] },
+    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], special: ['NumpadSubtract'] },
   ];
 
   // ---- Arena -------------------------------------------------------------
@@ -109,7 +141,15 @@
       v: 0.3 + Math.random() * 0.7, phase: Math.random() * 6, size: 0.04 + Math.random() * 0.06,
     }));
   }
-  const solid = (tx, ty) => tx < 0 || ty < 0 || tx >= arena.w || ty >= arena.h || arena.grid[ty * arena.w + tx] === 1;
+  // grid: 0 open, 1 cave wall, 2 a Stone Wall power's temporary block
+  const solid = (tx, ty) => tx < 0 || ty < 0 || tx >= arena.w || ty >= arena.h || arena.grid[ty * arena.w + tx] !== 0;
+  const blockerAt = (tx, ty) => tx >= 0 && ty >= 0 && tx < arena.w && ty < arena.h && arena.grid[ty * arena.w + tx] === 2;
+  // is there a Stone Wall block on the straight line between two points?
+  function blockerBetween(x0, y0, x1, y1) {
+    const d = Math.hypot(x1 - x0, y1 - y0), n = Math.ceil(d / 0.2);
+    for (let k = 1; k < n; k++) if (blockerAt(Math.floor(x0 + (x1 - x0) * k / n), Math.floor(y0 + (y1 - y0) * k / n))) return true;
+    return false;
+  }
   const litAt = (x, y) => {
     const tx = Math.floor(x), ty = Math.floor(y);
     return tx < 0 || ty < 0 || tx >= arena.w || ty >= arena.h ? 0 : lit[ty * arena.w + tx];
@@ -146,6 +186,9 @@
   let beams = [], beamId = 0;
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
   let parries = [], parryCount = 0;                      // parry flashes being drawn: { x, y, ax, ay, rgb, t }
+  // special powers in play: fireballs, twisters, Stone Wall segments, thunder strikes (rules, host)
+  // and the purely visual lightning bolts and ice blasts (everyone)
+  let shots = [], twisters = [], blocks = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0;
   let lit, litBy;
   let clock = 0, countdown = 0, over = false, banner = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, snapTimer = 0, outbox = [], ringId = 0, ended = false;
@@ -157,6 +200,7 @@
       echoes: START_ECHOES, cooldown: 0, stun: 0, safe: 0, dead: 0, score: 0, seen: 0, mouth: 0, puff: 0,
       dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false, charging: false, charge: 0,
       parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0, out: false,
+      held: null, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0, look: null,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
@@ -171,10 +215,14 @@
     mode = o.mode || 'local';
     net = o.net || null;
     onEnd = o.onEnd || null;
-    cpuLevel = CPU_LEVELS[o.level] || CPU_LEVELS.normal;
+    cpuLevel = baseLevel = CPU_LEVELS[o.level] || CPU_LEVELS.normal;
     arenaMode = ARENA_MODES.includes(o.arenaMode) ? o.arenaMode : 'morph';
     rule = o.rule === 'survivor' ? 'survivor' : 'bites';
     winScore = Math.max(1, Math.min(15, Math.round(+o.firstTo) || WIN_SCORE));
+    // o.powerups: { on: { fire: false, ... }, freq: 'off' | 'low' | 'normal' | 'high' }
+    const pu = o.powerups || {};
+    powerOn = POWER_TYPES.filter((t) => !pu.on || pu.on[t] !== false);
+    powerFreq = Object.prototype.hasOwnProperty.call(POWER_FREQ, pu.freq) ? POWER_FREQ[pu.freq] : POWER_FREQ.normal;
     bats = [];
     if (mode === 'local') {
       localCount = Math.max(1, Math.min(4, o.humans || 1));
@@ -205,11 +253,17 @@
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
     });
+    // bat looks (see looks.js): the lobby's pick for each slot, else a preset for
+    // people and a random one for CPUs. Guests get the host's from snapshots.
+    const seed = Number.isFinite(+(o.seed ?? o.cpuSeed)) ? +(o.seed ?? o.cpuSeed) : Math.floor(Math.random() * 1e6);
+    bats.forEach((b) => { b.look = lookFor(b, o.looks?.[b.i], seed); b.lv = CPU_LEVELS[o.levels?.[b.i]] || null; });
+    looksSent = 0;
     rings = []; beams = []; particles = []; popups = []; eats = []; outbox = []; parries = [];
+    shots = []; twisters = []; blocks = []; thunders = []; bolts = []; novas = [];
     remoteInput.clear();
     clock = 0; countdown = 3; over = false; ended = false; slowmo = 0; shake = 0;
     round = 1; roundClock = 0; roundEnd = null; storm = false; stormWarned = false; matchWinner = null; watchI = -1;
-    powerTimer = 6 + Math.random() * 3; snapTimer = 0;
+    powerTimer = powerWait('first'); snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     keys.clear();
     sticks.clear();
@@ -217,6 +271,15 @@
     active = true;
   }
   function stop() { active = false; }
+  let looksSent = 0;
+  function lookFor(b, want, seed) {
+    const L = window.EchoLooks;
+    if (!L) return null;
+    try {
+      if (want) return L.clean(want);
+      return b.ctrl === 'cpu' ? L.random(seed + b.i) : L.preset(b.i);
+    } catch (e) { return null; }
+  }
 
   // Effects are applied here and, when hosting, also streamed to the room
   function fx(ev) {
@@ -234,7 +297,13 @@
       for (let k = 0; k < 4; k++) particles.push({ x: ev.x, y: ev.y, vx: ev.face * (1 + Math.random()), vy: -0.5 - Math.random(), life: 1, rgb: ev.rgb, size: 6, feather: true });
     } else if (ev.k === 'slowmo') slowmo = ev.t;
     else if (ev.k === 'tiles') for (const [k, v] of ev.c) { if (arena.grid[k] !== v) { arena.grid[k] = v; tileGlow[k] = 1; } }
-    else if (ev.k === 'parry') {
+    else if (ev.k === 'bolt') bolts.push({ id: ev.id, tgt: ev.tgt, x: ev.x, y: ev.y, t: 0, delay: ev.d, seed: ev.id * 97 });
+    else if (ev.k === 'nova') novas.push({ x: ev.x, y: ev.y, o: ev.o, t: 0 });
+    else if (ev.k === 'boom') {
+      burst(ev.x, ev.y, '255, 140, 50', 18, 4, 5); burst(ev.x, ev.y, '255, 230, 140', 8, 2.5, 3);
+      lightAround(ev.x, ev.y, 2.2, LIGHT_FIRE);
+      novas.push({ x: ev.x, y: ev.y, o: -1, t: 0, fire: true });
+    } else if (ev.k === 'parry') {
       parries.push({ x: ev.x, y: ev.y, ax: ev.ax, ay: ev.ay, rgb: ev.rgb, t: 0 });
       // a bright two-tone ping; game.js may provide its own 'parry' sound
       if (s.parry) s.parry(); else { s.block?.(); s.crystal?.(); s.charged?.(); }
@@ -267,6 +336,7 @@
     for (let slot = 0; slot < localCount; slot++) {
       if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'charge');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
+      if (keysFor(slot, 'special').includes(e.code)) act(slot, 'special');
     }
   });
   addEventListener('keyup', (e) => {
@@ -289,6 +359,15 @@
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
 
+  // The POWER button, left of DASH: shows the special power you hold
+  const specialButton = () => { const d = dashButton(); return { x: d.x - d.r - 52, y: d.y + 30, r: 34 }; };
+  const specialShown = () => localCount === 1 && countdown <= 0 && !spectating() && (touchUsed || !!localBat(0)?.held);
+  const inSpecialButton = (cx, cy) => {
+    if (!specialShown()) return false;
+    const rect = canvas.getBoundingClientRect(), b = specialButton();
+    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
+  };
+
   // Touch zones: one player owns the screen, 2–3 split it into columns, 4 into quarters
   function zoneAt(clientX, clientY) {
     const n = localCount;
@@ -304,6 +383,7 @@
     window.EchoAudio?.unlock();
     if (e.pointerType === 'touch') touchUsed = true;
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
+    if (inSpecialButton(e.clientX, e.clientY)) { act(0, 'special'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
     if ([...sticks.values()].some((s) => s.owner === owner)) { chargers.set(e.pointerId, owner); act(owner, 'charge'); return; }
     sticks.set(e.pointerId, { owner, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
@@ -348,14 +428,15 @@
     if (paused) return;
     const b = localBat(slot);
     if (!b) return;
-    // a dash goes the way you're steering right now (guests' copies of velocity lag behind)
-    if (a === 'dash' && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
+    // a dash (or a power) goes the way you're steering right now (guests' copies of velocity lag behind)
+    if ((a === 'dash' || a === 'special') && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
       const { ix, iy } = localInput(slot);
       if (Math.hypot(ix, iy) > 0.2) { dx = ix; dy = iy; }
     }
     if (mode === 'client') {
       net?.send({ t: 'act', a, dx, dy });
       if (a === 'squeak' && b.echoes <= 0) applyFx({ k: 'sfx', n: 'empty' });
+      if (a === 'special' && !b.held) applyFx({ k: 'sfx', n: 'empty' });
       return;
     }
     doAct(b, a, dx, dy);
@@ -367,6 +448,7 @@
     else if (a === 'charge') startCharge(b);
     else if (a === 'release') tracked(b, () => releaseCharge(b));
     else if (a === 'dash') dash(b, dx, dy);
+    else if (a === 'special') useSpecial(b, dx, dy);
   }
 
   // ---- Online hooks (host side) -----------------------------------------
@@ -374,7 +456,7 @@
     const b = bats[slot];
     if (!b || b.ctrl !== 'remote' || mode !== 'host') return;
     if (msg.t === 'in') remoteInput.set(slot, { ix: +msg.ix || 0, iy: +msg.iy || 0 });
-    else if (msg.t === 'act' && ['squeak', 'charge', 'release', 'dash'].includes(msg.a)) doAct(b, msg.a, msg.dx, msg.dy);
+    else if (msg.t === 'act' && ['squeak', 'charge', 'release', 'dash', 'special'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
   }
   function dropRemote(slot) {
     const b = bats[slot];
@@ -414,11 +496,12 @@
   // bat's dizzy stars) or it's right next to them. Otherwise they hunt from
   // the last place they noticed it, or roam and squeak to look around.
   const CPU_LEVELS = {
-    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3, parry: 0 },
-    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5, parry: 0.3 },
-    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7, parry: 0.55 },
+    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3, parry: 0, special: 0.3, waste: 0.05 },
+    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5, parry: 0.3, special: 0.55, waste: 0 },
+    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7, parry: 0.55, special: 0.85, waste: 0 },
   };
-  let cpuLevel = CPU_LEVELS.normal;
+  // cpuLevel is the level of the CPU being thought for (o.levels can set one per seat)
+  let cpuLevel = CPU_LEVELS.normal, baseLevel = CPU_LEVELS.normal;
   function randomOpenSpot() {
     const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
     return spots[Math.floor(Math.random() * spots.length)];
@@ -459,7 +542,8 @@
     ai.repath -= dt;
     if (ai.repath <= 0) { ai.path = bfsPath(b.x, b.y, target.x, target.y); ai.repath = 0.25; }
     while (ai.path.length && Math.hypot(ai.path[0].x - b.x, ai.path[0].y - b.y) < 0.35) ai.path.shift();
-    const next = ai.path[0] || target;
+    // a ghost flies straight at its target, through the rock
+    const next = (b.ghostT > 0.4 ? null : ai.path[0]) || target;
     const dx = next.x - b.x, dy = next.y - b.y, len = Math.hypot(dx, dy) || 1;
 
     // a charged beam fires where the target was last noticed (or fizzles into a squeak if it's gone)
@@ -501,9 +585,44 @@
           if (castRay(b.x, b.y, ax / d, ay / d, d) >= d - 0.4) dash(b, (ax * c - ay * sn) / d, (ax * sn + ay * c) / d);
         }
       }
+      if (b.held && b.specialCd <= 0 && !b.charging) cpuSpecial(b, fresh, known, target);
     }
     const speed = (snack ? 1 : 0.85) * lv.speed;
     return { ix: (dx / len) * speed, iy: (dy / len) * speed };
+  }
+
+  // CPUs use a held power when it would pay off (better CPUs more readily and
+  // more accurately; easy ones sometimes just waste it)
+  function cpuSpecial(b, fresh, known, target) {
+    const lv = cpuLevel;
+    if (lv.waste && Math.random() < lv.waste) { useSpecial(b); return; }
+    if (Math.random() > lv.special) return;
+    const live = fresh.filter((k) => k.bat.safe <= 0 && !k.bat.dead && !k.bat.out).sort((p, q) => dist(p, b) - dist(q, b));
+    const near = live[0], d = near ? dist(near, b) : 99;
+    const clear = (k) => castRay(b.x, b.y, (k.x - b.x) / dist(k, b), (k.y - b.y) / dist(k, b), dist(k, b)) >= dist(k, b) - 0.3;
+    const aim = (k, lead) => {
+      const ax = k.x + (k.vx || 0) * lead - b.x, ay = k.y + (k.vy || 0) * lead - b.y, l = Math.hypot(ax, ay) || 1;
+      const err = (Math.random() - 0.5) * 2 * lv.aimErr, c = Math.cos(err), sn = Math.sin(err);
+      return [(ax * c - ay * sn) / l, (ax * sn + ay * c) / l];
+    };
+    switch (b.held) {
+      case 'fire': if (near && d < 10 && near.bat.stun <= 0 && clear(near)) useSpecial(b, ...aim(near, lv.aimErr < 0.1 ? d / FIRE_SPEED : 0)); break;
+      case 'tornado': if (near && d < 6.5 && clear(near)) useSpecial(b, ...aim(near, 0)); break;
+      case 'thunder': if (live.some((k) => dist(k, b) < THUNDER_RANGE - 0.5 && k.bat.stun <= 0)) useSpecial(b); break;
+      case 'freeze': if (live.some((k) => dist(k, b) < FREEZE_R - 0.2 && k.bat.stun <= 0)) useSpecial(b); break;
+      case 'wall': {
+        // a rival close by and able to bite: wall it off (the wall goes behind, so fly away from it)
+        const t = live.find((k) => dist(k, b) < 3.4 && k.bat.stun <= 0 && (k.bat.biteT > 0 || k.bat.dashCd < 0.5));
+        if (t) useSpecial(b, (b.x - t.x) / dist(t, b), (b.y - t.y) / dist(t, b));
+        break;
+      }
+      case 'ghost': {
+        // the way to its target winds around rock: go straight through instead
+        const goal = target && dist(target, b);
+        if ((goal > 2.5 && b.ai.path.length > goal * 1.6 + 2) || (b.heldT > 10 && known.length)) useSpecial(b);
+        break;
+      }
+    }
   }
 
   // ---- Echo parry ----------------------------------------------------------
@@ -516,7 +635,7 @@
     if (b.stun > 0 && b.hitBy && clock - b.hitBy.t <= late) {
       const h = b.hitBy;
       b.hitBy = null;
-      b.stun = 0; b.vx = h.vx; b.vy = h.vy;
+      b.stun = 0; b.ice = 0; b.vx = h.vx; b.vy = h.vy;
       b.parryCd = PARRY_COOLDOWN;
       parrySucceed(b, bats[h.by], h.x, h.y);
       return 'late';
@@ -739,6 +858,304 @@
     fx({ k: 'sfx', n: 'dash' });
   }
 
+  // ---- Special powers (held, used with the POWER button) --------------------
+  // Fire, thunder, ice and wind light up the cave around them like sound does
+  // (litBy says what lit a tile, so walls glow orange near a fireball).
+  function lightAround(x, y, rad, by) {
+    if (!arena || !lit) return;
+    const { w, h } = arena;
+    for (let ty = Math.max(0, Math.floor(y - rad)); ty <= Math.min(h - 1, Math.floor(y + rad)); ty++) {
+      for (let tx = Math.max(0, Math.floor(x - rad)); tx <= Math.min(w - 1, Math.floor(x + rad)); tx++) {
+        const d = Math.hypot(tx + 0.5 - x, ty + 0.5 - y);
+        if (d > rad) continue;
+        const k = ty * w + tx, v = Math.min(1, 1.3 - d / rad);
+        if (v > lit[k]) { lit[k] = v; litBy[k] = by; }
+      }
+    }
+  }
+  // a stun from a power; false if a shield blocked it
+  function powerStun(foe, by, t, kx, ky, text, rgb, parryFrom) {
+    foe.seen = 1;
+    if (foe.shield) {
+      foe.shield = false;
+      fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
+      fx({ k: 'burst', x: foe.x, y: foe.y, rgb: POWERS.shield.rgb, n: 12 });
+      fx({ k: 'sfx', n: 'block' });
+      return false;
+    }
+    if (parryFrom) noteHit(foe, by, parryFrom.x, parryFrom.y, foe.vx, foe.vy);
+    foe.stun = Math.max(foe.stun, t);
+    foe.dashT = 0; foe.biteT = 0; foe.charging = false; foe.charge = 0;
+    foe.vx = kx; foe.vy = ky;
+    fx({ k: 'burst', x: foe.x, y: foe.y, rgb, n: 14, sp: 3.5 });
+    fx({ k: 'popup', x: foe.x, y: foe.y - 1.5, text, rgb, life: 0.9, big: true });
+    fx({ k: 'sfx', n: 'stun' });
+    return true;
+  }
+
+  function useSpecial(b, dx, dy) {
+    if (!canAct(b) || !b.held || b.specialCd > 0) return false;
+    let ux = dx, uy = dy;
+    if (!(Math.hypot(ux || 0, uy || 0) > 0.1)) ({ ux, uy } = heading(b));
+    const l = Math.hypot(ux, uy) || 1;
+    ux /= l; uy /= l;
+    const type = b.held;
+    if (type === 'wall' && !placeWall(b, ux, uy)) {
+      // nowhere to put it without boxing someone in: keep it for later
+      b.specialCd = SPECIAL_CD;
+      if (b.ctrl !== 'cpu') { fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'NO ROOM', rgb: POWERS.wall.rgb, life: 0.7 }); fx({ k: 'sfx', n: 'empty' }); }
+      return false;
+    }
+    b.held = null; b.specialCd = SPECIAL_CD; b.charging = false; b.charge = 0;
+    specialCount++;
+    if (Math.abs(ux) > 0.2) b.face = Math.sign(ux);
+    if (type === 'fire') shootFire(b, ux, uy);
+    else if (type === 'thunder') callThunder(b, ux, uy);
+    else if (type === 'freeze') freezeBlast(b);
+    else if (type === 'tornado') spawnTwister(b, ux, uy);
+    else if (type === 'ghost') {
+      b.ghostT = GHOST_TIME;
+      fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.ghost.rgb, n: 16, sp: 2.5 });
+      fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'GHOST!', rgb: POWERS.ghost.rgb, life: 0.9 });
+      fx({ k: 'sfx', n: 'ghost', alt: 'slurp' });
+    }
+    return true;
+  }
+
+  // Fire: a fireball flies straight on, lighting the cave, and bursts on the
+  // first wall or bat it meets. A hit stuns and knocks back (bite them next!);
+  // the burst singes anyone close. A parry knocks it back at whoever threw it.
+  function shootFire(b, ux, uy) {
+    shots.push({ id: ++fxId, x: b.x + ux * 0.35, y: b.y + uy * 0.35, vx: ux * FIRE_SPEED, vy: uy * FIRE_SPEED, owner: b.i, t: 0 });
+    b.vx -= ux * 2; b.vy -= uy * 2;
+    b.seen = 1;
+    fx({ k: 'sfx', n: 'fire', alt: 'beam' });
+    fx({ k: 'shake', v: 0.08 });
+  }
+  function updateShots(dt) {
+    for (const s of shots) {
+      s.t += dt;
+      const steps = Math.max(1, Math.ceil((Math.hypot(s.vx, s.vy) * dt) / 0.1));
+      for (let k = 0; k < steps && !s.gone; k++) {
+        const nx = s.x + (s.vx * dt) / steps, ny = s.y + (s.vy * dt) / steps;
+        if (solid(Math.floor(nx), Math.floor(ny))) { explode(s, null); break; }
+        s.x = nx; s.y = ny;
+        for (const foe of bats) {
+          if (foe.i === s.owner || foe.dead || foe.safe > 0 || Math.hypot(foe.x - s.x, foe.y - s.y) > R + FIRE_R) continue;
+          if (foe.parryT > 0 && foe.stun <= 0) { deflect(s, foe); break; }
+          const sp = Math.hypot(s.vx, s.vy) || 1;
+          if (powerStun(foe, s.owner, FIRE_STUN, (s.vx / sp) * FIRE_KNOCK, (s.vy / sp) * FIRE_KNOCK, 'BURNED!', POWERS.fire.rgb, s)) foe.burn = 1.4;
+          explode(s, foe);
+          break;
+        }
+      }
+      if (!s.gone && s.t > FIRE_LIFE) explode(s, null);
+    }
+    shots = shots.filter((s) => !s.gone);
+  }
+  function explode(s, hit) {
+    s.gone = true;
+    fx({ k: 'boom', x: r2(s.x), y: r2(s.y) });
+    fx({ k: 'sfx', n: 'boom', alt: 'crash' });
+    fx({ k: 'shake', v: 0.16 });
+    for (const foe of bats) {
+      if (foe === hit || foe.i === s.owner || foe.dead || foe.safe > 0 || foe.stun > 0) continue;
+      const d = Math.hypot(foe.x - s.x, foe.y - s.y);
+      if (d > FIRE_SPLASH + R || castRay(s.x, s.y, (foe.x - s.x) / (d || 1), (foe.y - s.y) / (d || 1), d) < d - 0.3) continue;
+      if (powerStun(foe, s.owner, SPLASH_STUN, ((foe.x - s.x) / (d || 1)) * 4, ((foe.y - s.y) / (d || 1)) * 4, 'SCORCHED!', POWERS.fire.rgb, s)) foe.burn = 1;
+    }
+  }
+  function deflect(s, foe) {
+    const atk = bats[s.owner];
+    let ux = -s.vx, uy = -s.vy;
+    if (atk && !atk.dead) { ux = atk.x - s.x; uy = atk.y - s.y; }
+    const l = Math.hypot(ux, uy) || 1;
+    s.vx = (ux / l) * FIRE_SPEED * 1.15; s.vy = (uy / l) * FIRE_SPEED * 1.15;
+    s.owner = foe.i; s.t = 0;
+    parrySucceed(foe, null, s.x, s.y);
+  }
+
+  // Thunder: the screen darkens, then lightning strikes every rival within
+  // THUNDER_RANGE (or the nearest one a bit farther out). It comes from above,
+  // not from an echo, so it can't be parried; a shield still blocks it.
+  // Struck bats are stunned and glow for a few seconds.
+  function callThunder(b, ux, uy) {
+    const foes = bats.filter((o) => o !== b && !o.dead && !o.out);
+    let hit = foes.filter((o) => dist(o, b) <= THUNDER_RANGE);
+    if (!hit.length) hit = foes.filter((o) => dist(o, b) <= THUNDER_FAR).sort((p, q) => dist(p, b) - dist(q, b)).slice(0, 1);
+    b.seen = Math.max(b.seen, 0.5);
+    fx({ k: 'sfx', n: 'charged' });
+    if (!hit.length) {
+      // nobody about: it strikes the ground ahead and lights it up
+      const x = Math.max(1.5, Math.min(arena.w - 1.5, b.x + ux * 3)), y = Math.max(1.5, Math.min(arena.h - 1.5, b.y + uy * 3));
+      fx({ k: 'bolt', id: ++fxId, tgt: -1, x: r2(x), y: r2(y), d: THUNDER_DELAY });
+      return;
+    }
+    for (const o of hit) {
+      const id = ++fxId;
+      thunders.push({ id, tgt: o.i, t: 0, owner: b.i });
+      fx({ k: 'bolt', id, tgt: o.i, x: r2(o.x), y: r2(o.y), d: THUNDER_DELAY });
+    }
+  }
+  function updateThunder(dt) {
+    for (const th of thunders) {
+      th.t += dt;
+      if (th.t < THUNDER_DELAY) continue;
+      th.done = true;
+      const o = bats[th.tgt];
+      if (!o || o.dead || o.safe > 0) continue;
+      o.revealT = THUNDER_REVEAL;
+      powerStun(o, th.owner, THUNDER_STUN, (Math.random() - 0.5) * 2, (Math.random() - 0.5) * 2, 'ZAPPED!', POWERS.thunder.rgb);
+    }
+    thunders = thunders.filter((t) => !t.done);
+  }
+
+  // Freeze: a blast of ice around you. Rivals in reach are frozen solid in a
+  // block of ice (stunned, can't drift). Like a squeak, it can be parried, and
+  // it doesn't pass a Stone Wall.
+  function freezeBlast(b) {
+    b.seen = 1;
+    fx({ k: 'nova', x: r2(b.x), y: r2(b.y), o: b.i });
+    fx({ k: 'sfx', n: 'freeze', alt: 'crystal' });
+    fx({ k: 'shake', v: 0.12 });
+    for (const foe of bats) {
+      if (foe === b || foe.dead || foe.safe > 0) continue;
+      const d = dist(foe, b);
+      if (d > FREEZE_R + R || blockerBetween(b.x, b.y, foe.x, foe.y)) continue;
+      if (foe.parryT > 0 && foe.stun <= 0) { parrySucceed(foe, b, b.x, b.y); continue; }
+      if (powerStun(foe, b.i, FREEZE_STUN, 0, 0, 'FROZEN!', POWERS.freeze.rgb, b)) foe.ice = FREEZE_STUN;
+    }
+  }
+
+  // Tornado: a twister spins off the way you're flying, wanders and bounces
+  // off walls, pulling rivals toward its eye. One that reaches the eye is
+  // spun out, stunned. Wind can't be parried; a shield blocks the spin.
+  function spawnTwister(b, ux, uy) {
+    let x = b.x + ux * 1.2, y = b.y + uy * 1.2;
+    if (hitsWall(x, y, 0.35)) { x = b.x; y = b.y; }
+    twisters.push({ id: ++fxId, x, y, ux, uy, t: 0, owner: b.i, hit: new Set() });
+    b.seen = Math.max(b.seen, 0.6);
+    fx({ k: 'sfx', n: 'vortex', alt: 'warn' });
+  }
+  function updateTwisters(dt) {
+    for (const tw of twisters) {
+      tw.t += dt;
+      const sp = TORNADO_SPEED * Math.min(1, tw.t * 2), wob = Math.sin(tw.t * 2.3 + tw.id) * 0.9 * dt;
+      const c = Math.cos(wob), sn = Math.sin(wob), ux = tw.ux * c - tw.uy * sn, uy = tw.ux * sn + tw.uy * c;
+      tw.ux = ux; tw.uy = uy;
+      const nx = tw.x + ux * sp * dt;
+      if (hitsWall(nx, tw.y, 0.35)) tw.ux = -tw.ux; else tw.x = nx;
+      const ny = tw.y + tw.uy * sp * dt;
+      if (hitsWall(tw.x, ny, 0.35)) tw.uy = -tw.uy; else tw.y = ny;
+      if (tw.t > TORNADO_LIFE) { tw.gone = true; continue; }
+      for (const foe of bats) {
+        if (foe.i === tw.owner || foe.dead || foe.safe > 0 || tw.hit.has(foe.i)) continue;
+        const d = Math.hypot(foe.x - tw.x, foe.y - tw.y);
+        if (d > TORNADO_PULL) continue;
+        foe.seen = Math.max(foe.seen, 0.6);
+        if (d < TORNADO_CORE) {
+          tw.hit.add(foe.i);
+          const k = d || 1, tx = -(foe.y - tw.y) / k, ty = (foe.x - tw.x) / k;
+          powerStun(foe, tw.owner, TORNADO_STUN, tx * 7, ty * 7, 'WHIRLED!', POWERS.tornado.rgb);
+          continue;
+        }
+        // pulled in and swirled around the eye (moved directly, so top speed can't cap it)
+        const k = 1 - d / TORNADO_PULL, pull = 1.2 + 4.4 * k, swirl = 2.4 * k;
+        const ax = (tw.x - foe.x) / d, ay = (tw.y - foe.y) / d;
+        const mx = (ax * pull - ay * swirl) * dt, my = (ay * pull + ax * swirl) * dt;
+        if (!batBlocked(foe, foe.x + mx, foe.y)) foe.x += mx;
+        if (!batBlocked(foe, foe.x, foe.y + my)) foe.y += my;
+      }
+    }
+    twisters = twisters.filter((tw) => !tw.gone);
+  }
+
+  // Ghost: fly through cave walls (not the outer wall) for GHOST_TIME seconds,
+  // half see-through. If it wears off inside rock, you pop out at the nearest gap.
+  const inBorder = (x, y) => x < 1 + R || y < 1 + R || x > arena.w - 1 - R || y > arena.h - 1 - R;
+  const batBlocked = (b, x, y) => (b.ghostT > 0 ? inBorder(x, y) : hitsWall(x, y, R));
+  function unGhost(b) {
+    b.ghostT = 0;
+    if (!hitsWall(b.x, b.y, R)) return;
+    const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
+    if (spot) { b.x = spot.x; b.y = spot.y; b.vx = 0; b.vy = 0; }
+    fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.ghost.rgb, n: 12 });
+  }
+
+  // Stone Wall: a row of WALL_LEN blocks rises across your path, just behind
+  // you (it blocks bats, squeaks, beams, fireballs and dashes), then crumbles
+  // after WALL_LIFE seconds. Blocks never land on a bat, a crystal or a
+  // power-up, and a placement that would box any bat into a tiny pocket is
+  // skipped (it tries a few spots; if none work you keep the power).
+  function canBlock(tx, ty) {
+    if (tx < 1 || ty < 1 || tx >= arena.w - 1 || ty >= arena.h - 1 || arena.grid[ty * arena.w + tx] !== 0) return false;
+    for (const o of bats) {
+      if (o.dead && !o.out) continue;
+      if (o.out) continue;
+      const nx = Math.max(tx, Math.min(o.x, tx + 1)), ny = Math.max(ty, Math.min(o.y, ty + 1));
+      if (Math.hypot(o.x - nx, o.y - ny) < R + 0.12) return false;
+    }
+    const here = (p) => Math.floor(p.x) === tx && Math.floor(p.y) === ty;
+    return !crystals.some((c) => c.on && here(c)) && !powerups.some(here) && !twisters.some(here);
+  }
+  function reach(tx, ty, limit) {
+    const { w } = arena, seen = new Set([ty * w + tx]), q = [ty * w + tx];
+    for (let k = 0; k < q.length && seen.size < limit; k++) {
+      const c = q[k], cx = c % w, cy = (c / w) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const n = (cy + dy) * w + cx + dx;
+        if (!seen.has(n) && !solid(cx + dx, cy + dy)) { seen.add(n); q.push(n); }
+      }
+    }
+    return seen.size;
+  }
+  const TRAP_SPACE = 30;
+  function trapsSomeone(tiles) {
+    const live = bats.filter((o) => !o.dead && !o.out && o.ghostT <= 0);
+    const before = live.map((o) => reach(Math.floor(o.x), Math.floor(o.y), TRAP_SPACE));
+    for (const k of tiles) arena.grid[k] = 2;
+    const after = live.map((o) => reach(Math.floor(o.x), Math.floor(o.y), TRAP_SPACE));
+    for (const k of tiles) arena.grid[k] = 0;
+    return after.some((n, j) => n < Math.min(before[j], TRAP_SPACE));
+  }
+  function placeWall(b, ux, uy) {
+    const across = Math.abs(ux) >= Math.abs(uy);   // flying sideways: the wall stands as a column
+    for (const back of [WALL_BACK, WALL_BACK + 0.9, WALL_BACK - 0.6, -WALL_BACK]) {
+      for (const side of [0, 1, -1]) {
+        const cx = b.x - ux * back, cy = b.y - uy * back, tiles = [];
+        for (let j = 0; j < WALL_LEN; j++) {
+          const off = j - (WALL_LEN - 1) / 2 + side;
+          const tx = Math.floor(across ? cx : cx + off), ty = Math.floor(across ? cy + off : cy);
+          if (canBlock(tx, ty)) tiles.push(ty * arena.w + tx);
+        }
+        if (tiles.length < 3 || trapsSomeone(tiles)) continue;
+        for (const k of tiles) { arena.grid[k] = 2; tileGlow[k] = 1; }
+        blocks.push({ id: ++fxId, tiles, t: 0, owner: b.i });
+        fx({ k: 'sfx', n: 'wallUp', alt: 'crash' });
+        fx({ k: 'shake', v: 0.14 });
+        return true;
+      }
+    }
+    return false;
+  }
+  function updateBlocks(dt) {
+    for (const bk of blocks) {
+      bk.t += dt;
+      if (bk.t >= WALL_LIFE) bk.gone = true;
+    }
+    if (blocks.some((bk) => bk.gone)) {
+      for (const bk of blocks) if (bk.gone) clearBlock(bk);
+      blocks = blocks.filter((bk) => !bk.gone);
+    }
+  }
+  function clearBlock(bk) {
+    for (const k of bk.tiles) if (arena.grid[k] === 2) arena.grid[k] = 0;
+  }
+  // the morphing cave swapped its whole grid: the Stone Walls stay put
+  function reapplyBlocks() {
+    for (const bk of blocks) for (const k of bk.tiles) if (arena.grid[k] === 0) arena.grid[k] = 2;
+  }
+
   // The bite: the stunned bat gets slurped into the eater's open mouth,
   // CHOMP, the eater puffs up, then burps out a few feathers.
   function eat(eater, food) {
@@ -750,6 +1167,7 @@
     food.dead = RESPAWN_DELAY + EAT_TIME;
     food.stun = 0;
     food.power = null; food.mega = false; food.shield = false; food.charging = false; food.charge = 0;
+    food.held = null; food.ghostT = 0; food.ice = 0; food.burn = 0; food.revealT = 0;
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
     if (rule === 'bites' && eater.score >= winScore) { over = true; matchWinner = eater; }
@@ -803,7 +1221,9 @@
     round++;
     roundEnd = null; roundClock = 0; storm = false; stormWarned = false;
     rings = []; beams = []; eats = []; powerups = []; parries = [];
-    powerTimer = 6 + Math.random() * 3;
+    for (const bk of blocks) clearBlock(bk);
+    shots = []; twisters = []; blocks = []; thunders = []; bolts = []; novas = [];
+    powerTimer = powerWait('first');
     for (const c of crystals) { c.on = false; c.timer = 0.5 + Math.random() * 2.5; }
     const taken = [];
     bats.forEach((b, k) => {
@@ -819,6 +1239,7 @@
         echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, cooldown: 0, dashCd: 0, dashT: 0, biteT: 0,
         parryT: 0, parryCd: 0, parryRing: null, hitBy: null, power: null, powerT: 0, mega: false, shield: false,
         charging: false, charge: 0, mouth: 0, puff: 0, seen: 0,
+        held: null, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0,
       });
       if (b.ai) { b.ai.path = []; b.ai.roam = null; b.ai.known = null; b.ai.beamAt = null; }
     });
@@ -874,12 +1295,14 @@
     morph.timer = MORPH_STEP;
     const def = window.ECHO_ARENAS[morph.target], { w, h, grid } = arena, diff = [];
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-      if (grid[y * w + x] !== (def.map[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
+      // (Stone Wall blocks are left alone; they crumble on their own)
+      if (grid[y * w + x] !== 2 && grid[y * w + x] !== (def.map[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
     }
     if (!diff.length) {
       const keepLit = lit, keepBy = litBy, keepPowers = powerups;
       loadArena(morph.target);
       lit = keepLit; litBy = keepBy; powerups = keepPowers;
+      reapplyBlocks();
       fx({ k: 'banner', text: arena.def.name, rgb: arena.theme.wall, t: 2 });
       morph.pause = MORPH_PAUSE;
       return;
@@ -903,18 +1326,21 @@
     const score = (s) => foes.length ? Math.min(...foes.map((o) => Math.hypot(o.x - s.x, o.y - s.y))) : 0;
     const free = arena.spawns.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
     const s = (free.length ? free : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
-    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null });
+    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null, ghostT: 0, ice: 0, burn: 0 });
   }
 
-  function spawnPowerup() {
+  function spawnPowerup(force) {
+    const types = force ? [force] : powerOn;
+    if (!types.length) return;
     const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)) && bats.every((b) => b.dead || dist(p, b) > 5) && powerups.every((q) => dist(p, q) > 4));
     if (!spots.length) return;
     const s = spots[Math.floor(Math.random() * spots.length)];
-    powerups.push({ x: s.x, y: s.y, type: POWER_TYPES[Math.floor(Math.random() * POWER_TYPES.length)], phase: Math.random() * 6 });
+    powerups.push({ x: s.x, y: s.y, type: types[Math.floor(Math.random() * types.length)], phase: Math.random() * 6 });
   }
 
   function grabPowerup(b, p) {
-    if (p.type === 'mega') b.mega = true;
+    if (POWERS[p.type].special) b.held = p.type;   // held for the POWER button (replaces one already held)
+    else if (p.type === 'mega') b.mega = true;
     else if (p.type === 'shield') b.shield = true;
     else { b.power = p.type; b.powerT = p.type === 'speed' ? 6 : 5; }
     fx({ k: 'burst', x: p.x, y: p.y, rgb: POWERS[p.type].rgb, n: 14 });
@@ -948,11 +1374,18 @@
       b.biteT = Math.max(0, b.biteT - dt);
       if (b.parryT > 0) { b.parryT = Math.max(0, b.parryT - dt); if (b.parryT <= 0) b.parryRing = null; }
       if (b.power) { b.powerT -= dt; if (b.powerT <= 0) { b.power = null; b.powerT = 0; } }
+      b.specialCd = Math.max(0, b.specialCd - dt);
+      b.heldT = b.held ? (b.heldT || 0) + dt : 0;
+      b.burn = Math.max(0, b.burn - dt);
+      if (b.revealT > 0) { b.revealT = Math.max(0, b.revealT - dt); b.seen = 1; }
+      if (b.ghostT > 0) { b.ghostT -= dt; if (b.ghostT <= 0) unGhost(b); }
       if (b.dead > 0) { if (b.out) continue; b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
+      b.ice = b.stun > 0 ? Math.max(0, b.ice - dt) : 0;
+      if (b.ice > 0) { b.vx = 0; b.vy = 0; }   // frozen solid
       else if (!over) {
-        if (b.ctrl === 'cpu') ({ ix, iy } = cpuInput(b, dt));
+        if (b.ctrl === 'cpu') { cpuLevel = b.lv || baseLevel; ({ ix, iy } = cpuInput(b, dt)); }
         else if (b.ctrl === 'remote') ({ ix, iy } = remoteInput.get(b.i) || { ix: 0, iy: 0 });
         else ({ ix, iy } = localInput(b.local));
       }
@@ -971,17 +1404,22 @@
         const acc = ACCEL * (fast ? 1.3 : 1);
         b.vx += ix * acc * dt; b.vy += iy * acc * dt;
       } else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
+      if (b.ctrl === 'cpu') cpuLevel = b.lv || baseLevel;
       const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1) * (b.ctrl === 'cpu' ? cpuLevel.speed : 1);
       const sp = Math.hypot(b.vx, b.vy);
       if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
       const nx = b.x + b.vx * dt;
-      if (!hitsWall(nx, b.y, R)) b.x = nx; else b.vx *= -0.4;
+      if (!batBlocked(b, nx, b.y)) b.x = nx; else b.vx *= -0.4;
       const ny = b.y + b.vy * dt;
-      if (!hitsWall(b.x, ny, R)) b.y = ny; else b.vy *= -0.4;
+      if (!batBlocked(b, b.x, ny)) b.y = ny; else b.vy *= -0.4;
     }
 
     advanceRings(dt, true);
+    updateShots(dt);
+    updateThunder(dt);
+    updateTwisters(dt);
+    updateBlocks(dt);
 
     // biting: a bat mid-dash (or just after) that touches any rival chomps it,
     // unless the rival parries, blocks with a shield, or is dashing too (a clash)
@@ -1026,7 +1464,7 @@
     }
 
     powerTimer -= dt;
-    if (powerTimer <= 0) { if (powerups.length < 2) spawnPowerup(); powerTimer = 8 + Math.random() * 5; }
+    if (powerTimer <= 0) { if (powerFreq && powerups.length < powerFreq.max) spawnPowerup(); powerTimer = powerWait('every'); }
     powerups = powerups.filter((p) => {
       const b = bats.find((o) => !o.dead && dist(o, p) < 0.6);
       if (b) { grabPowerup(b, p); return false; }
@@ -1061,6 +1499,7 @@
         const d = Math.hypot(foe.x - ring.x, foe.y - ring.y);
         if (d < r + R && d >= prev - R) {
           ring.hit.add(foe.i);
+          if (blocks.length && blockerBetween(ring.x, ring.y, foe.x, foe.y)) continue;   // a Stone Wall soaks it up
           foe.seen = 1;
           if (foe.stun > 0) continue;
           const k = d || 1;
@@ -1102,6 +1541,66 @@
       p.life -= dt;
     }
     particles = particles.filter((p) => p.life > 0);
+    powerCosmetics(dt);
+  }
+
+  // the look and sound of special powers, the same on every screen
+  function powerCosmetics(dt) {
+    if (!arena) return;
+    const s = (window.EchoAudio && window.EchoAudio.sfx) || {};
+    for (const sh of shots) {
+      // a fireball lights the cave as it flies and sheds embers
+      lightAround(sh.x, sh.y, 1.9, LIGHT_FIRE);
+      for (let k = 0; k < 2; k++) {
+        if (Math.random() > 0.8) continue;
+        particles.push({ x: sh.x + (Math.random() - 0.5) * 0.2, y: sh.y + (Math.random() - 0.5) * 0.2, vx: -sh.vx * 0.08 + (Math.random() - 0.5) * 1.2, vy: -sh.vy * 0.08 + (Math.random() - 0.5) * 1.2 - 0.4,
+          life: 0.35 + Math.random() * 0.35, rgb: Math.random() < 0.5 ? '255, 200, 90' : '255, 110, 40', size: 3 + Math.random() * 3 });
+      }
+    }
+    for (const b of bats) {
+      if (b.dead) continue;
+      if (b.burn > 0 && Math.random() < 0.5) particles.push({ x: b.x + (Math.random() - 0.5) * 0.4, y: b.y + (Math.random() - 0.5) * 0.3, vx: (Math.random() - 0.5) * 0.8, vy: -1 - Math.random(), life: 0.3 + Math.random() * 0.3, rgb: Math.random() < 0.5 ? '255, 200, 90' : '255, 110, 40', size: 3 });
+    }
+    for (const tw of twisters) {
+      lightAround(tw.x, tw.y, 1.5, tw.owner);
+      if (Math.random() < 0.7) {
+        const a = Math.random() * Math.PI * 2, r = 0.4 + Math.random() * 1.4;
+        particles.push({ x: tw.x + Math.cos(a) * r, y: tw.y + Math.sin(a) * r, vx: -Math.sin(a) * 4 - Math.cos(a) * 1.5, vy: Math.cos(a) * 4 - Math.sin(a) * 1.5,
+          life: 0.4 + Math.random() * 0.3, rgb: Math.random() < 0.5 ? POWERS.tornado.rgb : arena.theme.wall, size: 2.5 + Math.random() * 2 });
+      }
+    }
+    for (const bt of bolts) {
+      const before = bt.t;
+      bt.t += dt;
+      const o = bt.tgt >= 0 ? bats[bt.tgt] : null;
+      if (bt.t < bt.delay && o && !o.dead) { bt.x = o.x; bt.y = o.y; }
+      if (before < bt.delay && bt.t >= bt.delay) {
+        lightAround(bt.x, bt.y, 2.8, LIGHT_BOLT);
+        burst(bt.x, bt.y, '255, 250, 190', 16, 5, 4);
+        burst(bt.x, bt.y, POWERS.thunder.rgb, 10, 3, 3);
+        shake = Math.max(shake, 0.4);
+        if (!bolts.some((q) => q !== bt && q.boomed && Math.abs(q.t - bt.t) < 0.1)) (s.thunder || s.crash)?.();
+        bt.boomed = true;
+      }
+    }
+    bolts = bolts.filter((bt) => bt.t < bt.delay + BOLT_FX);
+    for (const n of novas) {
+      if (n.t === 0 && !n.fire) lightAround(n.x, n.y, FREEZE_R + 0.6, LIGHT_ICE);
+      if (n.t === 0 && !n.fire) for (let k = 0; k < 22; k++) {
+        const a = (k / 22) * Math.PI * 2, v = 4 + Math.random() * 4;
+        particles.push({ x: n.x, y: n.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.35 + Math.random() * 0.3, rgb: k % 2 ? '200, 245, 255' : POWERS.freeze.rgb, size: 3 + Math.random() * 2 });
+      }
+      n.t += dt;
+    }
+    novas = novas.filter((n) => n.t < NOVA_FX);
+    for (const bk of blocks) {
+      if (!bk.cr && bk.t >= WALL_LIFE - WALL_CRUMBLE) { bk.cr = true; (s.crumble || s.crash)?.(); }
+      if (bk.t < WALL_RISE || bk.cr) {
+        // dust while it rises, falling chunks while it crumbles
+        const k = bk.tiles[Math.floor(Math.random() * bk.tiles.length)], x = (k % arena.w) + Math.random(), y = Math.floor(k / arena.w) + Math.random();
+        if (Math.random() < 0.6) particles.push({ x, y, vx: (Math.random() - 0.5) * 2, vy: bk.cr ? 1.5 + Math.random() : -0.5 - Math.random(), life: 0.4 + Math.random() * 0.3, rgb: bk.cr ? POWERS.wall.rgb : '200, 190, 170', size: 3 + Math.random() * 3 });
+      }
+    }
   }
 
   // ---- Online snapshots ----------------------------------------------------
@@ -1110,7 +1609,8 @@
     const s = {
       t: 's', a: arenaIndex, am: arenaMode, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
-        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT), b.out ? 1 : 0]),
+        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT), b.out ? 1 : 0,
+        b.held || 0, r2(b.ghostT), r2(b.ice), r2(b.burn)]),
       bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
@@ -1119,6 +1619,13 @@
       fx: outbox,
       ft: winScore,
     };
+    // special powers in play (only sent while there are some)
+    if (shots.length) s.sh = shots.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.vx), r2(m.vy), m.owner]);
+    if (twisters.length) s.tw = twisters.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.t), m.owner]);
+    if (blocks.length) s.bk = blocks.map((m) => [m.id, m.tiles, r2(m.t), m.owner]);
+    // bat looks: with the first snapshots, then now and then for anyone who missed them
+    if (looksSent < 10 || looksSent % 60 === 0) s.lk = bats.map((b) => b.look);
+    looksSent++;
     // Last Bat Standing: [round, whole seconds into it, storm, round over]
     if (rule === 'survivor') s.ru = [round, Math.floor(roundClock), storm ? 1 : 0, roundEnd ? 1 : 0];
     outbox = [];
@@ -1143,6 +1650,8 @@
       b.charging = v[20] >= 0; b.charge = Math.max(0, v[20] ?? -1);
       b.parryT = v[21] || 0;
       b.out = !!v[22];
+      b.held = v[23] || null; b.ghostT = v[24] || 0; b.ice = v[25] || 0; b.burn = v[26] || 0;
+      if (s.lk && s.lk[i] && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch (e) { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
     const knownBeams = new Set(beams.map((m) => m.id));
@@ -1157,6 +1666,32 @@
       return { id, x, y, r: g ? Math.max(g.r, r) : r, owner, max, big: !!big, hit: new Set() };
     });
     [...s.c].forEach((ch, k) => { if (crystals[k]) crystals[k].on = ch === '1'; });
+    const oldShots = new Map(shots.map((m) => [m.id, m]));
+    shots = (s.sh || []).map(([id, x, y, vx, vy, owner]) => {
+      const m = oldShots.get(id);
+      // keep the smoothly predicted position unless it drifted off
+      if (m && Math.hypot(m.x - x, m.y - y) < 0.6) { m.vx = vx; m.vy = vy; m.owner = owner; return m; }
+      return { id, x, y, vx, vy, owner, t: 0 };
+    });
+    const oldTw = new Map(twisters.map((m) => [m.id, m]));
+    twisters = (s.tw || []).map(([id, x, y, ux, uy, t, owner]) => {
+      const m = oldTw.get(id) || { id, x, y, hit: new Set() };
+      if (Math.hypot(m.x - x, m.y - y) > 0.8) { m.x = x; m.y = y; }
+      m.tx = x; m.ty = y; m.ux = ux; m.uy = uy; m.t = Math.max(m.t || 0, t); m.owner = owner;
+      return m;
+    });
+    // Stone Wall blocks: the host's list says which tiles are walled right now
+    const oldBk = new Map(blocks.map((m) => [m.id, m]));
+    blocks = (s.bk || []).map(([id, tiles, t, owner]) => {
+      const m = oldBk.get(id) || { id, tiles, t, owner };
+      m.t = Math.max(m.t, t);
+      return m;
+    });
+    const walled = new Set(blocks.flatMap((m) => m.tiles));
+    for (let k = 0; k < arena.grid.length; k++) {
+      if (arena.grid[k] === 2 && !walled.has(k)) arena.grid[k] = 0;
+    }
+    for (const k of walled) if (arena.grid[k] === 0) { arena.grid[k] = 2; tileGlow[k] = 1; }
     powerups = s.p.map(([x, y, type], k) => ({ x, y, type, phase: powerups[k]?.phase ?? Math.random() * 6 }));
     eats = s.e.map(([ei, fi, fx2, fy2, t, ang]) => {
       const f = bats[fi];
@@ -1179,6 +1714,14 @@
       if (b.dashT > 0 && Math.random() < 0.6) particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, rgb: b.rgb, size: 5 });
     }
     for (const e of eats) e.t += dt;
+    // fireballs and twisters keep moving between snapshots
+    for (const m of shots) { m.x += m.vx * dt; m.y += m.vy * dt; m.t += dt; }
+    for (const m of twisters) {
+      m.t += dt;
+      if (m.tx !== undefined) { m.tx += m.ux * TORNADO_SPEED * dt; m.ty += m.uy * TORNADO_SPEED * dt; m.x += (m.tx - m.x) * k; m.y += (m.ty - m.y) * k; }
+    }
+    for (const m of blocks) m.t += dt;
+    for (const b of bats) if (b.ghostT > 0) b.ghostT = Math.max(0, b.ghostT - dt);
     advanceRings(dt, false);
     inputTimer -= dt;
     if (inputTimer <= 0) {
@@ -1227,7 +1770,12 @@
   }
 
   // Other bats are invisible in the dark unless sound reaches them
+  const ghostAlpha = (b) => (b.ghostT < 0.8 && Math.floor(b.ghostT * 10) % 2 ? 0.75 : 0.42);
   function batVisible(b) {
+    const v = batVisible0(b);
+    return b.ghostT > 0 ? v * ghostAlpha(b) : v;
+  }
+  function batVisible0(b) {
     if (b.ctrl === 'local' || viewer === b.i || (watchI === b.i && spectating())) return 1;
     // a bat mid-chomp is never hidden, however dark it is
     if (eats.some((e) => e.eater && e.eater.i === b.i)) return 1;
@@ -1274,7 +1822,8 @@
     return Math.min(1, a * 1.2);
   }
 
-  const BAT_RGB = BATS.map((b) => b.rgb.split(',').map((v) => +v / 255));
+  // (indexed by litBy: the bats' slot colours, then fire, ice and lightning)
+  const BAT_RGB = LIGHT_RGB.map((rgb) => rgb.split(',').map((v) => +v / 255));
   function render() {
     if (in3d()) {
       let follow = viewer >= 0 ? bats[viewer] : localBat(0);
@@ -1282,7 +1831,7 @@
       if (follow && follow.out) follow = bats.find((b) => b.ctrl === 'local' && !b.out) || watched() || follow;
       const ok = window.EchoDuel3D.render({
         W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams, crystals, powerups, eats, shake, follow,
-        batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE, EAT_PULL,
+        batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE, EAT_PULL, extra: extras3d,
       });
       if (ok) { render3dOverlay(follow); return; }
     }
@@ -1323,7 +1872,7 @@
     // walls: nothing in the dark, bright where sound or a nearby bat's senses reach
     for (let ty = 0; ty < arena.h; ty++) {
       for (let tx = 0; tx < arena.w; tx++) {
-        if (!solid(tx, ty)) continue;
+        if (!solid(tx, ty) || arena.grid[ty * arena.w + tx] === 2) continue;   // (Stone Walls are drawn below)
         const open = [!solid(tx, ty - 1), !solid(tx + 1, ty), !solid(tx, ty + 1), !solid(tx - 1, ty)];
         if (!open.some(Boolean)) continue;
         const l = lit[ty * arena.w + tx];
@@ -1333,7 +1882,7 @@
           a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * 0.35);
         }
         if (a < 0.02) continue;
-        const rgb = l > 0.05 ? BATS[litBy[ty * arena.w + tx]].rgb : th.wall;
+        const rgb = l > 0.05 ? LIGHT_RGB[litBy[ty * arena.w + tx]] : th.wall;
         const x = X(tx), y = Y(ty), s = PX;
         ctx.fillStyle = `rgba(${th.fill}, ${a * 0.8})`;
         ctx.fillRect(x, y, s + 0.5, s + 0.5);
@@ -1347,6 +1896,8 @@
         ctx.stroke();
       }
     }
+
+    drawBlocks2D();
 
     for (const c of crystals) {
       if (!c.on) continue;
@@ -1387,6 +1938,11 @@
       ctx.lineCap = 'butt';
     }
 
+    const P2 = (x, y) => ({ x: X(x), y: Y(y), s: PX });
+    drawTwisters2D(P2);
+    drawNovas(P2);
+    drawShots(P2);
+
     for (const p of particles) {
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
       if (p.feather) {
@@ -1412,6 +1968,7 @@
       ctx.fillText(p.text, X(p.x), Y(p.y - k * 0.6));
     }
 
+    drawBolts(P2);
     drawScreen();
   }
 
@@ -1431,6 +1988,17 @@
       if (q.off) continue;
       ctx.fillStyle = `rgba(${th.ambientRgb}, ${0.55 * l})`;
       ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(1.2, p.size * q.s * 0.6), 0, Math.PI * 2); ctx.fill();
+    }
+    drawShots(P, true);
+    // power-ups get their picture floating over them, so you can tell them apart
+    for (const p of powerups) {
+      const a = seenAt(p.x, p.y);
+      if (a < 0.03) continue;
+      const q = P(p.x, p.y, 1.05 + Math.sin(clock * 2.5 + p.phase) * 0.1);
+      if (q.off) continue;
+      ctx.globalAlpha = a;
+      drawIcon(p.type, q.x, q.y, Math.max(7, q.s * 0.2), `rgb(${POWERS[p.type].rgb})`);
+      ctx.globalAlpha = 1;
     }
     for (const p of particles) {
       const q = P(p.x, p.y);
@@ -1461,7 +2029,7 @@
         ctx.lineWidth = Math.max(1.5, s * 0.05);
         ctx.beginPath(); ctx.arc(q.x, q.y, s * 0.6, 0, Math.PI * 2); ctx.stroke();
       }
-      if (b.stun > 0) {
+      if (b.stun > 0 && !(b.ice > 0)) {
         ctx.font = `700 ${Math.max(10, s * 0.32)}px ${FONT}`;
         ctx.fillStyle = '#ffe278';
         ctx.fillText('STUNNED', q.x, q.y - s * 0.95);
@@ -1484,6 +2052,7 @@
       ctx.fillStyle = `rgba(${p.rgb}, ${1 - k * k})`;
       ctx.fillText(p.text, q.x, q.y);
     }
+    drawBolts(P);
     drawScreen();
   }
 
@@ -1643,6 +2212,407 @@
     ctx.restore();
   }
 
+  // ---- Special power effects ------------------------------------------------
+  const hash = (n) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+  const easeBack = (t) => { const c = 1.9; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; };
+  // how tall a Stone Wall block stands (0..1, overshooting as it slams up) and how far it has crumbled
+  const blockRise = (bk) => (bk.t < WALL_RISE ? Math.max(0, easeBack(bk.t / WALL_RISE)) : 1);
+  const blockCrumble = (bk) => Math.max(0, Math.min(1, (bk.t - (WALL_LIFE - WALL_CRUMBLE)) / WALL_CRUMBLE));
+
+  // Stone Wall, top-down: blocks pop up from the floor, glow faintly in the
+  // owner's colour, crack and break apart at the end. Everyone can see them.
+  function drawBlocks2D() {
+    for (const bk of blocks) {
+      const rise = blockRise(bk), cr = blockCrumble(bk), rgb = BATS[bk.owner]?.rgb || POWERS.wall.rgb;
+      for (const k of bk.tiles) {
+        const tx = k % arena.w, ty = Math.floor(k / arena.w);
+        const j = cr > 0 ? (hash(k + Math.floor(clock * 30)) - 0.5) * PX * 0.08 : 0;
+        const sz = PX * (0.25 + 0.75 * rise) * (1 - cr * 0.45), cx = X(tx + 0.5) + j, cy = Y(ty + 0.5);
+        ctx.globalAlpha = 1 - cr * 0.6;
+        glow(cx, cy, PX * 1.1, rgb, 0.18);
+        const g = ctx.createLinearGradient(0, cy - sz / 2, 0, cy + sz / 2);
+        g.addColorStop(0, 'rgb(226, 186, 140)'); g.addColorStop(1, 'rgb(128, 88, 62)');
+        ctx.fillStyle = g;
+        roundRect(cx - sz / 2, cy - sz / 2, sz, sz, sz * 0.12); ctx.fill();
+        ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = Math.max(1.5, PX * 0.07); ctx.stroke();
+        // bricks
+        ctx.strokeStyle = 'rgba(70, 44, 30, 0.6)'; ctx.lineWidth = Math.max(1, PX * 0.04);
+        ctx.beginPath();
+        ctx.moveTo(cx - sz / 2, cy - sz / 6); ctx.lineTo(cx + sz / 2, cy - sz / 6);
+        ctx.moveTo(cx - sz / 2, cy + sz / 6); ctx.lineTo(cx + sz / 2, cy + sz / 6);
+        ctx.moveTo(cx, cy - sz / 2); ctx.lineTo(cx, cy - sz / 6);
+        ctx.moveTo(cx - sz / 4, cy - sz / 6); ctx.lineTo(cx - sz / 4, cy + sz / 6);
+        ctx.moveTo(cx + sz / 4, cy - sz / 6); ctx.lineTo(cx + sz / 4, cy + sz / 6);
+        ctx.moveTo(cx, cy + sz / 6); ctx.lineTo(cx, cy + sz / 2);
+        ctx.stroke();
+        if (cr > 0) {
+          // glowing cracks spread across it
+          ctx.strokeStyle = `rgba(255, 220, 160, ${0.9 * (1 - cr * 0.5)})`; ctx.lineWidth = Math.max(1.2, PX * 0.05);
+          ctx.beginPath();
+          for (let c = 0; c < 3; c++) {
+            let px = cx + (hash(k * 3 + c) - 0.5) * sz * 0.3, py = cy + (hash(k * 5 + c) - 0.5) * sz * 0.3;
+            ctx.moveTo(px, py);
+            for (let s2 = 0; s2 < 3; s2++) {
+              const a = hash(k * 7 + c * 11 + s2) * Math.PI * 2, l = sz * 0.22 * Math.min(1, cr * 3);
+              px += Math.cos(a) * l; py += Math.sin(a) * l; ctx.lineTo(px, py);
+            }
+          }
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      }
+    }
+  }
+
+  // Fireball: a flickering comet of flame. P maps arena to screen ({ x, y, s, off }).
+  function drawShots(P, in3d) {
+    if (!shots.length) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const m of shots) {
+      const q = P(m.x, m.y);
+      if (q.off) continue;
+      const S = q.s, sp = Math.hypot(m.vx, m.vy) || 1, ux = m.vx / sp, uy = m.vy / sp;
+      glow(q.x, q.y, S * (in3d ? 1.3 : 1.9) * (1 + 0.12 * Math.sin(clock * 37 + m.id)), '255, 110, 30', 0.4);
+      // tail: blobs shrinking and reddening behind the head
+      for (let k = 6; k >= 0; k--) {
+        const f = k / 6, t = P(m.x - ux * f * 0.9 + (hash(k + Math.floor(clock * 24)) - 0.5) * 0.12 * f, m.y - uy * f * 0.9 + (hash(k * 3 + Math.floor(clock * 24)) - 0.5) * 0.12 * f);
+        if (t.off) continue;
+        const rad = S * (0.3 - 0.03 * k) * (in3d ? 0.8 : 1);
+        ctx.fillStyle = `rgba(255, ${Math.round(200 - 140 * f)}, ${Math.round(80 - 60 * f)}, ${0.55 * (1 - f * 0.7)})`;
+        ctx.beginPath(); ctx.arc(t.x, t.y, rad, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(255, 245, 210, 0.95)';
+      ctx.beginPath(); ctx.arc(q.x, q.y, S * 0.13 * (in3d ? 0.8 : 1), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Tornado, top-down: three spiral arms spinning around the eye, and a faint
+  // circle showing how far its pull reaches
+  function drawTwisters2D(P) {
+    for (const tw of twisters) {
+      const q = P(tw.x, tw.y);
+      if (q.off) continue;
+      const fade = Math.min(1, tw.t * 3, (TORNADO_LIFE - tw.t) * 2), rgb = POWERS.tornado.rgb, S = q.s;
+      if (fade <= 0) continue;
+      ctx.save();
+      ctx.globalAlpha = fade;
+      glow(q.x, q.y, S * 2.2, rgb, 0.18);
+      ctx.strokeStyle = `rgba(${rgb}, 0.18)`; ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 7]); ctx.lineDashOffset = clock * 30;
+      ctx.beginPath(); ctx.arc(q.x, q.y, TORNADO_PULL * S, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.lineCap = 'round';
+      for (let arm = 0; arm < 3; arm++) {
+        ctx.beginPath();
+        for (let k = 0; k <= 14; k++) {
+          const r = 0.12 + k * 0.1, a = -clock * 9 + arm * 2.094 + r * 2.4;
+          const x = q.x + Math.cos(a) * r * S, y = q.y + Math.sin(a) * r * S;
+          if (k) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+        }
+        ctx.strokeStyle = `rgba(${rgb}, 0.85)`; ctx.lineWidth = Math.max(2, S * 0.12); ctx.stroke();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; ctx.lineWidth = Math.max(1, S * 0.04); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+      ctx.beginPath(); ctx.arc(q.x, q.y, S * 0.12, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // Freeze blast (and a fireball's burst): a ring racing out with ice shards
+  function drawNovas(P) {
+    for (const n of novas) {
+      const q = P(n.x, n.y);
+      if (q.off) continue;
+      const k = n.t / NOVA_FX, e = 1 - (1 - Math.min(1, n.t / 0.3)) ** 3, f = 1 - k;
+      const R0 = (n.fire ? FIRE_SPLASH + 0.3 : FREEZE_R) * e * q.s, rgb = n.fire ? '255, 150, 60' : POWERS.freeze.rgb;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      glow(q.x, q.y, Math.max(4, R0 * 1.1), rgb, 0.35 * f);
+      ctx.strokeStyle = `rgba(${rgb}, ${0.9 * f})`; ctx.lineWidth = Math.max(2, q.s * 0.2 * f);
+      ctx.beginPath(); ctx.arc(q.x, q.y, Math.max(1, R0), 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * f})`; ctx.lineWidth = Math.max(1, q.s * 0.05);
+      ctx.stroke();
+      if (!n.fire) {
+        // shards pointing out around the ring
+        ctx.fillStyle = `rgba(220, 248, 255, ${0.9 * f})`;
+        for (let j = 0; j < 12; j++) {
+          const a = (j / 12) * Math.PI * 2 + 0.2, r0 = R0 * 0.82, r1 = R0 * 1.12, w = 0.09;
+          ctx.beginPath();
+          ctx.moveTo(q.x + Math.cos(a - w) * r0, q.y + Math.sin(a - w) * r0);
+          ctx.lineTo(q.x + Math.cos(a) * r1, q.y + Math.sin(a) * r1);
+          ctx.lineTo(q.x + Math.cos(a + w) * r0, q.y + Math.sin(a + w) * r0);
+          ctx.fill();
+        }
+      }
+      ctx.restore();
+    }
+  }
+
+  // Thunder: the screen dims while a crackling target locks on, then a
+  // jagged bolt slams down from the top of the screen with a white flash.
+  function drawBolts(P) {
+    if (!bolts.length) return;
+    let dark = 0, flash = 0;
+    for (const bt of bolts) {
+      if (bt.t < bt.delay) dark = Math.max(dark, bt.t / bt.delay);
+      else { const a = bt.t - bt.delay; dark = Math.max(dark, 1 - a / 0.6); flash = Math.max(flash, 1 - a / 0.18); }
+    }
+    ctx.save();
+    if (dark > 0) { ctx.fillStyle = `rgba(3, 2, 14, ${0.5 * dark})`; ctx.fillRect(0, 0, W, H); }
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    const rgb = POWERS.thunder.rgb;
+    for (const bt of bolts) {
+      const q = P(bt.x, bt.y);
+      if (q.off) continue;
+      const S = q.s;
+      if (bt.t < bt.delay) {
+        const k = bt.t / bt.delay;
+        ctx.strokeStyle = `rgba(${rgb}, ${0.4 + 0.6 * k})`; ctx.lineWidth = Math.max(2, S * 0.08);
+        ctx.setLineDash([S * 0.3, S * 0.2]); ctx.lineDashOffset = -clock * 60;
+        ctx.beginPath(); ctx.arc(q.x, q.y, S * (1.7 - 1.0 * k), 0, Math.PI * 2); ctx.stroke();
+        ctx.setLineDash([]);
+        // little sparks crawling around the target
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.8 * k})`; ctx.lineWidth = Math.max(1, S * 0.04);
+        ctx.beginPath();
+        for (let j = 0; j < 3; j++) {
+          const a = hash(bt.seed + j + Math.floor(clock * 20)) * Math.PI * 2, r = S * 0.7;
+          let x = q.x + Math.cos(a) * r, y = q.y + Math.sin(a) * r;
+          ctx.moveTo(x, y);
+          for (let s2 = 0; s2 < 3; s2++) { x += (hash(bt.seed + j * 5 + s2 + clock) - 0.5) * S * 0.5; y += (hash(bt.seed + j * 9 + s2 + clock * 2) - 0.5) * S * 0.5; ctx.lineTo(x, y); }
+        }
+        ctx.stroke();
+        continue;
+      }
+      const a = bt.t - bt.delay, f = Math.max(0, 1 - a / BOLT_FX), seed = bt.seed + Math.floor(clock * 18);
+      // the main bolt, from above the top of the screen down to the target, plus two branches
+      const pts = [];
+      const x0 = q.x + (hash(bt.seed) - 0.5) * S * 3, y0 = -20, n = 12;
+      for (let j = 0; j <= n; j++) {
+        const t = j / n, jig = j === 0 || j === n ? 0 : (hash(seed * 13 + j) - 0.5) * S * 1.1;
+        pts.push([x0 + (q.x - x0) * t + jig, y0 + (q.y - y0) * t]);
+      }
+      const stroke = (path, w) => {
+        ctx.beginPath(); path.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+        ctx.strokeStyle = `rgba(${rgb}, ${0.35 * f})`; ctx.lineWidth = Math.max(6, S * 0.55 * w); ctx.stroke();
+        ctx.strokeStyle = `rgba(190, 215, 255, ${0.85 * f})`; ctx.lineWidth = Math.max(3, S * 0.18 * w); ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${f})`; ctx.lineWidth = Math.max(1.5, S * 0.07 * w); ctx.stroke();
+      };
+      stroke(pts, 1);
+      for (let br = 0; br < 2; br++) {
+        const from = pts[3 + br * 4], side = br ? 1 : -1, path = [from];
+        let [x, y] = from;
+        for (let j = 0; j < 4; j++) { x += side * S * (0.4 + hash(seed + br * 7 + j) * 0.5); y += S * (0.5 + hash(seed * 3 + j) * 0.6); path.push([x, y]); }
+        stroke(path, 0.5);
+      }
+      ctx.globalCompositeOperation = 'lighter';
+      glow(q.x, q.y, S * 2.6, '255, 250, 200', 0.7 * f);
+      ctx.strokeStyle = `rgba(${rgb}, ${f})`; ctx.lineWidth = Math.max(2, S * 0.12 * f);
+      ctx.beginPath(); ctx.arc(q.x, q.y, S * (0.4 + 2.2 * (1 - f)), 0, Math.PI * 2); ctx.stroke();
+      ctx.globalCompositeOperation = 'source-over';
+    }
+    if (flash > 0) { ctx.fillStyle = `rgba(235, 240, 255, ${0.55 * flash})`; ctx.fillRect(0, 0, W, H); }
+    ctx.restore();
+  }
+
+  // The POWER button: shows the special power you hold, glowing when it's ready
+  function drawSpecialButton() {
+    const bt = specialButton(), me = localBat(0);
+    if (!me) return;
+    const type = me.held, pw = type ? POWERS[type] : null, ready = !!pw && me.specialCd <= 0 && me.stun <= 0 && !me.dead;
+    const rgb = pw ? pw.rgb : '150, 130, 255', pulse = ready ? 0.5 + 0.5 * Math.sin(clock * 6) : 0;
+    if (ready) glow(bt.x, bt.y, bt.r * 2, rgb, 0.22 + 0.18 * pulse);
+    const g = ctx.createRadialGradient(bt.x - bt.r * 0.3, bt.y - bt.r * 0.4, bt.r * 0.1, bt.x, bt.y, bt.r);
+    g.addColorStop(0, pw ? `rgba(${rgb}, 0.5)` : 'rgba(120, 90, 235, 0.25)');
+    g.addColorStop(1, pw ? 'rgba(20, 14, 52, 0.8)' : 'rgba(36, 22, 92, 0.45)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r, 0, Math.PI * 2);
+    glowStroke(pw ? `rgba(${rgb}, 0.95)` : 'rgba(150, 130, 255, 0.35)', 3, ready ? `rgba(${rgb}, 1)` : null, 1 + pulse);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (pw) {
+      drawIcon(type, bt.x, bt.y - bt.r * 0.14, bt.r * 0.42 * (1 + 0.06 * pulse), ready ? `rgb(${rgb})` : `rgba(${rgb}, 0.5)`);
+      const name = pw.name.toUpperCase();
+      ctx.font = `700 ${Math.round(bt.r * (name.length > 7 ? 0.22 : 0.27))}px ${FONT}`;
+      ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.5)';
+      ctx.fillText(name, bt.x, bt.y + bt.r * 0.52);
+    } else {
+      ctx.font = `700 ${Math.round(bt.r * 0.3)}px ${FONT}`;
+      ctx.fillStyle = 'rgba(244, 241, 255, 0.35)';
+      ctx.fillText('POWER', bt.x, bt.y);
+    }
+    if (!touchUsed && pw) {
+      ctx.font = `700 ${Math.round(bt.r * 0.28)}px ${FONT}`;
+      ctx.fillStyle = 'rgba(244, 241, 255, 0.8)';
+      ctx.fillText('E', bt.x + bt.r * 0.78, bt.y - bt.r * 0.78);
+    }
+  }
+
+  // ---- Special power effects in 3D -------------------------------------------
+  // view3d.js calls this (as v.extra) just before it draws each frame. Arena
+  // (x, y) is the 3D point (x, height, y); bats fly at height 0.55.
+  const FLY_Y = 0.55;
+  let x3 = null;
+  function build3d(T, scene) {
+    const add = (o) => { scene.add(o); return o; };
+    const glowMat = (color, opacity = 1) => new T.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide });
+    const MAXB = 48;
+    const bgeo = new T.BoxGeometry(1, 1, 1); bgeo.translate(0, 0.5, 0);
+    const blockMesh = add(new T.InstancedMesh(bgeo, new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0x3a2412 }), MAXB));
+    blockMesh.instanceColor = new T.InstancedBufferAttribute(new Float32Array(MAXB * 3), 3);
+    const rimMesh = add(new T.InstancedMesh(bgeo, new T.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.55 }), MAXB));
+    rimMesh.instanceColor = new T.InstancedBufferAttribute(new Float32Array(MAXB * 3), 3);
+    for (const m of [blockMesh, rimMesh]) { m.frustumCulled = false; m.count = 0; }
+    const ball = new T.SphereGeometry(1, 16, 12);
+    const fires = [0, 1, 2].map(() => {
+      const g = new T.Group();
+      const core = new T.Mesh(ball, new T.MeshBasicMaterial({ color: 0xfff0c0 }));
+      const mid = new T.Mesh(ball, glowMat(0xff9a30, 0.8));
+      const outer = new T.Mesh(ball, glowMat(0xff5a10, 0.35));
+      core.scale.setScalar(0.14); mid.scale.setScalar(0.24); outer.scale.setScalar(0.4);
+      g.add(core, mid, outer); g.visible = false; add(g);
+      return { g, mid, outer };
+    });
+    // lights stay in the scene (intensity 0 when idle) so materials never recompile mid-match
+    const fireLights = [0, 1].map(() => { const l = add(new T.PointLight(0xff7a30, 0, 7, 1.6)); return l; });
+    const flashLight = add(new T.PointLight(0xdde8ff, 0, 10, 1.2));
+    const ringGeo = new T.TorusGeometry(1, 0.035, 6, 40); ringGeo.rotateX(Math.PI / 2);
+    const twists = [0, 1, 2].map(() => {
+      const g = new T.Group();
+      const rings = Array.from({ length: 8 }, (_, k) => { const m = new T.Mesh(ringGeo, glowMat(0xbefff0, 0.55)); g.add(m); return m; });
+      const bits = Array.from({ length: 8 }, () => { const m = new T.Mesh(new T.TetrahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0x8a7fb0 })); g.add(m); return m; });
+      g.visible = false; add(g);
+      return { g, rings, bits };
+    });
+    const flat = new T.RingGeometry(0.86, 1, 64); flat.rotateX(-Math.PI / 2);
+    const spikeGeo = new T.ConeGeometry(0.12, 0.7, 5); spikeGeo.translate(0, 0.35, 0);
+    const novas3 = [0, 1, 2, 3].map(() => {
+      const g = new T.Group();
+      const ring = new T.Mesh(flat, glowMat(0x6ed2ff, 0.9));
+      const spikes = Array.from({ length: 12 }, () => { const m = new T.Mesh(spikeGeo, new T.MeshLambertMaterial({ color: 0xc8f0ff, emissive: 0x3a7aa0, transparent: true, opacity: 0.85 })); g.add(m); return m; });
+      g.add(ring); g.visible = false; add(g);
+      return { g, ring, spikes };
+    });
+    const iceGeo = new T.BoxGeometry(0.95, 0.95, 0.95);
+    const ices = [0, 1, 2, 3].map(() => {
+      const g = new T.Group();
+      const box = new T.Mesh(iceGeo, new T.MeshLambertMaterial({ color: 0xaee6ff, emissive: 0x2a6a90, transparent: true, opacity: 0.45, depthWrite: false }));
+      const edges = new T.LineSegments(new T.EdgesGeometry(iceGeo), new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
+      g.add(box, edges); g.visible = false; add(g);
+      return { g, box, edges };
+    });
+    const ghosts = [0, 1, 2, 3].map(() => { const m = add(new T.Mesh(ball, glowMat(0xd6c4ff, 0.18))); m.visible = false; return m; });
+    return { scene, blockMesh, rimMesh, MAXB, fires, fireLights, flashLight, twists, novas3, ices, ghosts, M: new T.Matrix4(), Q: new T.Quaternion(), E: new T.Euler(), V: new T.Vector3(), S: new T.Vector3(), C: new T.Color() };
+  }
+  function extras3d(T, scene) {
+    if (!x3 || x3.scene !== scene) x3 = build3d(T, scene);
+    const { blockMesh, rimMesh, M, Q, E, V, S, C } = x3;
+    // Stone Wall: blocks slam up out of the floor, then shake, sink and tilt as they crumble
+    let n = 0;
+    for (const bk of blocks) {
+      const rise = blockRise(bk), cr = blockCrumble(bk), own = BAT_RGB[bk.owner] || [0.84, 0.63, 0.43];
+      for (const k of bk.tiles) {
+        if (n >= x3.MAXB) break;
+        const tx = k % arena.w, ty = Math.floor(k / arena.w), j = cr > 0 ? (hash(k + Math.floor(clock * 30)) - 0.5) * 0.08 : 0;
+        V.set(tx + 0.5 + j, -0.02 - cr * 0.5, ty + 0.5);
+        Q.setFromEuler(E.set(cr * (hash(k) - 0.5) * 0.8, 0, cr * (hash(k * 3) - 0.5) * 0.8));
+        S.set(0.98 * (1 - cr * 0.25), Math.max(0.01, 1.2 * rise * (1 - cr * 0.4)), 0.98 * (1 - cr * 0.25));
+        M.compose(V, Q, S);
+        blockMesh.setMatrixAt(n, M);
+        const lum = 0.62 + 0.4 * Math.max(0, 1 - bk.t * 2) + 0.08 * hash(k);
+        blockMesh.setColorAt(n, C.setRGB(0.86 * lum, 0.62 * lum, 0.44 * lum));
+        S.multiplyScalar(1.03); M.compose(V, Q, S);
+        rimMesh.setMatrixAt(n, M);
+        rimMesh.setColorAt(n, C.setRGB(own[0], own[1], own[2]).multiplyScalar(1 - cr));
+        n++;
+      }
+    }
+    blockMesh.count = rimMesh.count = n;
+    for (const m of [blockMesh, rimMesh]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+
+    // fireballs: a glowing ball of flame that lights the walls orange as it passes
+    x3.fires.forEach((f, k) => {
+      const m = shots[k];
+      f.g.visible = !!m;
+      if (!m) return;
+      f.g.position.set(m.x, FLY_Y, m.y);
+      const fl = 1 + 0.15 * Math.sin(clock * 40 + m.id);
+      f.mid.scale.setScalar(0.24 * fl); f.outer.scale.setScalar(0.4 * (2 - fl));
+    });
+    x3.fireLights.forEach((l, k) => {
+      const m = shots[k];
+      l.intensity = m ? 9 * (1 + 0.15 * Math.sin(clock * 33 + k)) : 0;
+      if (m) l.position.set(m.x, FLY_Y + 0.35, m.y);
+    });
+    // the flash light: lightning strikes and fireball bursts
+    let fl = 0, fx3 = 0, fy3 = 0;
+    for (const bt of bolts) {
+      const a = bt.t - bt.delay;
+      if (a >= 0 && 1 - a / 0.35 > fl) { fl = 1 - a / 0.35; fx3 = bt.x; fy3 = bt.y; }
+    }
+    for (const nv of novas) if (1 - nv.t / 0.3 > fl) { fl = 1 - nv.t / 0.3; fx3 = nv.x; fy3 = nv.y; }
+    x3.flashLight.intensity = fl > 0 ? 22 * fl : 0;
+    x3.flashLight.position.set(fx3, 1.6, fy3);
+    // twisters: a stack of spinning rings, wider at the top, wobbling as they go
+    x3.twists.forEach((tw3, k) => {
+      const tw = twisters[k];
+      tw3.g.visible = !!tw;
+      if (!tw) return;
+      const fade = Math.max(0, Math.min(1, tw.t * 3, (TORNADO_LIFE - tw.t) * 2));
+      tw3.g.position.set(tw.x, 0, tw.y);
+      tw3.rings.forEach((m, j) => {
+        const h = j / 7, r = (0.15 + h * h * 0.95) * (0.6 + 0.4 * fade);
+        m.position.set(Math.sin(clock * 4 + j * 0.6) * 0.12 * h, 0.08 + h * 1.9, Math.cos(clock * 3.3 + j * 0.6) * 0.12 * h);
+        m.scale.set(r, 1, r);
+        m.rotation.y = clock * 9 + j;
+        m.material.opacity = (0.18 + 0.3 * h) * fade;
+      });
+      tw3.bits.forEach((m, j) => {
+        const a = clock * 7 + j * 0.785, h = 0.2 + ((j * 0.37 + clock * 0.4) % 1) * 1.6, r = 0.2 + h * 0.5;
+        m.position.set(Math.cos(a) * r, h, Math.sin(a) * r);
+        m.rotation.set(clock * 5 + j, clock * 3, 0);
+      });
+    });
+    // freeze blasts (and fire bursts): a ring racing out, ice spikes bursting up and sinking
+    x3.novas3.forEach((n3, k) => {
+      const nv = novas[k];
+      n3.g.visible = !!nv;
+      if (!nv) return;
+      const t = nv.t / NOVA_FX, e = 1 - (1 - Math.min(1, nv.t / 0.3)) ** 3, R0 = (nv.fire ? FIRE_SPLASH + 0.3 : FREEZE_R) * e;
+      n3.g.position.set(nv.x, 0.06, nv.y);
+      n3.ring.scale.setScalar(Math.max(0.05, R0));
+      n3.ring.material.color.setHex(nv.fire ? 0xff8a30 : 0x6ed2ff);
+      n3.ring.material.opacity = 0.9 * (1 - t);
+      n3.spikes.forEach((m, j) => {
+        m.visible = !nv.fire;
+        const a = (j / 12) * Math.PI * 2, r = R0 * (0.75 + 0.2 * hash(j));
+        m.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+        m.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5);
+        m.scale.set(1, Math.max(0.01, Math.sin(Math.min(1, t * 1.1) * Math.PI)) * (0.8 + 0.6 * hash(j * 7)), 1);
+      });
+    });
+    // frozen bats sit in a block of ice; ghosts get a pale aura
+    x3.ices.forEach((ic, k) => {
+      const b = bats[k], vis = b && !b.dead && b.ice > 0 ? batVisible(b) : 0;
+      ic.g.visible = vis > 0.03;
+      if (!ic.g.visible) return;
+      const pop = Math.min(1, b.ice / 0.3);
+      ic.g.position.set(b.x, FLY_Y, b.y);
+      ic.g.rotation.set(0.15, 0.4 + k, 0.1);
+      ic.g.scale.setScalar(0.9 + 0.1 * pop);
+      ic.box.material.opacity = 0.45 * vis * pop; ic.edges.material.opacity = 0.9 * vis * pop;
+    });
+    x3.ghosts.forEach((m, k) => {
+      const b = bats[k], vis = b && !b.dead && b.ghostT > 0 ? batVisible(b) : 0;
+      m.visible = vis > 0.03;
+      if (!m.visible) return;
+      m.position.set(b.x, FLY_Y, b.y);
+      m.scale.setScalar(0.55 + 0.05 * Math.sin(clock * 6));
+      m.material.opacity = 0.35 * Math.min(1, vis * 2);
+    });
+  }
+
   // Screen-space layer shared by both views: warnings, HUD, touch controls, fades
   function drawScreen() {
     const th = arena.theme;
@@ -1657,36 +2627,109 @@
     drawHud();
     drawSticks();
     if (localCount === 1 && countdown <= 0 && touchUsed && !spectating()) drawDashButton();
+    if (specialShown()) drawSpecialButton();
   }
 
   function drawPowerup(p) {
     const x = X(p.x), y = Y(p.y + Math.sin(clock * 2.5 + p.phase) * 0.12), rgb = POWERS[p.type].rgb, s = PX * 0.3;
     glow(x, y, PX * 1.1, rgb, 0.3 + 0.15 * Math.sin(clock * 4 + p.phase));
     ctx.strokeStyle = `rgb(${rgb})`;
-    ctx.fillStyle = `rgb(${rgb})`;
     ctx.lineWidth = Math.max(1.5, PX * 0.07);
     ctx.beginPath(); ctx.arc(x, y, s * 1.25, 0, Math.PI * 2); ctx.stroke();
+    // special powers spin a dashed outer ring, so they read as "for the POWER button"
+    if (POWERS[p.type].special) {
+      ctx.setLineDash([s * 0.35, s * 0.3]); ctx.lineDashOffset = -clock * 20;
+      ctx.beginPath(); ctx.arc(x, y, s * 1.6, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    drawIcon(p.type, x, y, s, `rgb(${rgb})`);
+  }
+  // each power's little picture, centred on x, y, about 2s across
+  function drawIcon(type, x, y, s, color) {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(1.5, s * 0.2); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.beginPath();
-    if (p.type === 'mega') {
+    if (type === 'mega') {
       ctx.arc(x, y, s * 0.25, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = Math.max(1.5, s * 0.16);
       ctx.beginPath(); ctx.arc(x, y, s * 0.55, -0.9, 0.9); ctx.stroke();
       ctx.beginPath(); ctx.arc(x, y, s * 0.55, Math.PI - 0.9, Math.PI + 0.9); ctx.stroke();
       ctx.beginPath(); ctx.arc(x, y, s * 0.85, -0.7, 0.7); ctx.stroke();
       ctx.beginPath(); ctx.arc(x, y, s * 0.85, Math.PI - 0.7, Math.PI + 0.7); ctx.stroke();
-    } else if (p.type === 'speed') {
+    } else if (type === 'speed') {
       for (const off of [-0.3, 0.25]) {
         ctx.beginPath();
         ctx.moveTo(x + (off - 0.25) * s, y - 0.5 * s); ctx.lineTo(x + (off + 0.25) * s, y); ctx.lineTo(x + (off - 0.25) * s, y + 0.5 * s);
         ctx.stroke();
       }
-    } else if (p.type === 'shield') {
+    } else if (type === 'shield') {
       ctx.moveTo(x, y - 0.65 * s); ctx.lineTo(x + 0.55 * s, y - 0.35 * s); ctx.lineTo(x + 0.45 * s, y + 0.3 * s);
       ctx.lineTo(x, y + 0.7 * s); ctx.lineTo(x - 0.45 * s, y + 0.3 * s); ctx.lineTo(x - 0.55 * s, y - 0.35 * s); ctx.closePath();
       ctx.stroke();
-    } else {
+    } else if (type === 'frenzy') {
       ctx.arc(x - 0.32 * s, y, 0.3 * s, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.arc(x + 0.32 * s, y, 0.3 * s, 0, Math.PI * 2); ctx.stroke();
+    } else if (type === 'fire') {
+      const flame = (k, dy) => {
+        ctx.beginPath();
+        ctx.moveTo(x, y + dy - s * 0.95 * k);
+        ctx.bezierCurveTo(x + s * 0.75 * k, y + dy - s * 0.2 * k, x + s * 0.7 * k, y + dy + s * 0.75 * k, x, y + dy + s * 0.8 * k);
+        ctx.bezierCurveTo(x - s * 0.7 * k, y + dy + s * 0.75 * k, x - s * 0.75 * k, y + dy - s * 0.2 * k, x, y + dy - s * 0.95 * k);
+        ctx.fill();
+      };
+      flame(1, 0);
+      ctx.fillStyle = 'rgba(255, 240, 190, 0.95)'; flame(0.5, s * 0.35);
+    } else if (type === 'thunder') {
+      ctx.moveTo(x + 0.2 * s, y - 0.95 * s); ctx.lineTo(x - 0.5 * s, y + 0.12 * s); ctx.lineTo(x - 0.02 * s, y + 0.12 * s);
+      ctx.lineTo(x - 0.22 * s, y + 0.95 * s); ctx.lineTo(x + 0.52 * s, y - 0.16 * s); ctx.lineTo(x + 0.06 * s, y - 0.16 * s); ctx.closePath();
+      ctx.fill();
+    } else if (type === 'wall') {
+      ctx.lineWidth = Math.max(1.2, s * 0.13);
+      const w = s * 1.5, h = s * 1.15, x0 = x - w / 2, y0 = y - h / 2;
+      ctx.globalAlpha *= 0.35; ctx.fillRect(x0, y0, w, h); ctx.globalAlpha /= 0.35;
+      ctx.strokeRect(x0, y0, w, h);
+      for (let r = 1; r < 3; r++) { ctx.moveTo(x0, y0 + (h * r) / 3); ctx.lineTo(x0 + w, y0 + (h * r) / 3); }
+      for (let r = 0; r < 3; r++) {
+        const xs = r % 2 ? [0.5] : [0.25, 0.75];
+        for (const f of xs) { ctx.moveTo(x0 + w * f, y0 + (h * r) / 3); ctx.lineTo(x0 + w * f, y0 + (h * (r + 1)) / 3); }
+      }
+      ctx.stroke();
+    } else if (type === 'freeze') {
+      ctx.lineWidth = Math.max(1.3, s * 0.15);
+      for (let k = 0; k < 3; k++) {
+        const a = (k * Math.PI) / 3 + Math.PI / 2, c = Math.cos(a), n = Math.sin(a);
+        ctx.moveTo(x - c * s * 0.9, y - n * s * 0.9); ctx.lineTo(x + c * s * 0.9, y + n * s * 0.9);
+        for (const sd of [-1, 1]) {
+          const mx = x + sd * c * s * 0.55, my = y + sd * n * s * 0.55;
+          for (const t of [-0.6, 0.6]) {
+            const b = a + (sd > 0 ? 0 : Math.PI) + t * 1.2;
+            ctx.moveTo(mx, my); ctx.lineTo(mx + Math.cos(b) * s * 0.28, my + Math.sin(b) * s * 0.28);
+          }
+        }
+      }
+      ctx.stroke();
+    } else if (type === 'tornado') {
+      ctx.lineWidth = Math.max(1.3, s * 0.17);
+      for (let k = 0; k < 5; k++) {
+        const yy = y - s * 0.75 + k * s * 0.37, half = s * (0.85 - k * 0.15), dx = Math.sin(k * 1.3) * s * 0.12;
+        ctx.moveTo(x - half + dx, yy); ctx.quadraticCurveTo(x + dx, yy + s * 0.12, x + half + dx, yy);
+      }
+      ctx.stroke();
+    } else if (type === 'ghost') {
+      ctx.moveTo(x - s * 0.62, y + s * 0.75);
+      ctx.lineTo(x - s * 0.62, y - s * 0.15);
+      ctx.arc(x, y - s * 0.15, s * 0.62, Math.PI, 0);
+      ctx.lineTo(x + s * 0.62, y + s * 0.75);
+      for (let k = 0; k < 3; k++) {
+        const x1 = x + s * 0.62 - (k + 0.5) * (s * 1.24 / 3), x2 = x + s * 0.62 - (k + 1) * (s * 1.24 / 3);
+        ctx.quadraticCurveTo(x1, y + s * (k % 2 ? 0.95 : 0.45), x2, y + s * 0.75);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#1a1030';
+      ctx.beginPath(); ctx.ellipse(x - s * 0.22, y - s * 0.15, s * 0.1, s * 0.16, 0, 0, Math.PI * 2); ctx.ellipse(x + s * 0.22, y - s * 0.15, s * 0.1, s * 0.16, 0, 0, Math.PI * 2); ctx.fill();
     }
+    ctx.restore();
   }
 
   function drawBat(b, x, y, o = {}) {
@@ -1694,28 +2737,47 @@
     const stunned = o.stunned ?? b.stun > 0;
     if (!o.rot && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0) return;
     const r = PX * R * scale, flap = stunned ? 0.2 : Math.sin(clock * (b.dashT > 0 ? 40 : 18) + b.i);
-    const alpha = o.alpha ?? 1;
+    // a ghost is half see-through (rivals' alpha already has it, via batVisible)
+    const alpha = o.alpha ?? (b.ghostT > 0 && !o.rot ? ghostAlpha(b) : 1);
     ctx.save();
     ctx.translate(x, y);
     if (o.rot) ctx.rotate(o.rot);
     ctx.globalAlpha = alpha;
     glow(0, 0, r * 3, b.rgb, 0.3);
     if (b.power) glow(0, 0, r * 4, POWERS[b.power].rgb, 0.25 + 0.1 * Math.sin(clock * 10));
-    ctx.fillStyle = b.color;
-    for (const s of [-1, 1]) {
-      ctx.beginPath();
-      ctx.moveTo(s * r * 0.6, -r * 0.2); ctx.lineTo(s * r * 2.3, -r * (0.2 + flap * 0.9));
-      ctx.lineTo(s * r * 1.8, r * 0.25); ctx.lineTo(s * r * 1.3, r * 0.05); ctx.lineTo(s * r * 0.9, r * 0.45);
-      ctx.closePath(); ctx.fill();
+    if (b.burn > 0) glow(0, 0, r * 3.4, '255, 120, 40', 0.45 * Math.min(1, b.burn) * (0.8 + 0.2 * Math.sin(clock * 30)));
+    if (b.ghostT > 0 && !o.rot) glow(0, 0, r * 3.6, POWERS.ghost.rgb, 0.35);
+    // a soft ring in the slot colour under the bat, so you can tell bats apart whatever they look like
+    if (!o.rot) {
+      ctx.strokeStyle = `rgba(${b.rgb}, 0.55)`; ctx.lineWidth = Math.max(1.5, r * 0.14);
+      ctx.beginPath(); ctx.ellipse(0, r * 1.05, r * 1.55, r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
     }
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(-r * 0.75, -r * 0.5); ctx.lineTo(-r * 0.45, -r * 1.35); ctx.lineTo(-r * 0.1, -r * 0.8);
-    ctx.moveTo(r * 0.75, -r * 0.5); ctx.lineTo(r * 0.45, -r * 1.35); ctx.lineTo(r * 0.1, -r * 0.8);
-    ctx.fill();
+    const L = window.EchoLooks;
+    let drewLook = false;
+    if (L && b.look && L.draw2D) {
+      try {
+        L.draw2D(ctx, b.look, 0, 0, r, { face: b.face || 1, flap: (flap + 1) / 2, alpha, stunned, eyesClosed: stunned, angle: 0 });
+        drewLook = true;
+      } catch (e) { drewLook = false; }
+      ctx.globalAlpha = alpha;
+    }
+    if (!drewLook) {
+      ctx.fillStyle = b.color;
+      for (const s of [-1, 1]) {
+        ctx.beginPath();
+        ctx.moveTo(s * r * 0.6, -r * 0.2); ctx.lineTo(s * r * 2.3, -r * (0.2 + flap * 0.9));
+        ctx.lineTo(s * r * 1.8, r * 0.25); ctx.lineTo(s * r * 1.3, r * 0.05); ctx.lineTo(s * r * 0.9, r * 0.45);
+        ctx.closePath(); ctx.fill();
+      }
+      ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.75, -r * 0.5); ctx.lineTo(-r * 0.45, -r * 1.35); ctx.lineTo(-r * 0.1, -r * 0.8);
+      ctx.moveTo(r * 0.75, -r * 0.5); ctx.lineTo(r * 0.45, -r * 1.35); ctx.lineTo(r * 0.1, -r * 0.8);
+      ctx.fill();
+    }
 
     const lx = (b.face || 1) * r * 0.18;
-    if (stunned) {
+    if (drewLook) { /* the look draws its own eyes */ } else if (stunned) {
       ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1.2, PX * 0.05);
       for (const s of [-1, 1]) {
         const ex = s * r * 0.32, ey = -r * 0.1, k = r * 0.14;
@@ -1759,6 +2821,8 @@
       ctx.lineWidth = Math.max(1.5, PX * 0.05);
       ctx.beginPath(); ctx.arc(0, 0, r * 1.6, 0, Math.PI * 2); ctx.stroke();
     }
+    // frozen: a block of ice around the bat
+    if (b.ice > 0 && !o.rot) drawIceBlock(r, Math.min(1, b.ice / 0.4));
     ctx.restore();
 
     if (stunned && !o.rot) {
@@ -1771,7 +2835,7 @@
       ctx.font = `700 ${Math.max(10, PX * 0.4)}px ${FONT}`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = '#ffe278';
-      ctx.fillText('STUNNED', x, y - r * 2.6);
+      if (!(b.ice > 0)) ctx.fillText('STUNNED', x, y - r * 2.6);
       ctx.globalAlpha = 1;
     }
     if (o.tag !== false) {
@@ -1805,6 +2869,21 @@
     ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.45)';
     ctx.fillText('DASH', b.x, b.y - b.r * 0.12);
     batGlyph(b.x, b.y + b.r * 0.38, b.r * 0.62, ready ? '#8f6dff' : 'rgba(143, 109, 255, 0.45)');
+  }
+  function drawIceBlock(r, k) {
+    const s = r * 2.5 * (0.9 + 0.1 * k);
+    ctx.save();
+    ctx.rotate(0.12);
+    roundRect(-s / 2, -s / 2, s, s, s * 0.14);
+    ctx.fillStyle = `rgba(170, 230, 255, ${0.38 * k})`; ctx.fill();
+    ctx.strokeStyle = `rgba(235, 250, 255, ${0.9 * k})`; ctx.lineWidth = Math.max(1.5, r * 0.12); ctx.stroke();
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.7 * k})`; ctx.lineWidth = Math.max(1, r * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.36, -s * 0.12); ctx.lineTo(-s * 0.12, -s * 0.36);
+    ctx.moveTo(-s * 0.36, s * 0.08); ctx.lineTo(s * 0.08, -s * 0.36);
+    ctx.moveTo(s * 0.2, s * 0.36); ctx.lineTo(s * 0.36, s * 0.2);
+    ctx.stroke();
+    ctx.restore();
   }
   // a little flying-bat silhouette, w wide, centred on x, y
   function batGlyph(x, y, w, color) {
@@ -1887,7 +2966,7 @@
     const dpr = ctx.getTransform().a || 1, ph = Math.max(30, Math.min(40, H * 0.085)), topH = Math.ceil(8 + ph + 12);
     const size = Math.max(13, Math.min(20, H / 26)), botH = Math.ceil(size * 1.55 + 22);
     let key = `${W},${H},${dpr},${viewer},${localCount},${infoText()},${infoUrgent()}`;
-    for (const b of bats) key += `|${b.name},${b.ctrl},${b.cpuFlag},${b.out},${b.score},${b.echoes},${b.power},${b.power ? Math.ceil(b.powerT) : 0},${b.mega},${b.shield}`;
+    for (const b of bats) key += `|${b.name},${b.ctrl},${b.cpuFlag},${b.out},${b.score},${b.echoes},${b.power},${b.power ? Math.ceil(b.powerT) : 0},${b.mega},${b.shield},${b.held},${b.ghostT > 0}`;
     if (!hudLayer) { const c = document.createElement('canvas'); hudLayer = { c, g: c.getContext('2d'), key: '' }; }
     const c = hudLayer.c;
     if (hudLayer.key !== key) {
@@ -1942,6 +3021,8 @@
       if (b.out) tags.push('OUT');
       if (b.ctrl === 'cpu' || b.cpuFlag) tags.push('CPU');
       if (mine) tags.push('YOU');
+      if (b.held) tags.push(POWERS[b.held].label);
+      if (b.ghostT > 0) tags.push('GHOST');
       if (b.power) tags.push(`${POWERS[b.power].label} ${Math.ceil(b.powerT)}`);
       else if (b.mega) tags.push('MEGA');
       else if (b.shield) tags.push('SHIELD');
@@ -2012,10 +3093,12 @@
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
         ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or DASH to dash'
-          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to dash · Esc to pause')
+          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to dash · E to use a power · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
-      ctx.fillText('Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
+      ctx.fillText(powerFreq && powerOn.some((t) => POWERS[t].special)
+        ? 'Squeak just before a rival\'s echo hits you to PARRY it · grab power-ups, special ones go on the POWER button'
+        : 'Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
     } else if (banner) {
       ctx.font = `700 ${size * 2}px ${HEAD}`;
       ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
@@ -2076,6 +3159,18 @@
     get bats() { return bats; },
     get arena() { return arena; },
     get powerups() { return powerups; },
+    POWER_LIST,
+    get powerOptions() { return { on: Object.fromEntries(POWER_TYPES.map((t) => [t, powerOn.includes(t)])), freq: Object.keys(POWER_FREQ).find((k) => POWER_FREQ[k] === powerFreq) }; },
+    get shots() { return shots; },
+    get twisters() { return twisters; },
+    get blocks() { return blocks; },
+    get bolts() { return bolts; },
+    get novas() { return novas; },
+    get specialCount() { return specialCount; },
+    special: (i, dx, dy) => useSpecial(bats[i], dx, dy),
+    // run the simulation ahead n steps of dt seconds (tests)
+    step: (dt, n = 1) => { for (let k = 0; k < n && active && mode !== 'client'; k++) update(dt); },
+    give: (i, type) => { const b = bats[i]; if (b && POWERS[type]) grabPowerup(b, { x: b.x, y: b.y, type }); },
     get beams() { return beams; },
     get countdown() { return countdown; },
     get over() { return over; },
@@ -2083,7 +3178,7 @@
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide(); },
     setPaused: (p) => { paused = p; if (p) { keys.clear(); sticks.clear(); chargers.clear(); } },
     setRoundClock: (s) => { roundClock = s; stormWarned = s >= ROUND_LIMIT - STORM_WARN; },
-    spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },
+    spawnPowerup: (type) => spawnPowerup(type),
     squeak: (i) => squeak(bats[i]),
     act: (i, a) => doAct(bats[i], a),
     beam: (i, ux, uy) => fireBeam(bats[i], ux === undefined ? undefined : { ux, uy }),

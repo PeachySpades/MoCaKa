@@ -8,6 +8,18 @@
 // If every bat is knocked out the team starts again from the last checkpoint;
 // after 3 tries it's game over. Any bat reaching the green light wins.
 //
+// Three variants (start option `variant`):
+//   classic  the run above
+//   escape   monsters can't be destroyed (a squeak only dazes them briefly and
+//            pushes them back), more and faster chasers, a quicker scroll
+//   hunt     smash monsters for points; new ones arrive in waves, quick kills
+//            build a combo multiplier, and the run ends at the green light or
+//            when the clock runs out (the time left becomes bonus points)
+//
+// CPU buddies are helpers, not carries: they react late, wander off their line,
+// sometimes fumble a squeak or a dash and sometimes daydream. Their skill follows
+// the level option (see BUDDY below); a team of only CPUs rarely gets out.
+//
 // Same shape as duel.js, so the lobby can launch it the same way:
 //   local   everyone on one device (split touch zones / shared keyboard), plus CPU bats
 //   host    this device simulates the run for an online room and streams snapshots
@@ -30,6 +42,27 @@
     normal: { speed: 1, stun: 2.6, owl: 7.2, leap: 9, ghost: 1.6, sense: 1, tell: 1 },
     hard: { speed: 1.08, stun: 2.1, owl: 8.4, leap: 10, ghost: 1.95, sense: 1.15, tell: 0.85 },
   };
+  // Variants change the monsters on top of the level option
+  const VARIANTS = ['classic', 'escape', 'hunt'];
+  const VAR = {
+    classic: { scroll: 1, stun: 1, ghost: 1, owl: 1, sense: 1, swoops: 3, wave: 0 },
+    escape: { scroll: 1.1, stun: 0.45, ghost: 1.25, owl: 1.12, sense: 1.2, swoops: 4, wave: 7 },
+    hunt: { scroll: 0.85, stun: 1, ghost: 1, owl: 1, sense: 1.1, swoops: 3, wave: 8 },
+  };
+  const HUNT_TIME = 150, COMBO_TIME = 2.5, MAX_COMBO = 5;
+  const POINTS = { ghost: 5, crawler: 10, spider: 15, owl: 25 };
+  // CPU buddy skill. 'pro' is the old flawless bot, kept for autopilot in tests.
+  //   react: seconds before a buddy notices a monster   think: seconds between route plans
+  //   speed: share of top speed     wobble: how far off its line it drifts
+  //   sqMiss / dashMiss: chance it fumbles a squeak or a dash   aim: dash aim error (radians)
+  //   daze: daydreams per second (it stops flying for a moment)  lag: how far back it hangs
+  //   dodge: how hard it steers around monsters   sq / angry / dashR: reach of its squeaks and dashes
+  const BUDDY = {
+    pro: { react: 0, think: 0.22, speed: 1, wobble: 0, sqMiss: 0, dashMiss: 0, aim: 0, daze: 0, lag: 0, dodge: 0.7, sq: 2.6, angry: 5, dashR: 2.3 },
+    easy: { react: 1.05, think: 0.7, speed: 0.7, wobble: 0.7, sqMiss: 0.6, dashMiss: 0.6, aim: 0.8, daze: 0.22, lag: 0.18, dodge: 0.12, sq: 1.5, angry: 2.6, dashR: 1.5 },
+    normal: { react: 0.9, think: 0.6, speed: 0.74, wobble: 0.6, sqMiss: 0.55, dashMiss: 0.55, aim: 0.7, daze: 0.2, lag: 0.15, dodge: 0.15, sq: 1.7, angry: 3, dashR: 1.6 },
+    hard: { react: 0.75, think: 0.5, speed: 0.78, wobble: 0.5, sqMiss: 0.48, dashMiss: 0.48, aim: 0.6, daze: 0.18, lag: 0.12, dodge: 0.2, sq: 1.9, angry: 3.4, dashR: 1.8 },
+  };
   const BATS = [
     { name: 'Mo', color: '#8b6cff', rgb: '139, 108, 255' },
     { name: 'Ka', color: '#ff7ad9', rgb: '255, 122, 217' },
@@ -47,12 +80,15 @@
     danger: '255, 84, 104', owl: '255, 196, 64', stun: '255, 226, 120', ghost: '255, 190, 235', crawl: '160, 255, 120',
   };
   const PHASES = ['count', 'play', 'wipe', 'win', 'lose'];
+  const TITLES = { classic: 'Co-op Run', escape: 'Escape', hunt: 'Hunt' };
+  const KINDS = ['spider', 'crawler', 'owl', 'ghost'];
   const MSTATES = ['hang', 'tell', 'drop', 'hold', 'climb', 'perch', 'swoop', 'recover', 'leave', 'walk', 'leap', 'drift', 'chase'];
   const SMALL = { crawler: true, ghost: true };   // a dash destroys these even when they aren't stunned
 
   // ---- State -------------------------------------------------------------
   let active = false, mode = 'local', viewer = -1, net = null, onEnd = null, paused = false, localCount = 1;
-  let L = null, D = DIFF.normal, difficulty = 'normal', seed = 1;
+  let L = null, D = DIFF.normal, difficulty = 'normal', seed = 1, variant = 'classic', V = VAR.classic;
+  let hunt = { left: HUNT_TIME, wave: 0, waveT: 0, bonus: 0 }, spawnT = 0;
   let bats = [], rings = [], particles = [], popups = [], outbox = [];
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
@@ -85,8 +121,18 @@
     }
     lv.checkpoints.sort((a, b) => a.x - b.x);
     lv.monsters = specs.map((sp, id) => resetMonster({ id, ...sp, hx: sp.x, hy: sp.y }));
+    lv.base = lv.monsters.length;   // monsters past this index arrived in a wave during play
     return lv;
   }
+  // the level option sets the monsters; the variant adjusts them
+  function setRules(level, v) {
+    difficulty = DIFF[level] ? level : 'normal';
+    variant = VAR[v] ? v : 'classic';
+    V = VAR[variant];
+    const d = DIFF[difficulty];
+    D = { ...d, speed: d.speed * V.scroll, stun: d.stun * V.stun, ghost: d.ghost * V.ghost, owl: d.owl * V.owl, sense: d.sense * V.sense };
+  }
+  const buildLevel = () => loadLevel(window.makeCoopLevel(seed, difficulty, variant));
   function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#') b++; return b + 1; }
   function resetMonster(m) {
     Object.assign(m, {
@@ -110,18 +156,34 @@
     return false;
   }
 
-  function makeBat(i, ctrl, localSlot) {
+  function makeBat(i, ctrl, localSlot, looks) {
     return {
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, echoes: START_ECHOES, cooldown: 0, hurt: 0, safe: 0, ko: false, loud: 0, noEcho: 0,
-      dashT: 0, dashCd: 0, biteT: 0,
-      st: { moths: 0, stuns: 0, kills: 0, kos: 0, squeaks: 0 },
-      ai: ctrl === 'cpu' ? { path: [], think: 0, sq: 0 } : null,
+      dashT: 0, dashCd: 0, biteT: 0, combo: 0, comboT: 0,
+      st: { moths: 0, stuns: 0, kills: 0, kos: 0, squeaks: 0, points: 0, combo: 0 },
+      ai: ctrl === 'cpu' ? newAi(buddyLevel(i)) : null,
+      look: lookFor(i, ctrl === 'cpu', looks),
     };
+  }
+  // a CPU buddy's skill: its seat's own level from the lobby (o.levels), else the level option
+  let buddyLevels = [];
+  const buddyLevel = (i) => (BUDDY[buddyLevels[i]] && buddyLevels[i] !== 'pro' ? buddyLevels[i] : difficulty);
+  function newAi(skill) { return { path: [], think: 0, sq: 0, dw: 0, daze: 0, seen: new Map(), skill: BUDDY[skill] ? skill : 'normal' }; }
+  // each bat's look (src/looks.js): the one the lobby sent, else the seat's preset (people) or a random one (CPU buddies)
+  function lookFor(i, cpu, looks) {
+    const E = window.EchoLooks;
+    if (!E) return null;
+    try {
+      if (looks && looks[i]) return E.clean(looks[i]);
+      return cpu ? E.random(seed + i) : E.preset(i);
+    } catch { return null; }
   }
 
   // ---- Start / stop --------------------------------------------------------
-  // o: { mode, humans, cpus, remotes, mySlot, total, level, seed, net, onEnd }
+  // o: { mode, humans, cpus, remotes, mySlot, total, level, seed, net, onEnd,
+  //      variant ('classic' | 'escape' | 'hunt'), looks (a look per seat, null = default), levels (CPU skill per seat) }
+  // level sets the monsters; each CPU buddy plays at levels[seat] if given, else at level too.
   let view = '3d';
   const in3d = () => view === '3d' && window.EchoCave3D && window.EchoCave3D.supported;
 
@@ -130,28 +192,32 @@
     mode = o.mode || 'local';
     net = o.net || null;
     onEnd = o.onEnd || null;
-    difficulty = DIFF[o.level] ? o.level : 'normal';
-    D = DIFF[difficulty];
+    setRules(o.level, o.variant);
+    buddyLevels = Array.isArray(o.levels) ? o.levels.slice(0, 4) : [];
     seed = o.seed != null ? (o.seed >>> 0) : Math.floor(Math.random() * 1e9);
-    L = loadLevel(window.makeCoopLevel(seed, difficulty));
+    L = buildLevel();
     bats = [];
+    const lk = Array.isArray(o.looks) ? o.looks : null;
     if (mode === 'local') {
       localCount = Math.max(1, Math.min(4, o.humans || 1));
       const cpus = Math.max(0, Math.min(4 - localCount, o.cpus || 0));
-      for (let i = 0; i < localCount; i++) bats.push(makeBat(i, 'local', i));
-      for (let k = 0; k < cpus; k++) bats.push(makeBat(bats.length, 'cpu'));
+      for (let i = 0; i < localCount; i++) bats.push(makeBat(i, 'local', i, lk));
+      for (let k = 0; k < cpus; k++) bats.push(makeBat(bats.length, 'cpu', undefined, lk));
       viewer = -1;
     } else if (mode === 'host') {
       localCount = 1;
-      bats.push(makeBat(0, 'local', 0));
-      for (let k = 0; k < (o.remotes || 0); k++) bats.push(makeBat(bats.length, 'remote'));
-      for (let k = 0; k < (o.cpus || 0) && bats.length < 4; k++) bats.push(makeBat(bats.length, 'cpu'));
+      bats.push(makeBat(0, 'local', 0, lk));
+      for (let k = 0; k < (o.remotes || 0); k++) bats.push(makeBat(bats.length, 'remote', undefined, lk));
+      for (let k = 0; k < (o.cpus || 0) && bats.length < 4; k++) bats.push(makeBat(bats.length, 'cpu', undefined, lk));
       viewer = 0;
     } else {
       localCount = 1;
       viewer = o.mySlot | 0;
-      for (let i = 0; i < Math.max(1, o.total || 2); i++) bats.push(makeBat(i, i === viewer ? 'local' : 'remote', 0));
+      // a guest learns which seats are CPUs (and everyone's look) from the host's snapshots
+      for (let i = 0; i < Math.max(1, o.total || 2); i++) bats.push(makeBat(i, i === viewer ? 'local' : 'remote', 0, lk));
     }
+    hunt = { left: HUNT_TIME, wave: 0, waveT: V.wave * 0.6, bonus: 0 };
+    spawnT = V.wave * 0.8;
     rings = []; particles = []; popups = []; outbox = [];
     remoteInput.clear();
     cpIndex = -1; tries = TRIES; over = false; ended = false; result = null;
@@ -159,7 +225,7 @@
     placeTeam(L.start.x, L.start.y);
     scroll = { x: 0, speed: SPEEDS[0] * D.speed };
     setPhase('count', 3);
-    banner = { text: 'Co-op Run', rgb: COL.exit, t: 0 };
+    banner = { text: TITLES[variant], rgb: COL.exit, t: 0 };
     keys.clear(); sticks.clear();
     active = true;
   }
@@ -320,7 +386,7 @@
     if (!b || b.ctrl !== 'remote') return;
     // a player who leaves is replaced by a CPU bat so the team can go on
     b.ctrl = 'cpu';
-    b.ai = { path: [], think: 0, sq: 0 };
+    b.ai = newAi(buddyLevel(b.i));
     fx({ k: 'banner', text: `${b.name} left, a CPU takes over`, rgb: b.rgb, t: 2 });
   }
 
@@ -394,31 +460,47 @@
       if (b.ai) b.ai.path = [];
     }
     placeTeam(at.x, at.y);
-    for (const m of L.monsters) if (m.hx >= scroll.x - 2) resetMonster(m);
+    for (const m of L.monsters) {
+      if (m.id >= L.base) { m.dead = true; m.gone = true; }   // wave monsters go away; the cave's own come back
+      else if (m.hx >= scroll.x - 2) resetMonster(m);
+    }
+    hunt.waveT = Math.max(hunt.waveT, 4); spawnT = Math.max(spawnT, 4);
     for (const c of L.crystals) if (c.x >= scroll.x) c.got = false;
     gotDirty = true;
     rings = [];
     for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;
     setPhase('count', 2);
   }
-  function finish(won) {
+  // how: 'goal' (someone reached the green light), 'time' (Hunt's clock ran out) or 'out' (no tries left)
+  function finish(won, how = won ? 'goal' : 'out') {
     over = true;
     setPhase(won ? 'win' : 'lose', 0);
-    const team = { moths: 0, stuns: 0, kills: 0, kos: 0 };
-    for (const b of bats) for (const k in team) team[k] += b.st[k];
-    result = {
-      won, difficulty, seed, time: Math.round(playTime), triesUsed: TRIES - tries + (won ? 1 : 0), triesTotal: TRIES,
-      checkpoint: cpIndex + 1, checkpoints: L.checkpoints.length, progress: Math.round(progress() * 100) / 100,
-      mothsTotal: L.moths.length, team,
-      players: bats.map((b) => ({ slot: b.i, name: b.name, color: b.color, cpu: b.ctrl === 'cpu' || !!b.cpuFlag, alive: !b.ko, ...b.st })),
-    };
-    if (won) {
-      fx({ k: 'banner', text: 'You made it out!', sub: 'The whole team is free', rgb: COL.exit, t: 3 });
-      fx({ k: 'sfx', n: 'win' });
-    } else {
-      fx({ k: 'banner', text: 'Out of tries', sub: 'The monsters win this time', rgb: COL.danger, t: 3 });
-      fx({ k: 'sfx', n: 'burp' });
+    if (variant === 'hunt' && how === 'goal') {
+      // reaching the light early pays: points for every second left and every bat still flying
+      const alive = bats.filter((b) => !b.ko);
+      hunt.bonus = Math.round(hunt.left) * 5 + alive.length * 50;
+      if (alive.length) {
+        const each = Math.floor(hunt.bonus / alive.length);
+        alive.forEach((b, k) => { b.st.points += each + (k === 0 ? hunt.bonus - each * alive.length : 0); });
+      }
     }
+    const team = { moths: 0, stuns: 0, kills: 0, kos: 0, points: 0 };
+    for (const b of bats) for (const k in team) team[k] += b.st[k];
+    const players = bats.map((b) => ({ slot: b.i, name: b.name, color: b.color, cpu: (b.ctrl === 'cpu' && !b.was) || !!b.cpuFlag, alive: !b.ko, ...b.st }));
+    const top = [...players].sort((a, b) => b.points - a.points || b.kills - a.kills)[0];
+    result = {
+      won, how, variant, difficulty, seed, time: Math.round(playTime), triesUsed: TRIES - tries + (won ? 1 : 0), triesTotal: TRIES,
+      checkpoint: cpIndex + 1, checkpoints: L.checkpoints.length, progress: Math.round(progress() * 100) / 100,
+      mothsTotal: L.moths.length, team, players,
+    };
+    if (variant === 'hunt') Object.assign(result, { score: team.points, bonus: hunt.bonus, waves: hunt.wave, best: top && top.points > 0 ? top.slot : -1 });
+    const text = {
+      classic: won ? ['You made it out!', 'The whole team is free'] : ['Out of tries', 'The monsters win this time'],
+      escape: won ? ['You escaped!', 'Not a single monster could stop you'] : ['Caught in the dark', 'The chasers win this time'],
+      hunt: how === 'time' ? ['Time!', `Team score ${team.points}`] : won ? ['Out with the loot!', `Team score ${team.points} · bonus ${hunt.bonus}`] : ['Out of tries', `Team score ${team.points}`],
+    }[variant];
+    fx({ k: 'banner', text: text[0], sub: text[1], rgb: won ? COL.exit : COL.danger, t: 3 });
+    fx({ k: 'sfx', n: won ? 'win' : 'burp' });
     fireEnd(won ? 1500 : 1800);
   }
   function fireEnd(ms) {
@@ -447,6 +529,7 @@
       b.noEcho = Math.max(0, b.noEcho - dt);
       b.dashCd = Math.max(0, b.dashCd - dt);
       b.biteT = Math.max(0, b.biteT - dt);
+      if (b.comboT > 0 && (b.comboT -= dt) <= 0) b.combo = 0;
     }
     if (phase === 'count') {
       const before = Math.ceil(countdown);
@@ -472,6 +555,21 @@
     const want = sectionSpeed();
     scroll.speed += Math.sign(want - scroll.speed) * Math.min(Math.abs(want - scroll.speed), 0.4 * dt);
     scroll.x = Math.min(L.w - VIEW_W, scroll.x + scroll.speed * dt);
+    if (variant === 'hunt') {
+      // in Hunt the team sets the pace too: push toward the right edge and the screen follows
+      let lead = 0;
+      for (const b of bats) if (!b.ko) lead = Math.max(lead, b.x);
+      const push = lead - (scroll.x + VIEW_W * 0.74);
+      if (push > 0) scroll.x = Math.min(L.w - VIEW_W, scroll.x + Math.min(push, 2) * dt);
+      const before = Math.ceil(hunt.left);
+      hunt.left -= dt;
+      if (hunt.left <= 10 && Math.ceil(hunt.left) !== before) fx({ k: 'sfx', n: 'beep' });
+      if (hunt.left <= 0) { hunt.left = 0; finish(true, 'time'); broadcast(dt); return; }
+    }
+    if (V.wave) {
+      spawnT -= dt;
+      if (spawnT <= 0) { spawnT = V.wave * { easy: 1.2, normal: 1, hard: 0.85 }[difficulty]; spawnWave(); }
+    }
 
     for (const b of bats) {
       let ix = 0, iy = 0;
@@ -539,7 +637,9 @@
       if (Math.random() < 0.6) particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, rgb: b.rgb });
     } else if (ix || iy) { b.vx += ix * ACCEL * dt; b.vy += iy * ACCEL * dt; }
     else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
-    const maxSp = b.dashT > 0 ? DASH_SPEED : MAX_SPEED, sp = Math.hypot(b.vx, b.vy);
+    // CPU buddies fly a little slower than people can
+    const slow = b.ctrl === 'cpu' && b.ai ? BUDDY[b.ai.skill].speed : 1;
+    const maxSp = b.dashT > 0 ? DASH_SPEED : MAX_SPEED * slow, sp = Math.hypot(b.vx, b.vy);
     if (sp > maxSp) { b.vx *= maxSp / sp; b.vy *= maxSp / sp; }
     if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
     const steps = Math.max(1, Math.ceil((Math.hypot(b.vx, b.vy) * dt) / 0.2)), sdt = dt / steps;
@@ -613,6 +713,7 @@
         }
         m.stun = D.stun;
         if (m.kind === 'owl' && (m.st === 'swoop' || m.st === 'tell')) { m.st = 'recover'; m.t = 0.6; m.vx *= 0.2; m.vy *= 0.2; }
+        if (variant === 'escape') repel(m, ring.x, ring.y, 4.5);   // in Escape a squeak shoves monsters back
         if (m.kind === 'crawler' && m.st === 'tell') m.st = 'walk';
         if (m.kind === 'spider' && m.st === 'tell') { m.st = 'hang'; m.cd = 1; }
       }
@@ -634,7 +735,10 @@
   function updateMonster(m, dt) {
     if (m.dead) return;
     // far behind the screen, or not reached yet: asleep
-    if (m.x < scroll.x - 4 || m.hx > scroll.x + VIEW_W + 2) return;
+    if (m.x < scroll.x - 4 || m.hx > scroll.x + VIEW_W + 2) {
+      if (m.id >= L.base && m.x < scroll.x - 4) { m.dead = true; m.gone = true; }   // a wave monster left far behind is gone
+      return;
+    }
     m.cd = Math.max(0, m.cd - dt);
     if (m.stun > 0) {
       m.stun = Math.max(0, m.stun - dt);
@@ -689,7 +793,7 @@
         moveFree(m, dt, false);
         if (m.t <= 0) {
           const b = nearestBat(m, 7 * sense);
-          if (b && m.swoops < 3) startOwlTell(m, b);
+          if (b && m.swoops < V.swoops) startOwlTell(m, b);
           else { m.st = 'leave'; m.vx = 2.5; m.vy = -2.5; }
         }
       } else if (m.st === 'leave') {
@@ -760,23 +864,31 @@
     return false;
   }
 
-  // bats touching monsters: a dash destroys stunned (or small) ones; anything else hurts
+  // bats touching monsters: a dash destroys stunned (or small) ones; anything else hurts.
+  // In Escape nothing can be destroyed: a dash only knocks a dazed monster away.
   function contacts() {
+    const tough = variant === 'escape';
     for (const b of bats) {
       if (b.ko) continue;
       for (const m of L.monsters) {
         if (m.dead || m.st === 'leave' || Math.abs(m.x - b.x) > 1.5) continue;
         const d = Math.hypot(m.x - b.x, m.y - b.y);
         const biting = b.biteT > 0;
-        if (biting && d < m.r + R + 0.15 && (m.stun > 0 || SMALL[m.kind])) { destroy(m, b); continue; }
+        if (biting && d < m.r + R + 0.15 && (m.stun > 0 || SMALL[m.kind])) {
+          if (!tough) { destroy(m, b); continue; }
+          if (m.stun > 0) { bonk(m, b); continue; }
+        }
         if (d >= m.r + R) continue;
         if (m.stun > 0) {
-          if (m.kind === 'ghost') destroy(m, b);   // a dazed ghost moth pops at a touch
+          if (m.kind === 'ghost' && !tough) destroy(m, b);   // a dazed ghost moth pops at a touch
           continue;
         }
         if (b.hurt > 0 || b.safe > 0) continue;
         hurtBat(b, m.x, m.y);
-        if (m.kind === 'ghost') { m.dead = true; fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.ghost, n: 10 }); }
+        if (m.kind === 'ghost') {
+          if (tough) { repel(m, b.x, b.y, 4); m.stun = Math.max(m.stun, 0.8); }
+          else { m.dead = true; fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.ghost, n: 10 }); }
+        }
         if (phase !== 'play') return;
       }
     }
@@ -784,15 +896,108 @@
   function destroy(m, b) {
     m.dead = true;
     b.st.kills++;
+    let text = m.kind === 'ghost' ? 'POP!' : 'CHOMP!';
+    if (variant === 'hunt') {
+      // quick kills in a row multiply the points
+      b.combo = b.comboT > 0 ? Math.min(MAX_COMBO, b.combo + 1) : 1;
+      b.comboT = COMBO_TIME;
+      b.st.combo = Math.max(b.st.combo, b.combo);
+      const pts = POINTS[m.kind] * b.combo;
+      b.st.points += pts;
+      text = `+${pts}` + (b.combo > 1 ? ` ×${b.combo}` : '');
+    }
     fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'ghost' ? COL.ghost : m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 18, sp: 4 });
-    fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: m.kind === 'ghost' ? 'POP!' : 'CHOMP!', rgb: b.rgb, life: 0.8 });
-    fx({ k: 'sfx', n: 'chomp' });
+    fx({ k: 'popup', x: m.x, y: m.y - 0.6, text, rgb: b.rgb, life: 0.8 });
+    fx({ k: 'sfx', n: b.combo > 2 && variant === 'hunt' ? 'bigChomp' : 'chomp', alt: 'chomp' });
+  }
+  // push a monster away from a point (Escape): fliers get shoved, spiders scurry up, crawlers turn round
+  function repel(m, fromX, fromY, power) {
+    const dx = m.x - fromX, dy = m.y - fromY, d = Math.hypot(dx, dy) || 1;
+    if (m.kind === 'owl' || m.kind === 'ghost') { m.vx = (dx / d) * power; m.vy = (dy / d) * power; }
+    else if (m.kind === 'spider') { if (m.st !== 'hang') m.st = 'climb'; m.cd = Math.max(m.cd, 1.5); }
+    else if (m.kind === 'crawler' && m.st === 'walk') { m.vx = Math.sign(dx || 1) * 1.1; m.cd = Math.max(m.cd, 1.5); }
+  }
+  function bonk(m, b) {
+    repel(m, b.x, b.y, 6);
+    m.stun = Math.max(m.stun, 0.6);
+    b.vx *= -0.35; b.vy *= -0.35; b.dashT = 0; b.biteT = 0;
+    fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.stun, n: 8 });
+    fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: 'BONK!', rgb: b.rgb, life: 0.7 });
+    fx({ k: 'sfx', n: 'block', alt: 'stun' });
+  }
+
+  // ---- Waves (Escape and Hunt) ------------------------------------------------
+  function spawnWave() {
+    const sec = Math.min(3, Math.floor((scroll.x + VIEW_W / 2) / (L.w / 4)));
+    const live = L.monsters.filter((m) => !m.dead && m.id >= L.base).length;
+    if (variant === 'escape') {
+      // the dark sends chasers after the team: ghost moths from behind and ahead, later owls too
+      if (live > 8) return;
+      const n = 2 + (sec >= 2 ? 1 : 0) + (difficulty === 'hard' ? 1 : 0);
+      let made = 0;
+      for (let k = 0; k < n; k++) if (spawn('ghost', k % 2 ? 'ahead' : 'behind')) made++;
+      if (sec >= 1 && Math.random() < 0.5 && spawn('owl')) made++;
+      if (made) fx({ k: 'sfx', n: 'wake' });
+      return;
+    }
+    hunt.wave++;
+    const lv = { easy: 0, normal: 1, hard: 2 }[difficulty];
+    if (live > 7 + lv * 2) return;
+    const n = 2 + lv + sec + (bats.length > 2 ? 1 : 0);
+    const kinds = ['crawler', 'ghost', 'spider', ...(sec >= 1 || hunt.wave > 2 ? ['owl'] : []), 'ghost'];
+    let made = 0;
+    for (let k = 0; k < n; k++) if (spawn(kinds[(k + hunt.wave) % kinds.length])) made++;
+    if (made) {
+      fx({ k: 'popup', x: scroll.x + VIEW_W * 0.72, y: L.h * 0.32, text: `WAVE ${hunt.wave}`, rgb: COL.owl, life: 1.6 });
+      fx({ k: 'sfx', n: 'warn' });
+    }
+  }
+  // a new monster somewhere fair: on the right part of the screen, not on top of a bat
+  function spawn(kind, where = 'ahead') {
+    const clear = (x, y) => bats.every((b) => b.ko || Math.hypot(b.x - x, b.y - y) > 3.2);
+    for (let attempt = 0; attempt < 30; attempt++) {
+      let x, y;
+      const extra = {};
+      if (kind === 'ghost') {
+        x = where === 'behind' ? scroll.x - 0.5 : scroll.x + VIEW_W + 0.5;
+        y = 1.5 + Math.random() * (L.h - 3);
+      } else {
+        const tx = Math.floor(scroll.x + VIEW_W * (0.5 + Math.random() * 0.42));
+        const spots = [];
+        for (let ty = 1; ty < L.h - 1; ty++) {
+          if (solid(tx, ty)) continue;
+          if (kind === 'owl') { if (!hitsWall(tx + 0.5, ty + 0.5, 0.6)) spots.push([ty + 0.5]); }
+          else if (kind === 'crawler') {
+            if (solid(tx, ty + 1) && solid(tx - 1, ty + 1) && solid(tx + 1, ty + 1) && !solid(tx - 1, ty) && !solid(tx + 1, ty) && !solid(tx, ty - 1)) spots.push([ty + 0.7]);
+          } else if (solid(tx, ty - 1) && !solid(tx, ty + 1) && !solid(tx, ty + 2)) {
+            let fl = ty;
+            while (!solid(tx, fl + 1)) fl++;
+            spots.push([ty + 0.42, fl + 1 - 0.45]);
+          }
+        }
+        if (!spots.length) continue;
+        const sp = spots[Math.floor(Math.random() * spots.length)];
+        x = tx + 0.5; y = sp[0];
+        if (sp[1] != null) extra.bot = sp[1];
+      }
+      if (!clear(x, y)) continue;
+      const m = resetMonster({ id: L.monsters.length, kind, x, y, hx: x, hy: y, ...extra });
+      if (kind === 'ghost') m.st = 'chase';
+      m.lit = 1;
+      L.monsters.push(m);
+      if (kind !== 'ghost') fx({ k: 'burst', x, y, rgb: COL.danger, n: 10, sp: 2 });
+      return m;
+    }
+    return null;
   }
 
   // ---- CPU teammates (also the test bot) -------------------------------------
   // They follow a breadth-first path toward the right of the screen, squeak when
-  // a monster gets close, and dash into anything stunned or small.
+  // a monster gets close, and dash into anything stunned or small. A buddy's skill
+  // (BUDDY) makes it notice monsters late, fumble some squeaks and dashes, drift
+  // off its line, daydream now and then, and stay near the people it's helping.
   function plan(b) {
+    const S = BUDDY[b.ai?.skill] || BUDDY.pro;
     const x0 = Math.max(0, Math.floor(scroll.x)), x1 = Math.min(L.w - 1, Math.ceil(scroll.x + VIEW_W));
     const sx = Math.floor(b.x), sy = Math.floor(b.y);
     if (solid(sx, sy)) return [];
@@ -801,7 +1006,13 @@
     const q = [idx(sx, sy)];
     prev[q[0]] = -1; dist[q[0]] = 0;
     // each bat keeps its own distance behind the front, so a CPU team spreads out
-    const cap = Math.min(L.goal.x, scroll.x + VIEW_W * (0.7 - 0.07 * (b.i % 4)));
+    let cap = Math.min(L.goal.x, scroll.x + VIEW_W * (0.7 - 0.07 * (b.i % 4) - S.lag));
+    if (S !== BUDDY.pro) {
+      // a buddy doesn't race ahead of the people it's helping
+      let lead = -1;
+      for (const o of bats) if (!o.ko && o.ctrl !== 'cpu' && !o.cpuFlag) lead = Math.max(lead, o.x);
+      if (lead >= 0) cap = Math.min(cap, Math.max(lead + 2.5, scroll.x + VIEW_W * 0.32));
+    }
     const goalK = idx(Math.floor(L.goal.x), Math.floor(L.goal.y));
     let best = q[0], bestScore = -1e9, crystal = -1, crystalD = 1e9;
     const wantCrystal = b.echoes < 3;
@@ -827,8 +1038,9 @@
     return path.reverse();
   }
   function cpuInput(b, dt) {
-    const ai = b.ai || (b.ai = { path: [], think: 0, sq: 0 });
-    ai.think -= dt; ai.sq -= dt;
+    const ai = b.ai || (b.ai = newAi(buddyLevel(b.i)));
+    const S = BUDDY[ai.skill] || BUDDY.normal;
+    ai.think -= dt; ai.sq -= dt; ai.dw -= dt;
     if (b.ko) {
       // a ghost tags along with the team
       const team = livingBats();
@@ -837,30 +1049,52 @@
       const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
       return d > 0.8 ? { ix: dx / d, iy: dy / d } : { ix: 0, iy: 0 };
     }
-    if (ai.think <= 0 || !ai.path.length) { ai.think = 0.22; ai.path = plan(b); }
+    // daydreaming: for a moment it stops flying (this is how buddies get left behind)
+    if (ai.daze > 0) { ai.daze -= dt; return { ix: 0, iy: 0 }; }
+    if (S.daze && Math.random() < S.daze * dt) { ai.daze = 0.35 + Math.random() * 0.5; return { ix: 0, iy: 0 }; }
+    if (ai.think <= 0 || !ai.path.length) { ai.think = S.think * (0.8 + Math.random() * 0.4); ai.path = plan(b); }
     while (ai.path.length > 1 && Math.hypot(ai.path[0].x - b.x, ai.path[0].y - b.y) < 0.45) ai.path.shift();
     let ix = 0, iy = 0;
     const wp = ai.path[Math.min(1, ai.path.length - 1)];
     if (wp) { const dx = wp.x - b.x, dy = wp.y - b.y, d = Math.hypot(dx, dy) || 1; ix = dx / d; iy = dy / d; }
+    if (S.wobble) { iy += Math.sin(clock * 2.1 + b.i * 2.3) * S.wobble * 0.8; ix += Math.sin(clock * 1.3 + b.i) * S.wobble * 0.4; }
     if (b.x < scroll.x + 1.2) ix = Math.max(ix, 0.6);
     for (const o of bats) {
       if (o === b || o.ko) continue;
       const d = Math.hypot(o.x - b.x, o.y - b.y);
       if (d < 0.9) { ix -= ((o.x - b.x) / (d || 1)) * 0.5; iy -= ((o.y - b.y) / (d || 1)) * 0.5; }
     }
-    // threats: squeak to stun; dash into anything dazed or small
+    // it only reacts to something once it has had time to notice it
+    const seen = ai.seen;
+    const noticed = (key, on, k = 1) => {
+      if (!on) { seen.delete(key); return false; }
+      if (!S.react) return true;
+      let t0 = seen.get(key);
+      if (t0 === undefined) seen.set(key, (t0 = clock + S.react * k * (0.6 + Math.random() * 0.8)));
+      return clock >= t0;
+    };
+    // threats: squeak to stun; dash into anything dazed or small (not in Escape: nothing breaks there)
     for (const m of L.monsters) {
-      if (m.dead || m.st === 'leave' || Math.abs(m.x - b.x) > 6) continue;
+      if (m.dead || m.st === 'leave' || Math.abs(m.x - b.x) > 6) { seen.delete(m.id); seen.delete(-1 - m.id); continue; }
       const d = Math.hypot(m.x - b.x, m.y - b.y);
       const angry = m.st === 'tell' || m.st === 'swoop' || m.st === 'drop' || m.st === 'leap' || m.st === 'chase';
-      if (m.stun <= 0 && ((d < 2.6) || (angry && d < 5)) && b.echoes > 0 && b.cooldown <= 0 && ai.sq <= 0) {
-        squeak(b); ai.sq = 0.5;
+      const threat = m.stun <= 0 && (d < S.sq || (angry && d < S.angry));
+      if (noticed(m.id, threat) && b.echoes > 0 && b.cooldown <= 0 && ai.sq <= 0) {
+        if (Math.random() < S.sqMiss) ai.sq = 0.5 + Math.random() * 0.7;   // fumbled it
+        else { squeak(b); ai.sq = 0.5 + S.react; }
       }
-      if ((m.stun > 0.25 || (SMALL[m.kind] && d < 1.6)) && d < 2.3 && b.dashCd <= 0) {
-        dash(b, m.x - b.x, m.y - b.y);
-        break;
+      const smash = variant !== 'escape' && (m.stun > 0.25 || (SMALL[m.kind] && d < 1.6)) && d < S.dashR;
+      if (noticed(-1 - m.id, smash, 0.7) && b.dashCd <= 0 && ai.dw <= 0) {
+        if (Math.random() < S.dashMiss) ai.dw = 0.6 + Math.random() * 0.6;
+        else {
+          const a = Math.atan2(m.y - b.y, m.x - b.x) + (Math.random() - 0.5) * 2 * S.aim;
+          dash(b, Math.cos(a), Math.sin(a));
+          break;
+        }
       }
-      if (m.stun <= 0 && d < 1.5) { ix -= ((m.x - b.x) / (d || 1)) * 0.7; iy -= ((m.y - b.y) / (d || 1)) * 0.7; }
+      if (m.stun <= 0 && d < 1.5 && (!S.react || seen.has(m.id))) {
+        ix -= ((m.x - b.x) / (d || 1)) * S.dodge; iy -= ((m.y - b.y) / (d || 1)) * S.dodge;
+      }
     }
     const len = Math.hypot(ix, iy);
     return len > 1 ? { ix: ix / len, iy: iy / len } : { ix, iy };
@@ -888,15 +1122,23 @@
     snapCount++;
     const x0 = scroll.x - 4, x1 = scroll.x + VIEW_W + 3;
     const s = {
-      t: 's', sd: seed, lv: difficulty, ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
+      t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
       sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime),
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
-        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' ? 1 : 0, r2(b.loud)]),
-      m: L.monsters.filter((m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6)
-        .map((m) => [m.id, r2(m.x), r2(m.y), MSTATES.indexOf(m.st), r2(m.t), r2(m.stun), r2(m.ax), r2(m.ay), m.dead ? 1 : 0, m.face]),
+        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo]),
+      // wave monsters also carry their kind, home row and floor so a guest can make them
+      m: L.monsters.filter((m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6 && !(m.gone && (m.goneSent = (m.goneSent || 0) + 1) > 30))
+        .map((m) => {
+          const v = [m.id, r2(m.x), r2(m.y), MSTATES.indexOf(m.st), r2(m.t), r2(m.stun), r2(m.ax), r2(m.ay), m.dead ? 1 : 0, m.face];
+          if (m.id >= L.base) v.push(KINDS.indexOf(m.kind), r2(m.hy), r2(m.bot ?? m.hy));
+          return v;
+        }),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner]),
       fx: outbox,
     };
+    if (variant === 'hunt') { s.hl = r2(hunt.left); s.hw = hunt.wave; }
+    // everyone's look, now and then (they never change during a run)
+    if (snapCount <= 5 || snapCount % 100 === 0) s.lk = bats.map((b) => b.look);
     // which moths and crystals are gone: when it changes, and once a second anyway
     if (gotDirty || snapCount % 20 === 0) { s.g = L.moths.map((m) => (m.got ? 1 : 0)).join('') + '|' + L.crystals.map((c) => (c.got ? 1 : 0)).join(''); gotDirty = false; }
     if (result) s.res = result;
@@ -907,11 +1149,13 @@
   function applySnapshot(s) {
     if (mode !== 'client' || !active || !s) return;
     // the cave comes from the host's seed; rebuild it if ours doesn't match
-    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty))) {
+    const vr = VARIANTS[s.vr] || variant;
+    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty) || vr !== variant)) {
       seed = s.sd >>> 0;
-      if (DIFF[s.lv]) { difficulty = s.lv; D = DIFF[difficulty]; }
-      L = loadLevel(window.makeCoopLevel(seed, difficulty));
+      setRules(DIFF[s.lv] ? s.lv : difficulty, vr);
+      L = buildLevel();
     }
+    if (s.hl != null) { hunt.left = s.hl; hunt.wave = s.hw | 0; }
     phase = PHASES[s.ph] || 'play'; phaseT = s.pt; countdown = s.cd;
     if (s.sx < scroll.x - 2) for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;   // the team went back to a lantern
     scroll.tx = s.sx; scroll.speed = s.sp;
@@ -922,10 +1166,17 @@
       const first = b.tx === undefined;
       [b.tx, b.ty, b.vx, b.vy, b.face, b.hearts, b.echoes, b.hurt] = v;
       b.ko = !!v[8]; b.dashT = v[9]; b.dashCd = v[10]; b.safe = v[11]; b.cpuFlag = !!v[12]; b.loud = v[13];
+      b.st.points = v[14] | 0; b.combo = v[15] | 0;   // (a guest only draws these)
+      if (s.lk && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
-    for (const [id, x, y, st, t, stun, ax, ay, dead, face] of s.m || []) {
-      const m = L.monsters[id];
+    for (const [id, x, y, st, t, stun, ax, ay, dead, face, kind, hy, bot] of s.m || []) {
+      let m = L.monsters[id];
+      if (!m && id >= L.base && id < L.base + 500 && KINDS[kind]) {
+        // a wave monster we haven't seen yet (fill any gap with placeholders)
+        while (L.monsters.length < id) L.monsters.push(Object.assign(resetMonster({ id: L.monsters.length, kind: 'ghost', hx: -9, hy: -9 }), { dead: true, gone: true }));
+        m = L.monsters[id] = resetMonster({ id, kind: KINDS[kind], hx: x, hy: hy ?? y, bot });
+      }
       if (!m) continue;
       if (m.tx === undefined || Math.hypot(x - m.x, y - m.y) > 3) { m.x = x; m.y = y; }
       m.tx = x; m.ty = y; m.st = MSTATES[st] || m.st; m.t = t; m.stun = stun; m.ax = ax; m.ay = ay; m.dead = !!dead; m.face = face;
@@ -1031,7 +1282,7 @@
       threeD = window.EchoCave3D.render({
         W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, clock, wall: COL.wall, mokaColor: BATS[0].color, mokaR: R,
         bats: bats.map((b) => ({
-          x: b.x, y: b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0), vx: b.vx, face: b.face, color: b.color,
+          x: b.x, y: b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0), vx: b.vx, face: b.face, color: b.color, look: b.look || null,
           alpha: b.ko ? 0.38 : 1, flap: b.ko ? 6 : b.dashT > 0 ? 40 : 18,
           hidden: !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)),
         })),
@@ -1276,7 +1527,20 @@
     const mine = b.ctrl === 'local' || viewer === b.i;
     if (!threeD) {
       const blink = !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0));
-      if (!blink) {
+      if (!blink && b.look && window.EchoLooks?.draw2D) {
+        // the bat's own look, over a soft ring in its seat colour so teammates stay easy to tell apart
+        glow(x, y, r * 3, b.rgb, b.dashT > 0 ? 0.5 : 0.28);
+        if (!b.ko) {
+          ctx.strokeStyle = `rgba(${b.rgb}, 0.55)`; ctx.lineWidth = Math.max(1.5, PX * 0.05);
+          ctx.beginPath(); ctx.ellipse(x, y + r * 1.25, r * 1.5, r * 0.42, 0, 0, Math.PI * 2); ctx.stroke();
+        }
+        try {
+          window.EchoLooks.draw2D(ctx, b.look, x, y, r, {
+            face: b.face || 1, flap: clock * (b.ko ? 6 : b.dashT > 0 ? 40 : 18) / (2 * Math.PI) + b.i * 0.16,
+            alpha: b.ko ? 0.4 : 1, eyesClosed: b.ko,
+          });
+        } catch { b.look = null; }
+      } else if (!blink) {
         ctx.save();
         ctx.translate(x, y);
         ctx.globalAlpha = b.ko ? 0.4 : 1;
@@ -1318,7 +1582,7 @@
     ctx.font = `700 ${Math.max(9, PX * 0.32)}px ${FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = `rgba(${b.rgb}, ${b.ko ? 0.55 : 0.9})`;
-    const tag = b.ko ? `${b.name} · KO` : (b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + (mine && bats.length > 1 && localCount === 1 ? ' (you)' : '');
+    const tag = b.ko ? `${b.name} · KO` : ((b.ctrl === 'cpu' && !b.was) || b.cpuFlag ? `${b.name} · CPU` : b.name) + (mine && bats.length > 1 && localCount === 1 ? ' (you)' : '');
     ctx.fillText(tag, x, y + r * 2.4);
   }
 
@@ -1366,8 +1630,8 @@
   let hudLayer = null;
   function drawHud() {
     const dpr = ctx.getTransform().a || 1, ph = Math.max(30, Math.min(40, H * 0.085)), topH = Math.ceil(8 + ph + 12);
-    let key = `${W},${H},${dpr},${viewer},${localCount}`;
-    for (const b of bats) key += `|${b.ctrl},${b.cpuFlag},${b.hearts},${b.echoes},${b.ko},${b.hurt > 0},${b.noEcho > 0 && Math.floor(b.noEcho * 10) % 2}`;
+    let key = `${W},${H},${dpr},${viewer},${localCount},${variant}`;
+    for (const b of bats) key += `|${b.ctrl},${b.cpuFlag},${b.hearts},${b.echoes},${b.ko},${b.hurt > 0},${b.noEcho > 0 && Math.floor(b.noEcho * 10) % 2},${b.st.points}`;
     if (!hudLayer) { const c = document.createElement('canvas'); hudLayer = { c, g: c.getContext('2d'), key: '' }; }
     const c = hudLayer.c;
     if (hudLayer.key !== key) {
@@ -1383,7 +1647,23 @@
     }
     ctx.drawImage(c, 0, 0, W, topH);
     drawProgress();
+    if (variant === 'hunt') drawHuntClock();
     drawMiddle();
+  }
+
+  // Hunt: the clock, the team's score and the wave, in a pill above the progress bar
+  function drawHuntClock() {
+    const size = Math.max(13, Math.min(20, H / 26)), bh = size * 1.4, by = H - bh * 2 - 18;
+    let score = 0, combo = 0;
+    for (const b of bats) { score += b.st.points; if (b.comboT > 0 || mode === 'client') combo = Math.max(combo, b.combo); }
+    const t = Math.max(0, Math.ceil(hunt.left)), low = t <= 10 && phase === 'play';
+    const text = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}   ·   SCORE ${score}   ·   WAVE ${hunt.wave}` + (combo > 1 ? `   ·   COMBO ×${combo}` : '');
+    ctx.font = `700 ${Math.round(size * 0.66)}px ${FONT}`;
+    const bw = ctx.measureText(text).width + bh * 1.2, bx = W / 2 - bw / 2;
+    pill(bx, by, bw, bh, low ? `rgb(${COL.danger})` : `rgba(${COL.owl}, 0.8)`, low ? 12 : 8);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = low && Math.floor(clock * 4) % 2 ? `rgb(${COL.danger})` : '#fff3c4';
+    ctx.fillText(text, W / 2, by + bh / 2 + 1);
   }
 
   // one pill per bat along the top, split around the pause button: name, hearts, echoes
@@ -1428,6 +1708,12 @@
         ctx.fillStyle = 'rgba(214, 208, 255, 0.7)';
         ctx.fillText('YOU', sx + sw / 2, y + ph + 6);
       }
+      if (variant === 'hunt') {
+        // Hunt: each bat's points under its pill
+        ctx.font = `700 ${Math.round(ph * 0.26)}px ${FONT}`; ctx.textAlign = 'right';
+        ctx.fillStyle = `rgba(${COL.owl}, 0.95)`;
+        ctx.fillText(`${b.st.points} pts`, x + pw - ph * 0.3, y + ph + 6);
+      }
     });
   }
 
@@ -1435,7 +1721,7 @@
   function drawProgress() {
     const size = Math.max(13, Math.min(20, H / 26)), bh = size * 1.4, by = H - bh - 10;
     const bw = Math.min(440, W * 0.5), bx = W / 2 - bw / 2;
-    pill(bx, by, bw, bh, 'rgba(150, 130, 255, 0.75)', 8);
+    pill(bx, by, bw, bh, variant === 'escape' ? `rgba(${COL.danger}, 0.8)` : 'rgba(150, 130, 255, 0.75)', 8);
     const cy = by + bh / 2;
     ctx.font = `700 ${Math.round(size * 0.62)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(234, 230, 255, 0.85)';
@@ -1472,10 +1758,14 @@
       ctx.font = `700 ${size * 4}px ${FONT}`;
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6 + 5);
       ctx.fillStyle = '#f4f1ff'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6);
+      const intro = {
+        classic: ['Fly together to the green light!', 'Squeak to see and stun monsters, then dash into them.'],
+        escape: ['ESCAPE: run for the green light!', 'Monsters can\'t be beaten. Squeak to push them back.'],
+        hunt: [`HUNT: smash monsters for points! ${Math.floor(HUNT_TIME / 60)}:${String(HUNT_TIME % 60).padStart(2, '0')} on the clock`, 'Quick kills in a row multiply. Reach the light early for a bonus.'],
+      }[variant];
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
-        : ['Fly together to the green light!',
-          'Squeak to see and stun monsters, then dash into them.',
+        : [...intro,
           'Reach a lantern to revive fallen teammates.',
           localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash`
             : touchUsed ? 'Drag to fly · tap to squeak · flick or DASH to dash' : 'WASD/arrows fly · F/Space squeak · G dash · Esc pause'];
@@ -1500,7 +1790,7 @@
     if (me && me.ko && phase === 'play' && !(banner && banner.t > 0)) {
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
-      ctx.fillText(bats.some((b) => !b.ko) ? 'You\'re a ghost. Your team revives you at the next lantern.' : '', W / 2, H - size * 3.6);
+      ctx.fillText(bats.some((b) => !b.ko) ? 'You\'re a ghost. Your team revives you at the next lantern.' : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
     }
   }
 
@@ -1561,13 +1851,31 @@
   // Text for an end screen: { title, big, lines: [{ text, got, color }] } (game.js can use it)
   function describe(r, mySlot = 0) {
     if (!r) return null;
+    const v = VAR[r.variant] ? r.variant : 'classic';
+    const who = (p) => `${p.name}${p.cpu ? ' (CPU)' : ''}${p.slot === mySlot && r.players.length > 1 ? ' (you)' : ''}`;
+    const s = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+    if (v === 'hunt') {
+      const ranked = [...r.players].sort((a, b) => (b.points || 0) - (a.points || 0) || b.kills - a.kills);
+      const best = r.players.find((p) => p.slot === r.best);
+      const lines = ranked.map((p) => ({
+        text: `${p.slot === r.best ? '★ ' : ''}${who(p)}: ${p.points || 0} pts · ${p.kills} smash${p.kills === 1 ? '' : 'es'}${p.combo > 1 ? ` · best combo ×${p.combo}` : ''}${p.kos ? ` · down ${p.kos}×` : ''}`,
+        got: p.slot === r.best, color: p.color,
+      }));
+      if (best && r.players.length > 1) lines.unshift({ text: `Best hunter: ${who(best)}`, got: true, color: best.color });
+      lines.push({ text: `Team: ${r.team.kills} smashed in ${r.waves} waves${r.bonus ? ` · light bonus +${r.bonus}` : ''} · ${r.time}s`, got: r.won });
+      return {
+        title: r.how === 'time' ? 'Time\'s up!' : r.won ? 'Out with the loot!' : 'Out of tries',
+        big: `Score ${r.score}`,
+        lines,
+      };
+    }
     const lines = r.players.map((p) => ({
-      text: `${p.name}${p.cpu ? ' (CPU)' : ''}${p.slot === mySlot && r.players.length > 1 ? ' (you)' : ''}: ${p.moths} moth${p.moths === 1 ? '' : 's'} · ${p.stuns} stunned · ${p.kills} destroyed${p.kos ? ` · down ${p.kos}×` : ''}`,
+      text: `${who(p)}: ${s(p.moths, 'moth')} · ${p.stuns} stunned${v === 'classic' ? ` · ${p.kills} destroyed` : ''}${p.kos ? ` · down ${p.kos}×` : ''}`,
       got: p.alive && r.won, color: p.color,
     }));
-    lines.push({ text: `Team: ${r.team.moths} of ${r.mothsTotal} moths · ${r.team.stuns} stunned · ${r.team.kills} destroyed · ${r.time}s`, got: r.won });
+    lines.push({ text: `Team: ${r.team.moths} of ${r.mothsTotal} moths · ${r.team.stuns} stunned${v === 'classic' ? ` · ${r.team.kills} destroyed` : ''} · ${r.time}s`, got: r.won });
     return {
-      title: r.won ? 'Out of the dark together!' : 'The monsters won',
+      title: v === 'escape' ? (r.won ? 'You escaped!' : 'Caught in the dark') : (r.won ? 'Out of the dark together!' : 'The monsters won'),
       big: r.won ? `Try ${r.triesUsed} of ${r.triesTotal}` : `${Math.round(r.progress * 100)}% of the way · ${r.checkpoint}/${r.checkpoints} lanterns`,
       lines,
     };
@@ -1580,6 +1888,9 @@
     get mode() { return mode; },
     get seed() { return seed; },
     get level() { return difficulty; },
+    get variant() { return variant; },
+    VARIANTS,
+    get hunt() { return hunt; },
     get view() { return view; },
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide?.(); },
     setPaused: (p) => { paused = !!p; if (paused) { keys.clear(); sticks.clear(); } },
@@ -1594,10 +1905,11 @@
     get rings() { return rings; },
     get result() { return result; },
     VIEW_W,
-    autopilot(i, on = true) {
+    autopilot(i, on = true, skill = 'pro') {
       const b = bats[i];
       if (!b) return;
-      if (on) { if (b.ctrl !== 'cpu') b.was = b.ctrl; b.ctrl = 'cpu'; b.ai = { path: [], think: 0, sq: 0 }; } else if (b.was) b.ctrl = b.was;
+      // skill: 'pro' (default, the flawless test bot) or a buddy level ('easy', 'normal', 'hard')
+      if (on) { if (b.ctrl !== 'cpu') b.was = b.ctrl; b.ctrl = 'cpu'; b.ai = newAi(skill); } else if (b.was) b.ctrl = b.was;
     },
     squeak: (i) => squeak(bats[i]),
     dash: (i, dx, dy) => dash(bats[i], dx, dy),
@@ -1606,5 +1918,9 @@
     teleport: (i, x, y) => { const b = bats[i]; if (b) { b.x = x; b.y = y; b.vx = b.vy = 0; } },
     setScroll: (x) => { scroll.x = x; },
     skipCountdown: () => { if (phase === 'count') { countdown = 0.001; } },
+    // run the simulation without drawing (fast balance tests): secs of game time in fixed steps
+    simulate(secs, dt = 1 / 30) {
+      for (let t = 0; t < secs && active && !over; t += dt) { if (mode === 'client') clientUpdate(dt); else update(dt); }
+    },
   };
 })();

@@ -43,6 +43,14 @@
     <symbol id="i-cube" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M3 7l9 5 9-5M12 12v10"/></g></symbol>
     <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M10 7l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="i-note" viewBox="0 0 24 24"><path d="M9 17.5a3 3 0 1 1-2-2.8V5l11-2v11.5a3 3 0 1 1-2-2.8V6.5l-7 1.3z" fill="currentColor"/></symbol>
+    <symbol id="i-waves" viewBox="0 0 120 40"><g fill="none" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"><path d="M22 10a16 16 0 0 0 0 20M12 4a26 26 0 0 0 0 32M98 10a16 16 0 0 1 0 20M108 4a26 26 0 0 1 0 32"/></g></symbol>
+    <symbol id="i-crown" viewBox="0 0 24 24"><path d="M3 18l-1-11 6 5 4-8 4 8 6-5-1 11z" fill="currentColor"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="8" y="8" width="12" height="13" rx="3"/><path d="M16 8V6a3 3 0 0 0-3-3H7a3 3 0 0 0-3 3v8a3 3 0 0 0 3 3h1"/></g></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24"><g fill="currentColor"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/></g><path d="M8.6 10.7l6.8-4M8.6 13.3l6.8 4" stroke="currentColor" stroke-width="2.2"/></symbol>
+    <symbol id="i-wifi" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M2 9a15 15 0 0 1 20 0M5.5 12.6a10 10 0 0 1 13 0M9 16a5 5 0 0 1 6 0"/></g><circle cx="12" cy="19.5" r="1.8" fill="currentColor"/></symbol>
+    <symbol id="i-group" viewBox="0 0 32 24"><g fill="currentColor"><circle cx="16" cy="6" r="4.5"/><path d="M8 22c0-5 3.6-8 8-8s8 3 8 8z"/><circle cx="6.5" cy="8" r="3.4"/><path d="M0 21c0-4 2.6-6.4 6.4-6.4 1.2 0 2.2.2 3 .7C7.6 16.9 6.8 19 6.7 21z"/><circle cx="25.5" cy="8" r="3.4"/><path d="M32 21c0-4-2.6-6.4-6.4-6.4-1.2 0-2.2.2-3 .7 1.8 1.6 2.6 3.7 2.7 5.7z"/></g></symbol>
+    <symbol id="i-flags" viewBox="0 0 40 28"><g fill="currentColor"><path d="M3 26L9 3l1.6.4-6 22.9z"/><path d="M9.4 3.5c4-2 7 1.6 11-.4l-3 11c-4 2-7-1.6-11 .4z" opacity=".95"/><path d="M37 26L31 3l-1.6.4 6 22.9z"/><path d="M30.6 3.5c-4-2-7 1.6-11-.4l3 11c4 2 7-1.6 11 .4z" opacity=".95"/></g><g fill="#0a2a10"><path d="M11.5 4.3l2.4-.1-.7 2.6-2.4.3zM16.3 4.4l2.5-.6-.7 2.6-2.5.4zM10.8 6.9l2.4-.3-.7 2.6-2.4.4zM15.6 7l2.5-.4-.7 2.6-2.5.3z"/><path d="M28.5 4.3l-2.4-.1.7 2.6 2.4.3zM23.7 4.4l-2.5-.6.7 2.6 2.5.4zM29.2 6.9l-2.4-.3.7 2.6 2.4.4zM24.4 7l-2.5-.4.7 2.6 2.5.3z"/></g></symbol>
   </defs>
 </svg>
 
@@ -52,27 +60,26 @@
 <button id="sound-toggle" class="round" type="button" aria-label="Sound" aria-pressed="true"><svg><use href="#i-note"/></svg></button>
 <button id="pause-button" class="round" type="button" aria-label="Pause" hidden><svg><use href="#i-pause"/></svg></button>
 
-<section id="title-screen" class="overlay">
+<section id="title-screen" class="overlay menu">
   <div class="card wide">
     <header class="hero">
-      <svg class="mascot" aria-hidden="true"><use href="#i-bat"/></svg>
+      <div class="sonar-bat" aria-hidden="true"><svg class="waves"><use href="#i-waves"/></svg><svg class="mascot"><use href="#i-bat"/></svg></div>
       <h1 class="logo">Echo <span>Caves!</span></h1>
-      <p class="lede">Moka the bat is lost in the dark. Squeak to see, but every squeak wakes the cave.</p>
     </header>
     <div class="mode-grid">
       <button id="play-button" type="button" class="mode" style="--c: var(--echo)">
+        <canvas class="art" data-art="explore" aria-hidden="true"></canvas>
         <svg class="icon"><use href="#i-echo"/></svg><b>Explore</b><small id="best-cave">Explore one cave</small>
-        <svg class="scene" viewBox="0 0 160 50" aria-hidden="true" preserveAspectRatio="xMidYMax slice"><path d="M0 50V30l14-8 10 6 14-12 12 9 10-5 14 10 16-14 12 8 14-6 14 10 16-6 14 8v20z" fill="#0b1640"/><ellipse cx="96" cy="34" rx="22" ry="12" fill="#4adeff" opacity=".18"/><path d="M28 42l3-14 3 14zm6 0l2-9 2 9zm86 0l2-10 3 10z" fill="#7fe9ff"/><path d="M0 50v-6c30-4 60 2 90-2s50 2 70-1v9z" fill="#071030"/></svg>
         <span class="go"><svg><use href="#i-arrow"/></svg></span>
       </button>
       <button id="run-button" type="button" class="mode" style="--c: var(--ca)">
+        <canvas class="art" data-art="run" aria-hidden="true"></canvas>
         <svg class="icon"><use href="#i-run"/></svg><b>Cave Run</b><small id="best-run">Endless side-scroller</small>
-        <svg class="scene" viewBox="0 0 160 50" aria-hidden="true" preserveAspectRatio="xMidYMax slice"><path d="M0 50V32h40l6 6h20l-4 12zM96 50l6-18h44l14 6v12z" fill="#0b2a1c"/><path d="M60 22h50M70 28h44M56 34h30" stroke="#9dff6a" stroke-width="2" stroke-linecap="round" opacity=".55"/><g fill="#9dff6a"><rect x="17" y="25" width="2" height="7"/><ellipse cx="18" cy="25" rx="5" ry="3"/><rect x="129" y="25" width="2" height="7"/><ellipse cx="130" cy="25" rx="6" ry="3.5"/></g></svg>
         <span class="go"><svg><use href="#i-arrow"/></svg></span>
       </button>
       <button id="battle-button" type="button" class="mode" style="--c: var(--ka)">
-        <svg class="icon"><use href="#i-fang"/></svg><b>Battle</b><small>CPU bats or friends online</small>
-        <svg class="scene" viewBox="0 0 160 50" aria-hidden="true" preserveAspectRatio="xMidYMax slice"><ellipse cx="80" cy="30" rx="60" ry="16" fill="#ff7ad9" opacity=".12"/><use href="#i-bat" x="18" y="12" width="52" height="32" style="color:#8b6cff"/><use href="#i-bat" x="92" y="12" width="52" height="32" style="color:#ff7ad9"/><path d="M80 18l3 8 8 1-7 4 2 8-6-5-6 5 2-8-7-4 8-1z" fill="#ff7ad9"/></svg>
+        <canvas class="art" data-art="multi" aria-hidden="true"></canvas>
+        <span class="icon-gap" aria-hidden="true"></span><b>Multiplayer</b><small>Play with friends!</small>
         <span class="go"><svg><use href="#i-arrow"/></svg></span>
       </button>
     </div>
@@ -84,47 +91,76 @@
   </div>
 </section>
 
-<!-- Battle: one lobby for CPU matches and online rooms. Seats fill with you,
+<!-- Multiplayer: pick a game, then the lobby -->
+<section id="multi-screen" class="overlay menu" hidden>
+  <div class="card wide multi">
+    <button id="multi-back" type="button" class="btn ghost back corner"><span aria-hidden="true">‹</span> Back</button>
+    <header class="hero">
+      <div class="sonar-bat" aria-hidden="true"><svg class="waves"><use href="#i-waves"/></svg><svg class="mascot"><use href="#i-bat"/></svg></div>
+      <h1 class="logo">Multi<span>player</span></h1>
+      <p class="tagline">Choose a mode and play with friends!</p>
+    </header>
+    <div class="mode-grid tall">
+      <button type="button" class="mode tall" data-go-rule="bites" style="--c: var(--echo)">
+        <canvas class="art" data-art="bites" aria-hidden="true"></canvas>
+        <b>Bites</b><em>Free-for-all mayhem!</em><small>Grab power-ups, outfly everyone, and get the most bites.</small>
+        <span class="go"><svg><use href="#i-arrow"/></svg></span>
+      </button>
+      <button type="button" class="mode tall" data-go-rule="survivor" style="--c: var(--ca)">
+        <canvas class="art" data-art="last" aria-hidden="true"></canvas>
+        <b>Last Bite</b><em>Last bat standing!</em><small>Survive each round and be the final bat.</small>
+        <span class="go"><svg><use href="#i-arrow"/></svg></span>
+      </button>
+      <button type="button" class="mode tall" data-go-rule="coop" style="--c: var(--ka)">
+        <canvas class="art" data-art="coop" aria-hidden="true"></canvas>
+        <b>Co-op Run</b><em>Fly together, go further!</em><small>Team up to get through a monster cave: race to the end or hunt them down.</small>
+        <span class="go"><svg><use href="#i-arrow"/></svg></span>
+      </button>
+    </div>
+    <div class="pill-note"><svg><use href="#i-group"/></svg><span>Different bats. More fun together!</span></div>
+  </div>
+</section>
+
+<!-- The lobby: one screen for CPU matches and online rooms. Seats fill with you,
      friends who join by code, and CPU bats. -->
-<section id="battle-screen" class="overlay" hidden>
+<section id="battle-screen" class="overlay menu" hidden>
   <div class="card lobby">
-    <div class="lobby-top">
+    <div class="lobby-head">
       <button id="duel-back" type="button" class="btn ghost back"><span aria-hidden="true">‹</span> <span id="back-label">Back</span></button>
-      <div id="room-none" class="room-box">
-        <span class="room-label"><svg><use href="#i-globe"/></svg>Play friends</span>
-        <button id="room-create" type="button" class="btn yellow sm">Create room</button>
-        <form id="join-form" class="join sm">
-          <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
-          <button id="join-go" type="submit" class="btn violet sm">Join</button>
-        </form>
-      </div>
-      <div id="room-box" class="room-box" hidden>
-        <span class="room-label"><svg><use href="#i-globe"/></svg>Room code</span>
-        <div id="room-code" class="code-tiles" aria-live="polite"></div>
-        <button id="room-copy" type="button" class="btn violet sm">Copy link</button>
-      </div>
+      <header class="hero mini">
+        <h2 class="logo">Multiplayer <span>Lobby</span></h2>
+        <p class="tagline">Add players, customize your bats, and get ready!</p>
+      </header>
       <div class="headcount" aria-label="Players">
         <span id="seat-dots" class="seat-dots"></span>
         <b id="headcount">1</b><small>/4</small>
       </div>
     </div>
-    <div class="lobby-main">
-      <div class="settings">
-        <div class="set-row" style="--c: var(--ka)" role="group" aria-label="Game">
-          <span>Game</span>
-          <div class="chips">
-            <button type="button" class="chip" data-rule="bites">Bites</button>
-            <button type="button" class="chip" data-rule="survivor">Last bat</button>
-            <button type="button" class="chip" data-rule="coop">Co-op run</button>
-          </div>
+    <div class="mode-tabs" role="group" aria-label="Game">
+      <button type="button" class="tab" data-rule="bites" style="--c: var(--echo)"><b>Bites</b><small>Free-for-all mayhem!</small></button>
+      <button type="button" class="tab" data-rule="survivor" style="--c: var(--ca)"><b>Last Bite</b><small>Last bat standing!</small></button>
+      <button type="button" class="tab" data-rule="coop" style="--c: var(--ka)"><b>Co-op Run</b><small>Fly together!</small></button>
+    </div>
+    <div id="seats" class="slots"></div>
+    <aside class="side">
+      <div class="side-tabs" role="group" aria-label="Panel">
+        <button type="button" class="chip" data-side="bat">My bat</button>
+        <button type="button" class="chip" data-side="rules">Rules</button>
+      </div>
+      <div id="side-bat" class="side-pane bat-pane">
+        <div class="bat-stage">
+          <canvas id="my-bat" aria-label="Your bat"></canvas>
+          <button id="kind-prev" type="button" class="round sm" aria-label="Previous bat">‹</button>
+          <button id="kind-next" type="button" class="round sm" aria-label="Next bat">›</button>
+          <span id="kind-name" class="kind-name"></span>
         </div>
-        <div id="coop-card" class="coop-card" hidden>
-          <b>Co-op Cave Run</b>
-          <small>Fly a long dark level together. Monsters hunt you: squeak to stun them, dash to smash them. Knocked-out bats come back at lanterns. Add CPU buddies or invite friends.</small>
-        </div>
+        <div id="quick-parts" class="quick-parts"></div>
+        <button id="customize" type="button" class="btn violet sm">Customize bat</button>
+      </div>
+      <div id="side-rules" class="side-pane settings" hidden>
         <div id="arena-pick" class="arena-pick">
           <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
-          <div class="arena-text"><b id="arena-name">Shifting</b><small id="arena-desc">A new cave every 25s</small></div>
+          <div class="arena-text"><b id="arena-name">Morphing</b><small id="arena-desc">The walls slowly reshape</small></div>
           <div class="arrows">
             <button id="arena-prev" type="button" class="round sm" aria-label="Previous arena">‹</button>
             <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
@@ -138,8 +174,21 @@
             <button type="button" class="chip" data-first="7">7</button>
           </div>
         </div>
-        <div class="set-row" style="--c: var(--exit)" role="group" aria-label="CPU skill">
-          <span id="skill-label">CPU skill</span>
+        <div id="powers-row" class="set-row" style="--c: var(--yellow)">
+          <span>Power-ups</span>
+          <button id="powers-open" type="button" class="chip on"><span id="powers-sum">All · Normal</span> ›</button>
+        </div>
+        <div id="variant-row" class="set-row" style="--c: var(--ka)" role="group" aria-label="Goal">
+          <span>Goal</span>
+          <div class="chips">
+            <button type="button" class="chip" data-variant="classic">Classic</button>
+            <button type="button" class="chip" data-variant="escape">Escape</button>
+            <button type="button" class="chip" data-variant="hunt">Hunt</button>
+          </div>
+        </div>
+        <p id="variant-desc" class="set-note"></p>
+        <div id="monster-row" class="set-row" style="--c: var(--exit)" role="group" aria-label="Monsters">
+          <span>Monsters</span>
           <div class="chips">
             <button type="button" class="chip" data-level="easy">Easy</button>
             <button type="button" class="chip" data-level="normal">Normal</button>
@@ -154,15 +203,46 @@
           </div>
         </div>
       </div>
-      <div id="seats" class="slots"></div>
-    </div>
-    <div class="lobby-bottom">
+    </aside>
+    <div class="room-bar">
+      <div id="room-none" class="room-box">
+        <span class="room-label"><svg><use href="#i-globe"/></svg>Play online</span>
+        <button id="room-create" type="button" class="btn yellow sm">Create room</button>
+        <form id="join-form" class="join sm">
+          <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
+          <button id="join-go" type="submit" class="btn violet sm">Join</button>
+        </form>
+      </div>
+      <div id="room-box" class="room-box" hidden>
+        <svg class="wifi" aria-hidden="true"><use href="#i-wifi"/></svg>
+        <div class="room-id"><small>Room code</small><div id="room-code" class="code-tiles" aria-live="polite"></div></div>
+        <button id="room-copy" type="button" class="round sm" aria-label="Copy invite link"><svg><use href="#i-copy"/></svg></button>
+        <button id="room-invite" type="button" class="btn invite sm"><svg><use href="#i-share"/></svg><span><b>Invite friends</b><small>Play together!</small></span></button>
+      </div>
       <p id="online-status" class="small" role="status"></p>
-      <div class="start-wrap">
-        <button id="duel-start" type="button" class="btn primary">Let's fight ›</button>
-        <small id="start-hint"></small>
+    </div>
+    <div class="start-wrap">
+      <button id="duel-start" type="button" class="btn fight"><svg class="flags" aria-hidden="true"><use href="#i-flags"/></svg><span id="start-text">Let's Fight!</span><svg class="chev" aria-hidden="true"><use href="#i-arrow"/></svg></button>
+      <small id="start-hint"></small>
+    </div>
+  </div>
+</section>
+
+<!-- Battle power-ups: which ones show up and how often -->
+<section id="powers-screen" class="overlay sheet" hidden>
+  <div class="card powers">
+    <h2 class="logo">Power-<span>ups</span></h2>
+    <div id="powers-list" class="powers-list"></div>
+    <div class="set-row freq" style="--c: var(--yellow)" role="group" aria-label="How often">
+      <span>How often</span>
+      <div class="chips">
+        <button type="button" class="chip" data-freq="off">Off</button>
+        <button type="button" class="chip" data-freq="low">Low</button>
+        <button type="button" class="chip" data-freq="normal">Normal</button>
+        <button type="button" class="chip" data-freq="high">High</button>
       </div>
     </div>
+    <button id="powers-done" type="button" class="btn primary">Done</button>
   </div>
 </section>
 
@@ -202,6 +282,7 @@
 <script src="src/level.js"></script>
 <script src="src/arenas.js"></script>
 <script src="src/music.js"></script>
+<script src="src/looks.js"></script>
 <script src="src/game.js"></script>
 <script src="src/vendor/three.min.js"></script>
 <script src="src/view3d.js"></script>
@@ -209,5 +290,6 @@
 <script src="src/coop.js"></script>
 <script src="src/net.js"></script>
 <script src="src/backdrop.js"></script>
+<script src="src/cardart.js"></script>
 </body>
 </html>

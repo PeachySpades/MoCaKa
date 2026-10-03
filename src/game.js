@@ -12,6 +12,10 @@
   const LIGHT_FADE = 0.7;      // lit walls fade over ~1.4s
   const MAX_HEARTS = 3, HURT_TIME = 1.3;
   const MAX_ECHOES = 15, CRYSTAL_ECHOES = 3;
+  // Hidden hearts (h) each add one heart, up to two above the starting three.
+  // Checkpoints (K): after losing every heart Moka can go back to the last one
+  // passed, with full hearts and at least CP_MIN_ECHOES echoes.
+  const BONUS_HEARTS = 2, CP_MIN_ECHOES = 6;
   // Dash: a short burst the way Moka is flying, the same as in battle
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
   // Cave Run: the screen scrolls right on its own, speeding up over time
@@ -26,6 +30,8 @@
     danger: '255, 84, 104',
     owl: '255, 196, 64',
     crystal: '150, 240, 255',
+    checkpoint: '255, 196, 120',   // a warm lantern glow
+    heart: '255, 107, 138',
     moka: '#8b6cff',
   };
 
@@ -118,6 +124,9 @@
     crash() { tone(180, 40, 0.35, 'triangle', 0.12); hiss(0.4, 0.08, 400, undefined, sfxBus, 'lowpass'); },
     empty() { tone(260, 180, 0.12, 'sine', 0.06); },
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
+    // Explore: a checkpoint lantern lights (a soft bell chime), a hidden heart (a warm rising "ba-dum")
+    checkpoint() { [784, 988, 1175, 1568].forEach((f, i) => { tone(f, f, 0.5, 'sine', 0.07, i * 0.09); tone(f * 2, f * 2, 0.25, 'triangle', 0.02, i * 0.09); }); },
+    heartUp() { tone(330, 440, 0.12, 'triangle', 0.1); tone(440, 660, 0.14, 'triangle', 0.1, 0.13); [880, 1109, 1319].forEach((f, i) => tone(f, f * 1.01, 0.22, 'sine', 0.05, 0.28 + i * 0.07)); },
     chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); hiss(0.08, 0.1, 2000); },
     slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
     dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); hiss(0.18, 0.09, 1800, undefined, sfxBus, 'bandpass'); },
@@ -141,6 +150,15 @@
     },
     // echo parry: a bright metallic ting with a rising shimmer (duel.js)
     parry() { tone(2600, 2500, 0.3, 'triangle', 0.09); tone(3900, 3850, 0.22, 'sine', 0.06, 0.01); tone(1300, 2600, 0.12, 'square', 0.04); hiss(0.08, 0.08, 5000); },
+    // special power-ups (duel.js): fireball whoosh and burst, thunder crack, stone wall, ice, twister, ghost
+    fire() { hiss(0.35, 0.12, 900, undefined, sfxBus, 'bandpass'); tone(320, 120, 0.3, 'sawtooth', 0.05); tone(900, 300, 0.2, 'triangle', 0.04); },
+    boom() { tone(150, 40, 0.4, 'square', 0.09); hiss(0.45, 0.14, 700, undefined, sfxBus, 'lowpass'); hiss(0.12, 0.08, 3000); },
+    thunder() { hiss(0.06, 0.25, 4000); for (let k = 0; k < 5; k++) hiss(0.05, 0.16 - k * 0.025, 2500 - k * 300, ac && ac.currentTime + 0.02 + k * 0.045, sfxBus, 'bandpass'); tone(90, 32, 1.1, 'sawtooth', 0.1, 0.05); hiss(1.3, 0.12, 220, ac && ac.currentTime + 0.08, sfxBus, 'lowpass'); },
+    wallUp() { tone(70, 140, 0.25, 'square', 0.08); hiss(0.3, 0.12, 500, undefined, sfxBus, 'lowpass'); tone(220, 110, 0.12, 'triangle', 0.07, 0.22); },
+    crumble() { for (let k = 0; k < 6; k++) hiss(0.08, 0.1, 300 + k * 120, ac && ac.currentTime + k * 0.07, sfxBus, 'lowpass'); tone(120, 50, 0.5, 'triangle', 0.06); },
+    freeze() { [2600, 3100, 3700, 4200].forEach((f, i) => tone(f, f * 0.98, 0.25, 'sine', 0.05, i * 0.04)); hiss(0.4, 0.08, 6000); tone(500, 1600, 0.2, 'triangle', 0.04); },
+    vortex() { hiss(1.2, 0.1, 600, undefined, sfxBus, 'bandpass'); tone(140, 420, 0.9, 'sawtooth', 0.035); tone(420, 140, 0.9, 'sawtooth', 0.025, 0.4); },
+    ghost() { tone(500, 900, 0.5, 'sine', 0.06); tone(750, 1350, 0.5, 'sine', 0.04, 0.08); tone(400, 300, 0.6, 'triangle', 0.03, 0.2); },
   };
 
   // Music: an upbeat jazz band (horns, piano, bass, guitar, vibes, drums),
@@ -158,7 +176,7 @@
     const lv = {
       def, w, h, grid, lit: new Float32Array(w * h),
       start: { x: 1.5, y: 1.5 }, exit: { x: 1.5, y: 1.5 },
-      moths: [], crystals: [], hazards: [],
+      moths: [], crystals: [], hazards: [], checkpoints: [], hearts: [],
     };
     const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
     const shaft = (x, y) => {
@@ -176,7 +194,12 @@
         else if (c === 'E') lv.exit = { x: cx, y: cy };
         else if (c === 'm') lv.moths.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
         else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
-        else if (c === 's') {
+        else if (c === 'h') lv.hearts.push({ x: cx, y: cy, got: false, phase: Math.random() * 6 });
+        else if (c === 'K') {
+          // the roost hangs from the ceiling; flying through its column (between the walls) lights it
+          const { top, bot } = shaft(x, y);
+          lv.checkpoints.push({ x: cx, y: cy, top, bot: bot + 1, ceil: top, on: false, flash: 0 });
+        } else if (c === 's') {
           const { top, bot } = shaft(x, y);
           lv.hazards.push({ kind: 'spider', x: cx, y: cy, restY: cy, top: top + 0.45, bot: bot + 0.55, r: 0.3, awake: 0, t: 0, lit: 0 });
         } else if (c === 'r') {
@@ -211,6 +234,8 @@
   const engine = () => (duelCfg.coop ? window.EchoCoop : window.EchoDuel);
   let levelIndex = 0;
   let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
+  // Explore: the last checkpoint passed (what to restore), and floating "Checkpoint!" / "+1" pops
+  let checkpoint = null, pops = [];
 
   function startGame(newMode, i = 0) {
     mode = newMode;
@@ -226,7 +251,9 @@
     scroll = { x: 0, speed: RUN_START_SPEED };
     cam = { x: moka.x, y: moka.y };
     if (mode === 'run') cam.x = W / PX / 2;
-    stats = { moths: 0, squeaks: 0, time: 0 };
+    stats = { moths: 0, squeaks: 0, time: 0, retries: 0 };
+    checkpoint = null;
+    pops = [];
     endReason = '';
     shake = 0;
     hintTimer = 6;
@@ -234,6 +261,55 @@
     state = 'play';
     showOverlay(null);
   }
+
+  // ---- Checkpoints -------------------------------------------------------
+  // Passing a roost saves what Moka has so far; losing every heart later can
+  // go back there instead of to the cave start.
+  function reachCheckpoint(cp) {
+    cp.on = true;
+    cp.flash = 1;
+    const got = (list) => list.map((o) => o.got);
+    checkpoint = {
+      index: L.checkpoints.indexOf(cp), x: cp.x, y: cp.y, echoes: moka.echoes, moths: stats.moths,
+      mothsGot: got(L.moths), crystalsGot: got(L.crystals), heartsGot: got(L.hearts), cpsOn: L.checkpoints.map((c) => c.on),
+    };
+    burst(cp.x, cp.y + 0.3, COL.checkpoint, 22);
+    pop(cp.x, cp.y - 0.6, 'Checkpoint!', COL.checkpoint);
+    sfx.checkpoint();
+  }
+
+  // Back to the last checkpoint: hearts refilled to the cave's start, echoes as
+  // they were there (at least CP_MIN_ECHOES), moths and crystals taken before it
+  // kept, everything after it (and every hazard) put back as it was.
+  function restartFromCheckpoint() {
+    if (!checkpoint || mode !== 'cave') { startGame(mode, levelIndex); return; }
+    const cp = checkpoint;
+    L = loadLevel(L.def);
+    const put = (list, got) => list.forEach((o, i) => { o.got = !!got[i]; });
+    put(L.moths, cp.mothsGot); put(L.crystals, cp.crystalsGot); put(L.hearts, cp.heartsGot);
+    L.checkpoints.forEach((c, i) => { c.on = !!cp.cpsOn[i]; });
+    moka = {
+      x: cp.x, y: cp.y, vx: 0, vy: 0, face: 1,
+      hearts: MAX_HEARTS, hurt: 0, cooldown: 0, echoes: Math.min(MAX_ECHOES, Math.max(cp.echoes, CP_MIN_ECHOES)), noEcho: 0,
+      dashT: 0, dashCd: 0,
+    };
+    rings = [];
+    particles = [];
+    pops = [];
+    cam = { x: moka.x, y: moka.y };
+    stats.moths = cp.moths;
+    stats.retries++;
+    endReason = '';
+    shake = 0;
+    hintTimer = 0;
+    state = 'play';
+    showOverlay(null);
+    burst(cp.x, cp.y, COL.checkpoint, 18);
+    pop(cp.x, cp.y - 0.6, 'Back at the checkpoint', COL.checkpoint);
+    sfx.checkpoint();
+  }
+
+  function pop(x, y, text, rgb) { pops.push({ x, y, text, rgb, t: 0 }); }
 
   // ---- Input -------------------------------------------------------------
   const keys = new Set();
@@ -400,12 +476,27 @@
     else endCave(won);
     updateBests();
     const moreCaves = mode !== 'run' && levelIndex < window.ECHO_LEVELS.length - 1;
-    $('end-button').textContent = !won ? 'Try again' : moreCaves ? 'Next cave' : 'Play again';
+    // after a checkpoint, the main button goes back there and a second one restarts the cave
+    const toCheckpoint = !won && mode === 'cave' && !!checkpoint;
+    $('end-button').textContent = toCheckpoint ? 'Back to checkpoint' : !won ? 'Try again' : moreCaves ? 'Next cave' : 'Play again';
     $('end-button').hidden = false;
     $('end-wait').hidden = true;
     $('menu-button').textContent = 'Menu';
-    setTimeout(() => { if (state === 'win' || state === 'lose') showOverlay('end'); }, won ? 500 : 700);
+    setTimeout(() => {
+      if (state !== 'win' && state !== 'lose') return;
+      showOverlay('end');
+      endAlt.hidden = !toCheckpoint;
+    }, won ? 500 : 700);
   }
+  // "Restart cave" on the lose screen, shown only when there's a checkpoint to go back to
+  const endAlt = document.createElement('button');
+  endAlt.id = 'end-restart';
+  endAlt.type = 'button';
+  endAlt.className = 'btn ghost';
+  endAlt.textContent = 'Restart cave';
+  endAlt.hidden = true;
+  $('end-button').before(endAlt);
+  endAlt.addEventListener('click', () => { unlockAudio(); startGame('cave', levelIndex); });
 
   function endCave(won) {
     if (won) {
@@ -423,12 +514,14 @@
       $('end-detail').innerHTML =
         `<li class="got">Found the exit${last ? ' of the last cave' : `. Next: ${window.ECHO_LEVELS[levelIndex + 1].name}`}</li>` +
         `<li class="${allMoths ? 'got' : ''}">Moths ${stats.moths} of ${L.moths.length}</li>` +
-        `<li class="${spare ? 'got' : ''}">Echoes left ${moka.echoes}, need ${L.def.spare}</li>`;
+        `<li class="${spare ? 'got' : ''}">Echoes left ${moka.echoes}, need ${L.def.spare}</li>` +
+        (L.hearts.length ? `<li>Hidden hearts found ${L.hearts.filter((h) => h.got).length} of ${L.hearts.length}</li>` : '');
     } else {
       $('end-title').textContent = 'Moka needs a rest';
       $('end-stars').textContent = '☆☆☆';
       $('end-stars').setAttribute('aria-label', 'No stars');
-      $('end-detail').innerHTML = `<li>Squeak less near sleeping things, or fly past before they wake.</li>`;
+      $('end-detail').innerHTML = `<li>Squeak less near sleeping things, or fly past before they wake.</li>` +
+        (checkpoint ? `<li>Back at the checkpoint you get full hearts and keep the moths found before it.</li>` : '');
     }
   }
 
@@ -587,6 +680,25 @@
         sfx.crystal();
       }
     }
+    // hidden hearts: +1 heart, up to BONUS_HEARTS above the start
+    for (const hh of L.hearts) {
+      if (!hh.got && Math.hypot(hh.x - moka.x, hh.y - moka.y) < 0.6) {
+        hh.got = true;
+        moka.hearts = Math.min(MAX_HEARTS + BONUS_HEARTS, moka.hearts + 1);
+        burst(hh.x, hh.y, COL.heart, 22);
+        pop(hh.x, hh.y - 0.5, '+1 heart!', COL.heart);
+        sfx.heartUp();
+      }
+    }
+    // checkpoints light up as Moka flies through their column (or close by)
+    for (const cp of L.checkpoints) {
+      cp.flash = Math.max(0, cp.flash - dt);
+      if (cp.on) continue;
+      const across = Math.abs(moka.x - cp.x) < 0.5 && moka.y > cp.top && moka.y < cp.bot;
+      if (across || Math.hypot(cp.x - moka.x, cp.y - moka.y) < 1) reachCheckpoint(cp);
+    }
+    for (const p of pops) p.t += dt;
+    pops = pops.filter((p) => p.t < 1.6);
     if (Math.hypot(L.exit.x - moka.x, L.exit.y - moka.y) < 0.6) endGame(true);
 
     // Particles
@@ -685,7 +797,7 @@
     // carries the creatures, rings, sparks and HUD, lined up with the 3D cave.
     const in3d = !!L && view3d && !!window.EchoCave3D && window.EchoCave3D.render({
       W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, moka, clock,
-      bg: CAVE_BG, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R,
+      bg: CAVE_BG, wall: COL.wall, fill: COL.wallFill, mokaColor: COL.moka, mokaR: MOKA_R, look: mokaLook(),
     });
     if (in3d) ctx.clearRect(0, 0, W, H);
     else {
@@ -810,6 +922,11 @@
       ctx.closePath(); ctx.fill();
     }
 
+    // Checkpoint roosts: a lantern hanging from the ceiling, dim until Moka passes, then warm and bright
+    for (const cp of L.checkpoints) drawCheckpoint(cp, toX(cp.x), toY(cp.y), toY(cp.ceil));
+    // Hidden hearts glow and sparkle on their own, like moths, so a sharp eye can spot the pocket
+    for (const hh of L.hearts) if (!hh.got) drawHeartPickup(hh, toX(hh.x), toY(hh.y + Math.sin(clock * 2.2 + hh.phase) * 0.08));
+
     // Hazards: bodies show while lit or close by; awake eyes always show
     for (const h of L.hazards) {
       if (h.kind === 'rock' && h.state === 'gone') continue;
@@ -838,6 +955,7 @@
       ctx.fillRect(toX(p.x) - 2, toY(p.y) - 2, 4, 4);
     }
 
+    for (const p of pops) drawPop(p, toX(p.x), toY(p.y - p.t * 0.7));
     if (!in3d) drawMoka(toX(moka.x), toY(moka.y));
     if (mode === 'run') {
       // the creeping dark at the left edge
@@ -938,11 +1056,107 @@
     }
   }
 
+  // A roost lantern on a chain from the ceiling, with a little perch bar for a bat
+  // to hang from. Unlit it's a faint amber outline; lit, it glows and flickers.
+  function drawCheckpoint(cp, x, y, ceilY) {
+    const on = cp.on, fl = on ? 0.85 + 0.15 * Math.sin(clock * 9 + x) * Math.sin(clock * 5.3) : 0.35 + 0.1 * Math.sin(clock * 2);
+    const s = PX * 0.2;
+    glow(x, y, PX * (on ? 1.9 : 1.1), COL.checkpoint, on ? 0.5 * fl : 0.12);
+    if (cp.flash > 0) {
+      // a ring of light spreads out when it's lit
+      const k = 1 - cp.flash;
+      ctx.strokeStyle = `rgba(${COL.checkpoint}, ${cp.flash})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(x, y, PX * (0.4 + k * 2.6), 0, Math.PI * 2); ctx.stroke();
+    }
+    // chain
+    ctx.strokeStyle = `rgba(${COL.checkpoint}, ${on ? 0.7 : 0.3})`;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(x, ceilY); ctx.lineTo(x, y - s * 1.6); ctx.stroke();
+    ctx.setLineDash([]);
+    // cap, glass and base
+    ctx.fillStyle = on ? 'rgb(120, 78, 40)' : 'rgba(120, 78, 40, 0.5)';
+    ctx.beginPath(); ctx.moveTo(x - s * 0.5, y - s * 1.6); ctx.lineTo(x + s * 0.5, y - s * 1.6); ctx.lineTo(x + s * 0.95, y - s * 1.05); ctx.lineTo(x - s * 0.95, y - s * 1.05); ctx.closePath(); ctx.fill();
+    ctx.fillRect(x - s * 0.95, y + s * 0.95, s * 1.9, s * 0.35);
+    ctx.fillStyle = on ? `rgba(255, 226, 160, ${fl})` : 'rgba(255, 196, 120, 0.12)';
+    ctx.strokeStyle = `rgba(${COL.checkpoint}, ${on ? 0.95 : 0.45})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(x - s * 0.75, y - s * 1.05, s * 1.5, s * 2); ctx.fill(); ctx.stroke();
+    if (on) {
+      // the flame
+      ctx.fillStyle = 'rgba(255, 250, 230, 0.95)';
+      ctx.beginPath(); ctx.ellipse(x, y + s * 0.1, s * 0.22, s * (0.45 + 0.08 * Math.sin(clock * 13)), 0, 0, Math.PI * 2); ctx.fill();
+    }
+    // the perch bar underneath
+    ctx.strokeStyle = on ? 'rgb(160, 110, 60)' : 'rgba(160, 110, 60, 0.5)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.moveTo(x, y + s * 1.3); ctx.lineTo(x, y + s * 1.9); ctx.moveTo(x - s * 1.5, y + s * 1.9); ctx.lineTo(x + s * 1.5, y + s * 1.9); ctx.stroke();
+  }
+
+  // A hidden heart: pink, pulsing, with sparkles twinkling around it
+  function drawHeartPickup(hh, x, y) {
+    const beat = 1 + 0.12 * Math.max(0, Math.sin(clock * 6 + hh.phase)) ** 6;
+    glow(x, y, PX * 1.1, COL.heart, 0.45 + 0.15 * Math.sin(clock * 3 + hh.phase));
+    heart(x, y, PX * 0.24 * beat, true, ctx);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.beginPath(); ctx.ellipse(x - PX * 0.09 * beat, y - PX * 0.08 * beat, PX * 0.05, PX * 0.035, -0.6, 0, Math.PI * 2); ctx.fill();
+    for (let k = 0; k < 4; k++) {
+      const a = clock * 1.4 + hh.phase + k * Math.PI / 2, d = PX * (0.42 + 0.06 * Math.sin(clock * 3 + k));
+      const tw = Math.max(0, Math.sin(clock * 5 + k * 1.7 + hh.phase));
+      if (tw < 0.05) continue;
+      const sx = x + Math.cos(a) * d, sy = y + Math.sin(a) * d * 0.8, r = PX * 0.08 * tw;
+      ctx.fillStyle = `rgba(255, 236, 244, ${tw})`;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.25, sy - r * 0.25); ctx.lineTo(sx + r, sy); ctx.lineTo(sx + r * 0.25, sy + r * 0.25);
+      ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.25, sy + r * 0.25); ctx.lineTo(sx - r, sy); ctx.lineTo(sx - r * 0.25, sy - r * 0.25);
+      ctx.closePath(); ctx.fill();
+    }
+  }
+
+  // "Checkpoint!" and "+1 heart!" float up and fade
+  function drawPop(p, x, y) {
+    const a = Math.min(1, p.t * 6) * (1 - Math.max(0, p.t - 1) / 0.6), sc = 0.7 + 0.3 * Math.min(1, p.t * 5);
+    if (a <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.font = `700 ${Math.round(Math.max(15, PX * 0.42) * sc)}px ${HUD_FONT}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 4; ctx.strokeStyle = 'rgba(10, 6, 30, 0.85)';
+    ctx.strokeText(p.text, x, y);
+    ctx.fillStyle = `rgb(${p.rgb})`;
+    ctx.fillText(p.text, x, y);
+    ctx.restore();
+  }
+
+  // Moka wears this device's bat look (looks.js) when there is one; it's read
+  // about once a second and only replaced when it actually changes
+  let lookCache = null, lookAt = -1e9;
+  function mokaLook() {
+    const E = window.EchoLooks;
+    if (!E || !E.mine) return null;
+    const now = performance.now();
+    if (now - lookAt > 1000) {
+      lookAt = now;
+      try {
+        const l = E.mine();
+        if (!lookCache || JSON.stringify(l) !== JSON.stringify(lookCache)) lookCache = l;
+      } catch { /* keep the last look */ }
+    }
+    return lookCache;
+  }
+
   function drawMoka(x, y) {
     if (moka.hurt > 0 && Math.floor(moka.hurt * 12) % 2 === 0) return;
     glow(x, y, PX * 0.9, '139, 108, 255', moka.dashT > 0 ? 0.5 : 0.25);
-    const flap = Math.sin(clock * (moka.dashT > 0 ? 40 : 18));
     const r = PX * MOKA_R;
+    const look = mokaLook();
+    if (look && window.EchoLooks.draw2D) {
+      const tilt = Math.max(-0.35, Math.min(0.35, moka.vy * 0.05)) * moka.face;
+      window.EchoLooks.draw2D(ctx, look, x, y, r, { face: moka.face, flap: (clock * (moka.dashT > 0 ? 40 : 18)) / (2 * Math.PI), alpha: 1, angle: tilt });
+      return;
+    }
+    const flap = Math.sin(clock * (moka.dashT > 0 ? 40 : 18));
     ctx.fillStyle = COL.moka;
     for (const side of [-1, 1]) {
       ctx.beginPath();
@@ -1031,10 +1245,16 @@
     const hs = ph * 0.2, hg = ph * 0.56;
     ctx.font = `700 ${Math.round(ph * 0.42)}px ${HUD_FONT}`;
     const mothText = mode === 'run' ? `${stats.moths}` : `${stats.moths} / ${L.moths.length}`;
-    const lw = ph * 0.45 + MAX_HEARTS * hg + ph * 0.35 + ph * 0.55 + ctx.measureText(mothText).width + ph * 0.45;
+    // bonus hearts from hidden pickups get extra slots, with a gold rim
+    const slots = Math.max(MAX_HEARTS, moka.hearts);
+    const lw = ph * 0.45 + slots * hg + ph * 0.35 + ph * 0.55 + ctx.measureText(mothText).width + ph * 0.45;
     pill(pad, top, lw, ph, moka.hurt > 0 ? `rgb(${COL.danger})` : 'rgba(150, 125, 255, 0.85)');
-    for (let i = 0; i < MAX_HEARTS; i++) heart(pad + ph * 0.45 + hg * (i + 0.5) - hg * 0.1, cy, hs * 1.15, i < moka.hearts, ctx);
-    const dx = pad + ph * 0.45 + MAX_HEARTS * hg + ph * 0.05;
+    for (let i = 0; i < slots; i++) {
+      const hx = pad + ph * 0.45 + hg * (i + 0.5) - hg * 0.1;
+      heart(hx, cy, hs * 1.15, i < moka.hearts, ctx);
+      if (i >= MAX_HEARTS) { ctx.strokeStyle = 'rgba(255, 214, 120, 0.95)'; ctx.lineWidth = 1.5; ctx.stroke(); }
+    }
+    const dx = pad + ph * 0.45 + slots * hg + ph * 0.05;
     ctx.fillStyle = 'rgba(214, 208, 255, 0.2)';
     ctx.fillRect(dx, cy - ph * 0.25, 1.5, ph * 0.5);
     const mx = dx + ph * 0.42;
@@ -1198,7 +1418,12 @@
     $('title-screen').hidden = which !== 'title';
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
+    $('multi-screen').hidden = which !== 'multi';
+    $('powers-screen').hidden = true;
+    window.EchoBackdrop?.altar?.(which !== 'battle');
+    if (which !== 'battle') { myPreview?.dispose?.(); myPreview = null; }   // free the lobby's 3D bat   // the lobby's bottom bar sits where the altar is
     $('pause-screen').hidden = which !== 'pause';
+    endAlt.hidden = true;   // Explore's "Restart cave" shows again only on a lose screen after a checkpoint
     if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); window.EchoCoop?.setPaused?.(false); }
   }
 
@@ -1245,6 +1470,7 @@
     if (mode === 'duel') (duelCfg.rematch || (() => startDuel(duelCfg)))();
     else if (state === 'title') enterGame('cave');
     else if (state === 'win' && mode === 'cave') startGame(mode, (levelIndex + 1) % window.ECHO_LEVELS.length);
+    else if (state === 'lose' && mode === 'cave' && checkpoint) restartFromCheckpoint();
     else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
   }
 
@@ -1310,13 +1536,16 @@
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
-  $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
-  // Battle lobby: one screen for CPU matches and online rooms (net.js drives the room part).
+  // Multiplayer: Title → pick a game (Bites, Last Bite, Co-op Run) → the lobby
+  $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('multi'); });
+  $('multi-back').addEventListener('click', () => showOverlay('title'));
+  // The lobby: one screen for CPU matches and online rooms (net.js drives the room part).
   // Seats fill in order: the people in the room (just you when offline), then CPU bats.
   const BAT_SEATS = [
     { name: 'Mo', c: 'var(--mo)' }, { name: 'Ka', c: 'var(--ka)' },
     { name: 'Ca', c: 'var(--ca)' }, { name: 'Bo', c: 'var(--bo)' },
   ];
+  const LEVELS = ['easy', 'normal', 'hard'];
   const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
   // arenas: one that slowly reshapes, one of the four caves kept still, or open sky
   const ARENA_CHOICES = [
@@ -1329,26 +1558,64 @@
     survivor: { hint: (n) => `last bat standing · ${n} round wins` },
     coop: { hint: () => 'co-op run' },
   };
+  const VARIANTS = {
+    classic: 'Fly to the end together. Squeak to stun monsters, dash to smash them.',
+    escape: 'Run away! Monsters chase you and can’t be beaten. Reach the exit.',
+    hunt: 'Hunt them down! Beat enough monsters to open the exit.',
+  };
+  const FREQS = ['off', 'low', 'normal', 'high'];
+  const FREQ_NAMES = { off: 'Off', low: 'Low', normal: 'Normal', high: 'High' };
+  const powerList = () => window.EchoDuel?.POWER_LIST || [];
   const arenaOpts = (p) => { const a = ARENA_CHOICES.find((x) => x.id === p.arenaId) || ARENA_CHOICES[0]; return { arenaMode: a.mode, arena: a.arena }; };
+  const cleanPowers = (pw) => {
+    const on = {};
+    for (const p of powerList()) on[p.id] = pw?.on?.[p.id] !== false;
+    return { on, freq: FREQS.includes(pw?.freq) ? pw.freq : 'normal' };
+  };
   const savedPick = () => {
+    const lv = store.get('echo-cpu-levels');
     const p = {
       humans: 1,
       cpus: Math.min(3, Math.max(0, store.get('echo-cpus') ?? 1)),
       level: store.get('echo-cpu-level') || 'normal',
+      cpuLevels: [0, 1, 2].map((k) => (Array.isArray(lv) && LEVEL_NAMES[lv[k]] ? lv[k] : 'normal')),
       arenaId: store.get('echo-arena') || 'morph',
       rule: store.get('echo-rule') || 'bites',
       firstTo: [3, 5, 7].includes(store.get('echo-first-to')) ? store.get('echo-first-to') : 3,
+      variant: store.get('echo-coop-variant') || 'classic',
+      powers: store.get('echo-powers') || null,
     };
     if (!ARENA_CHOICES.some((a) => a.id === p.arenaId)) p.arenaId = 'morph';
     if (!RULES[p.rule]) p.rule = 'bites';
     if (!LEVEL_NAMES[p.level]) p.level = 'normal';
+    if (!VARIANTS[p.variant]) p.variant = 'classic';
+    p.powers = cleanPowers(p.powers);
     return p;
   };
   const pick = savedPick();
-  // room: null offline, else { role: 'host' | 'guest', code, people: [{ slot, me }] }
+  // CPU bats get a fresh random look each visit; everyone sees the same ones online
+  let cpuSeed = Math.floor(Math.random() * 1e6);
+  // room: null offline, else { role: 'host' | 'guest', code, people: [{ slot, me, look }] }
   let room = null;
   const canEdit = () => !room || room.role === 'host';
   const people = () => (room ? room.people : [{ slot: 0, me: true }]);
+  const Looks = () => window.EchoLooks;
+  const myLook = () => Looks()?.mine?.() || null;
+  // the look of every seat: people bring their own, CPU bats get a random one
+  function seatLooks() {
+    const ppl = people(), n = ppl.length, L = Looks();
+    return BAT_SEATS.map((_, k) => {
+      const p = ppl.find((q) => q.slot === k);
+      if (p) return p.me ? myLook() : p.look ? L?.clean?.(p.look) || null : L?.preset?.(k) || null;
+      if (k < n + pick.cpus) return L?.random?.(cpuSeed + k) || null;
+      return null;
+    });
+  }
+  // CPU skill per seat, in seat order after the people
+  const levelsBySlot = () => {
+    const n = people().length;
+    return BAT_SEATS.map((_, k) => (k >= n && k < n + pick.cpus ? pick.cpuLevels[k - n] || 'normal' : null));
+  };
   // a little map of the arena, drawn from its tiles
   function drawArenaPreview() {
     const c = $('arena-preview'), g = c.getContext('2d');
@@ -1370,43 +1637,59 @@
   function renderPickers() {
     const ppl = people(), n = ppl.length, edit = canEdit(), coop = pick.rule === 'coop';
     pick.cpus = Math.max(0, Math.min(pick.cpus, 4 - n));
-    const cpus = pick.cpus;
-    const total = n + cpus;
-    // seats
+    const cpus = pick.cpus, total = n + cpus;
+    // seats: people, then CPU bats, then empty seats to add a CPU or invite a friend
+    const empties = 4 - total;
     $('seats').innerHTML = BAT_SEATS.map((bat, k) => {
       const p = ppl.find((q) => q.slot === k);
       const cpu = !p && k >= n && k < total;
-      const host = room && k === 0;
-      const label = p ? (p.me ? 'You' : 'Friend') : cpu ? LEVEL_NAMES[pick.level] : edit ? (coop ? '+ CPU buddy' : '+ Add CPU') : 'Open';
-      const cls = p ? 'slot you' : cpu ? 'slot on' : 'slot';
-      return `<button type="button" class="${cls}" data-seat="${k}" style="--c: ${bat.c}" ${p || !edit ? 'disabled' : ''} aria-pressed="${cpu}">`
-        + `<svg class="avatar"><use href="#i-bat"/></svg><b>${bat.name}</b>`
-        + (p ? '<span class="ready">Ready!</span>' : '')
-        + `<span class="add">${label}</span><span class="tag">P${k + 1}</span>`
-        + (host ? '<span class="badge">Host</span>' : cpu ? '<span class="badge">CPU</span>' : '')
-        + '</button>';
+      const num = `<span class="num">${k + 1}</span>`;
+      if (p) {
+        const host = room && k === 0;
+        const name = p.me ? `You${host || !room ? ' <svg aria-label="leader"><use href="#i-crown"/></svg>' : ''}` : 'Friend';
+        return `<div class="slot you" style="--c: ${bat.c}">${num}${host && !p.me ? '<span class="host-tag">Host</span>' : ''}`
+          + `<canvas class="seat-bat" data-seat-bat="${k}"></canvas><b>${name}</b>`
+          + '<span class="pill ok ready"><svg><use href="#i-check"/></svg>Ready</span></div>';
+      }
+      if (cpu) {
+        const lv = pick.cpuLevels[k - n] || 'normal', i = LEVELS.indexOf(lv);
+        const steps = `<div class="stepper"><button type="button" data-lv="-1" data-seat="${k}" aria-label="Easier" ${!edit || i === 0 ? 'disabled' : ''}>‹</button>`
+            + `<span>${LEVEL_NAMES[lv]}</span><button type="button" data-lv="1" data-seat="${k}" aria-label="Harder" ${!edit || i === 2 ? 'disabled' : ''}>›</button></div>`;
+        return `<div class="slot on" style="--c: ${bat.c}">${num}`
+          + (edit ? `<button type="button" class="x" data-remove="${k}" aria-label="Remove CPU">✕</button>` : '')
+          + `<canvas class="seat-bat" data-seat-bat="${k}"></canvas><b>${coop ? 'Buddy' : 'CPU'}</b>${steps}</div>`;
+      }
+      // the last empty seat invites a friend (when there's room for one), the rest add CPU bats
+      const invite = room?.role !== 'guest' && empties >= 2 && k === 3;
+      if (!edit) return `<div class="slot open" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Open</b><small>Waiting for the host</small></div>`;
+      if (invite) return `<button type="button" class="slot add" data-invite style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Add Player</b><small>${room ? 'Share the code' : 'Invite online'}</small></button>`;
+      return `<button type="button" class="slot add" data-add="${k}" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>${coop ? 'Add Buddy' : 'Add CPU'}</b><small>${coop ? 'A CPU bat on your team' : 'Easy / Normal / Hard'}</small></button>`;
     }).join('');
     $('seat-dots').innerHTML = BAT_SEATS.map((bat, k) => `<i class="${k < n ? 'full' : k < total ? 'cpu' : ''}" style="--c: ${bat.c}"></i>`).join('');
     $('headcount').textContent = n;
     // settings
-    const mark = (sel, key, val) => document.querySelectorAll(sel).forEach((b) => {
+    const mark = (sel, key, val, lock = true) => document.querySelectorAll(sel).forEach((b) => {
       const on = String(b.dataset[key]) === String(val);
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
-      b.disabled = !edit;
+      if (lock) b.disabled = !edit;
     });
     mark('[data-level]', 'level', pick.level);
     mark('[data-first]', 'first', pick.firstTo);
     mark('[data-rule]', 'rule', pick.rule);
-    $('first-label').textContent = pick.rule === 'survivor' ? 'Rounds' : 'First to';
-    $('skill-label').textContent = coop ? 'Monsters' : 'CPU skill';
-    $('arena-pick').hidden = $('first-row').hidden = coop;
-    $('coop-card').hidden = !coop;
+    mark('[data-variant]', 'variant', pick.variant);
+    $('first-label').textContent = pick.rule === 'survivor' ? 'Round wins' : 'First to';
+    $('arena-pick').hidden = $('first-row').hidden = $('powers-row').hidden = coop;
+    $('variant-row').hidden = $('variant-desc').hidden = $('monster-row').hidden = !coop;
+    $('variant-desc').textContent = VARIANTS[pick.variant];
     $('arena-prev').disabled = $('arena-next').disabled = !edit;
     const a = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
     $('arena-name').textContent = a.name;
     $('arena-desc').textContent = a.desc;
     drawArenaPreview();
+    const list = powerList(), onCount = list.filter((p) => pick.powers.on[p.id] !== false).length;
+    $('powers-sum').textContent = pick.powers.freq === 'off' || (list.length && !onCount) ? 'Off'
+      : `${!list.length || onCount === list.length ? 'All' : onCount} · ${FREQ_NAMES[pick.powers.freq]}`;
     // room bar and start
     $('room-none').hidden = !!room;
     $('room-box').hidden = !room;
@@ -1416,37 +1699,189 @@
     const guest = room?.role === 'guest';
     $('duel-start').hidden = guest;
     const need = coop ? 1 : 2;
-    $('duel-start').textContent = coop ? "Let's fly ›" : "Let's fight ›";
+    $('start-text').textContent = coop ? "Let's Fly!" : "Let's Fight!";
     $('duel-start').disabled = total < need;
     $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend'
-      : coop ? `${total} bat${total > 1 ? 's' : ''} · co-op run` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
+      : coop ? `${total} bat${total > 1 ? 's' : ''} · ${pick.variant === 'classic' ? 'co-op run' : pick.variant}` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
+    paintBats(0);
   }
+  // ---- the bats on the seats and in "My bat", drawn with EchoLooks and gently flapping
+  const KINDS = ['classic', 'fruit', 'longear', 'vampire', 'ghost', 'crystal'];
+  const KIND_NAMES = { classic: 'Classic bat', fruit: 'Fruit bat', longear: 'Long-eared bat', vampire: 'Vampire bat', ghost: 'Ghost bat', crystal: 'Crystal bat' };
+  function fitCanvas(c) {
+    const r = c.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(r.width * d), h = Math.round(r.height * d);
+    if (w && h && (c.width !== w || c.height !== h)) { c.width = w; c.height = h; }
+    return { w: r.width, h: r.height, d };
+  }
+  function drawBatIn(c, look, t, k) {
+    const { w, h, d } = fitCanvas(c);
+    if (!w || !h) return;
+    const g = c.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, c.width, c.height);
+    g.setTransform(d, 0, 0, d, 0, 0);
+    const r = Math.min(w / 5.4, h / 3.6);
+    const y = h * 0.55 + Math.sin(t * 2 + k) * r * 0.08;
+    const glowG = g.createRadialGradient(w / 2, y, 0, w / 2, y, r * 2.6);
+    glowG.addColorStop(0, `${look?.body || '#8b6cff'}55`); glowG.addColorStop(1, 'transparent');
+    g.fillStyle = glowG; g.fillRect(0, 0, w, h);
+    if (look && Looks()?.draw2D) Looks().draw2D(g, look, w / 2, y, r, { face: 1, flap: t * 1.4 + k * 0.23 });
+    else {   // looks.js missing: a plain bat shape
+      g.fillStyle = look?.body || '#8b6cff';
+      g.beginPath(); g.arc(w / 2, y, r, 0, Math.PI * 2); g.fill();
+    }
+  }
+  let batT = 0, myPreview = null;
+  function paintBats(dt) {
+    batT += dt;
+    if ($('battle-screen').hidden) return;
+    const looks = seatLooks();
+    document.querySelectorAll('[data-seat-bat]').forEach((c) => drawBatIn(c, looks[+c.dataset.seatBat], batT, +c.dataset.seatBat));
+    if (!$('side-bat').hidden) {
+      // a 3D bat you can drag to spin; the flat drawing only if 3D can't start
+      if (!myPreview && Looks()?.preview3D && window.THREE) myPreview = Looks().preview3D($('my-bat'), myLook);
+      if (!myPreview) drawBatIn($('my-bat'), myLook(), batT, 0);
+    }
+  }
+  // quick sliders under the preview; the full creator has every part
+  const QUICK = [['scheme', 'Colours'], ['hat', 'Hat']];
+  const optionsFor = (field) => window.EchoLooks?.OPTIONS?.[field] || [];
+  function renderMyBat() {
+    const look = myLook();
+    $('kind-name').textContent = optionsFor('kind').find((o) => o.id === look?.kind)?.name || KIND_NAMES[look?.kind] || 'Your bat';
+    $('quick-parts').innerHTML = QUICK.filter(([f]) => optionsFor(f).length).map(([f, label]) => {
+      const cur = optionsFor(f).find((o) => o.id === look?.[f]);
+      return `<div class="quick"><span>${label}</span><button type="button" class="round sm" data-part="${f}" data-d="-1" aria-label="Previous ${label}">‹</button>`
+        + `<b>${cur?.name || '—'}</b><button type="button" class="round sm" data-part="${f}" data-d="1" aria-label="Next ${label}">›</button></div>`;
+    }).join('');
+    paintBats(0);
+  }
+  function saveMyLook(look) {
+    if (!look || !Looks()) return;
+    const clean = Looks().clean(look);
+    store.set('echo-look', clean);
+    renderMyBat();
+    myPreview?.refresh?.(); myPreview?.pop?.();
+    lobby.onLook?.(clean);
+  }
+  const stepPart = (f, d) => {
+    const look = myLook(), opts = optionsFor(f);
+    if (!look || !opts.length) return;
+    const i = Math.max(0, opts.findIndex((o) => o.id === look[f]));
+    saveMyLook({ ...look, [f]: opts[(i + d + opts.length) % opts.length].id });
+  };
+  $('quick-parts').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-part]');
+    if (b) stepPart(b.dataset.part, +b.dataset.d);
+  });
+  const stepKind = (dlt) => {
+    const look = myLook();
+    if (!look) return;
+    const kinds = optionsFor('kind').length ? optionsFor('kind').map((o) => o.id) : KINDS;
+    const i = Math.max(0, kinds.indexOf(look.kind));
+    const kind = kinds[(i + dlt + kinds.length) % kinds.length];
+    // a new kind brings its own ears and wings, but keeps your colours and hat
+    const base = Looks().clean({ kind });
+    saveMyLook({ ...look, kind, ears: base.ears, wings: base.wings });
+  };
+  $('kind-prev').addEventListener('click', () => stepKind(-1));
+  $('kind-next').addEventListener('click', () => stepKind(1));
+  $('customize').addEventListener('click', () => Looks()?.openEditor?.((look) => saveMyLook(look || myLook())));
+  const showSide = (which) => {
+    $('side-bat').hidden = which !== 'bat';
+    $('side-rules').hidden = which !== 'rules';
+    document.querySelectorAll('[data-side]').forEach((b) => { b.classList.toggle('on', b.dataset.side === which); b.setAttribute('aria-pressed', String(b.dataset.side === which)); });
+    paintBats(0);
+  };
+  document.querySelectorAll('[data-side]').forEach((b) => b.addEventListener('click', () => showSide(b.dataset.side)));
+  showSide('bat');
+  (function batLoop() {
+    let last = performance.now();
+    const tick = (now) => {
+      requestAnimationFrame(tick);
+      if (now - last < 40) return;
+      paintBats(Math.min(0.1, (now - last) / 1000));
+      last = now;
+    };
+    requestAnimationFrame(tick);
+  })();
+  addEventListener('resize', () => paintBats(0));
+
+  // ---- power-up picker
+  function renderPowers() {
+    const list = powerList(), edit = canEdit();
+    $('powers-list').innerHTML = list.length ? list.map((p) => `<button type="button" class="power ${pick.powers.on[p.id] !== false ? 'on' : ''}" data-power="${p.id}" style="--pc: ${p.color || '#ffd23f'}" ${edit ? '' : 'disabled'} aria-pressed="${pick.powers.on[p.id] !== false}">`
+      + `<i>${p.icon || '★'}</i><b>${p.name}</b><small>${p.desc || ''}</small></button>`).join('')
+      : '<p class="small">Power-ups are on.</p>';
+    document.querySelectorAll('[data-freq]').forEach((b) => { const on = b.dataset.freq === pick.powers.freq; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); b.disabled = !edit; });
+  }
+  $('powers-open').addEventListener('click', () => { renderPowers(); $('powers-screen').hidden = false; });
+  $('powers-done').addEventListener('click', () => { $('powers-screen').hidden = true; });
+  $('powers-list').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-power]');
+    if (!b || !canEdit()) return;
+    pick.powers.on[b.dataset.power] = pick.powers.on[b.dataset.power] === false;
+    store.set('echo-powers', pick.powers);
+    renderPowers(); changed();
+  });
+  document.querySelectorAll('[data-freq]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.powers.freq = b.dataset.freq;
+    store.set('echo-powers', pick.powers);
+    renderPowers(); changed();
+  }));
+
   // net.js tells the lobby when a room opens, changes or closes, and gets told about setting changes
   const lobby = {
     pick,
     get room() { return room; },
+    get cpuSeed() { return cpuSeed; },
     onChange: null,
+    onLook: null,
+    myLook,
+    seatLooks,
+    levelsBySlot,
     setRoom(r) {
       const wasGuest = room?.role === 'guest';
       room = r;
-      if (!r && wasGuest) Object.assign(pick, savedPick());   // back to your own settings
+      if (!r && wasGuest) { Object.assign(pick, savedPick()); cpuSeed = Math.floor(Math.random() * 1e6); }   // back to your own settings
       renderPickers();
     },
     applyHost(s) {   // a guest mirrors the host's settings
-      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo']) if (s[k] != null) pick[k] = s[k];
+      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = s[k]));
+      if (Array.isArray(s.cpuLevels)) pick.cpuLevels = s.cpuLevels.map((l) => (LEVEL_NAMES[l] ? l : 'normal'));
+      if (s.powers) pick.powers = cleanPowers(s.powers);
       renderPickers();
     },
   };
   lobby.arenaOpts = arenaOpts;
   window.EchoLobby = lobby;
   const changed = () => { renderPickers(); lobby.onChange?.(); };
+  const openLobby = (rule) => {
+    if (rule && canEdit()) { pick.rule = rule; store.set('echo-rule', rule); }
+    showOverlay('battle');
+    changed();
+    renderMyBat();
+  };
+  document.querySelectorAll('[data-go-rule]').forEach((b) => b.addEventListener('click', () => { unlockAudio(); openLobby(b.dataset.goRule); }));
   $('seats').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-seat]');
-    if (!b || b.disabled || !canEdit()) return;
-    const n = people().length, k = +b.dataset.seat;
-    if (k < n) return;
-    pick.cpus = k < n + pick.cpus ? k - n : k - n + 1;   // tap a CPU to remove it (and any after it)
+    if (!canEdit()) return;
+    const n = people().length;
+    const add = e.target.closest('[data-add]'), rm = e.target.closest('[data-remove]'), lv = e.target.closest('[data-lv]');
+    if (e.target.closest('[data-invite]')) { if (room) window.EchoNet?.invite?.(); else window.EchoNet?.createRoom?.(); return; }
+    if (add) pick.cpus = Math.min(4 - n, pick.cpus + 1);
+    else if (rm) {   // take that CPU out; the ones after it move up a seat
+      const j = +rm.dataset.remove - n;
+      pick.cpuLevels.splice(j, 1); pick.cpuLevels.push('normal');
+      pick.cpus = Math.max(0, pick.cpus - 1);
+    } else if (lv) {
+      const j = +lv.dataset.seat - n, i = LEVELS.indexOf(pick.cpuLevels[j] || 'normal');
+      pick.cpuLevels[j] = LEVELS[Math.max(0, Math.min(2, i + +lv.dataset.lv))];
+      store.set('echo-cpu-levels', pick.cpuLevels);
+    } else return;
     store.set('echo-cpus', pick.cpus);
+    store.set('echo-cpu-levels', pick.cpuLevels);
     changed();
   });
   document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('click', () => {
@@ -1461,6 +1896,10 @@
     if (!canEdit()) return;
     pick.rule = b.dataset.rule; store.set('echo-rule', pick.rule); changed();
   }));
+  document.querySelectorAll('[data-variant]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.variant = b.dataset.variant; store.set('echo-coop-variant', pick.variant); changed();
+  }));
   const stepArena = (d) => {
     if (!canEdit()) return;
     const i = Math.max(0, ARENA_CHOICES.findIndex((x) => x.id === pick.arenaId));
@@ -1471,14 +1910,20 @@
   $('arena-prev').addEventListener('click', () => stepArena(-1));
   $('arena-next').addEventListener('click', () => stepArena(1));
   renderPickers();
+  renderMyBat();
+  // everything a match needs from the lobby, offline or as the host
+  lobby.matchOpts = () => ({
+    cpus: pick.cpus, level: pick.level, levels: levelsBySlot(), looks: seatLooks(),
+    ...(pick.rule === 'coop' ? { variant: pick.variant } : { ...arenaOpts(pick), rule: pick.rule, firstTo: pick.firstTo, powerups: pick.powers }),
+  });
   $('duel-start').addEventListener('click', () => {
     if (room?.role === 'host') window.EchoNet.startMatch();
-    else if (!room && pick.rule === 'coop') startCoop({ mode: 'local', humans: 1, cpus: pick.cpus, level: pick.level });
-    else if (!room && pick.cpus > 0) startDuel({ ...pick, ...arenaOpts(pick), humans: 1 });
+    else if (!room && pick.rule === 'coop') startCoop({ mode: 'local', humans: 1, ...lobby.matchOpts() });
+    else if (!room && pick.cpus > 0) startDuel({ mode: 'local', humans: 1, ...lobby.matchOpts() });
   });
   $('duel-back').addEventListener('click', () => {
     if (room) window.EchoNet.leave();
-    else { window.EchoNet?.clearStatus?.(); showOverlay('title'); }
+    else { window.EchoNet?.clearStatus?.(); showOverlay('multi'); }
   });
   $('menu-button').addEventListener('click', () => {
     if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
@@ -1559,7 +2004,13 @@
     get stats() { return stats; },
     get level() { return L; },
     get scroll() { return scroll; },
-    start: (m = 'cave') => startGame(m, 0),
+    start: (m = 'cave', i = 0) => startGame(m, i),
     squeak,
+    // Explore checkpoints and hidden hearts
+    get checkpoint() { return checkpoint; },
+    get pops() { return pops; },
+    hurt: () => hurt(moka.x + 1, moka.y),
+    restartFromCheckpoint,
+    primary: primaryAction,
   };
 })();

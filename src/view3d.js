@@ -476,7 +476,57 @@
     return (dotTex = new T.CanvasTexture(c));
   }
 
+  // A bat's look (src/looks.js): b.look when the mode sets one, else a classic
+  // bat in the bat's colour. lookKey says when a rig must be rebuilt.
+  function lookOf(b) {
+    const L = window.EchoLooks;
+    if (!L) return null;
+    if (b.look) return b.look;
+    if (!b.color || !/^#[0-9a-f]{6}$/i.test(b.color)) return L.preset(0);
+    return Object.assign(L.preset(0), { body: b.color, wing: b.color });
+  }
+  function lookKey(b) {
+    const L = window.EchoLooks;
+    return (b.color || '') + '/' + (L && b.look ? L.key(b.look) : '');
+  }
+  // the bat itself (no glow, shield or stars): { group, wings, eyes, mats }
+  function batBody(b) {
+    const look = lookOf(b);
+    if (look) {
+      try { return window.EchoLooks.rig3D(T, look); } catch (e) { console.warn('bat look', e); }
+    }
+    return legacyBat(b);
+  }
   function batRig(b, into = scene) {
+    const g = new T.Group();
+    const body = batBody(b);
+    g.add(body.group);
+    const glow = new T.Mesh(new T.PlaneGeometry(1.8, 1.8), new T.MeshBasicMaterial({ color: b.color, map: softDot(), transparent: true, opacity: 0.18, depthWrite: false, blending: T.AdditiveBlending }));
+    // the pool of light lies flat on the floor, so it lives outside the tilting bat
+    glow.rotation.x = -Math.PI / 2;
+    into.add(glow);
+    const shield = new T.Mesh(new T.SphereGeometry(0.62, 20, 14), new T.MeshBasicMaterial({ color: 0x96f0ff, transparent: true, opacity: 0.22, wireframe: true }));
+    g.add(shield);
+    const stars = [0, 1, 2].map(() => {
+      const s = new T.Mesh(new T.OctahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0xffe278, transparent: true }));
+      g.add(s); return s;
+    });
+    into.add(g);
+    return { g, yaw: 0, wings: body.wings, eyes: body.eyes, glow, shield, stars, mats: [...body.mats, glow.material, ...stars.map((s) => s.material)], color: b.color, key: lookKey(b), into, tick: body.tick };
+  }
+  function dropRig(r) {
+    if (!r) return;
+    r.into.remove(r.g, r.glow);
+    for (const m of r.mats) m.dispose();
+  }
+  // set every material's opacity (looks can be see-through, e.g. ghost bats)
+  // (and move its trail, if it has one)
+  function rigAlpha(r, a, clock = 0) {
+    for (const m of r.mats) m.opacity = a * (m.userData.base ?? 1);
+    if (r.tick) r.tick(clock, a);
+  }
+  // the original single-colour bat, used if looks.js is missing
+  function legacyBat(b) {
     const g = new T.Group();
     const mat = new T.MeshLambertMaterial({ color: b.color, transparent: true, emissive: new T.Color(b.color), emissiveIntensity: 0.35 });
     const body = new T.Mesh(new T.SphereGeometry(1, 20, 14), mat);
@@ -504,26 +554,17 @@
     // eyes look at the camera
     const white = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true });
     const dark = new T.MeshBasicMaterial({ color: 0x1a1030, transparent: true });
-    const eyes = [-1, 1].map((s) => {
+    const eyeGroup = new T.Group();
+    eyeGroup.position.set(0, 0.05, 0.22);
+    g.add(eyeGroup);
+    [-1, 1].forEach((s) => {
       const e = new T.Mesh(new T.SphereGeometry(0.075, 12, 10), white);
-      e.position.set(s * 0.1, 0.05, 0.22);
+      e.position.set(s * 0.1, 0, 0);
       const p = new T.Mesh(new T.SphereGeometry(0.038, 10, 8), dark);
       p.position.set(0, 0, 0.055); e.add(p);
-      g.add(e);
-      return e;
+      eyeGroup.add(e);
     });
-    const glow = new T.Mesh(new T.PlaneGeometry(1.8, 1.8), new T.MeshBasicMaterial({ color: b.color, map: softDot(), transparent: true, opacity: 0.18, depthWrite: false, blending: T.AdditiveBlending }));
-    // the pool of light lies flat on the floor, so it lives outside the tilting bat
-    glow.rotation.x = -Math.PI / 2;
-    into.add(glow);
-    const shield = new T.Mesh(new T.SphereGeometry(0.62, 20, 14), new T.MeshBasicMaterial({ color: 0x96f0ff, transparent: true, opacity: 0.22, wireframe: true }));
-    g.add(shield);
-    const stars = [0, 1, 2].map(() => {
-      const s = new T.Mesh(new T.OctahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0xffe278, transparent: true }));
-      g.add(s); return s;
-    });
-    into.add(g);
-    return { g, yaw: 0, wings, eyes, glow, shield, stars, mats: [mat, wingMat, white, dark, glow.material, ...stars.map((s) => s.material)], color: b.color };
+    return { group: g, wings, eyes: eyeGroup, mats: [mat, wingMat, white, dark] };
   }
 
   // ---- Per-frame drawing ----------------------------------------------------
@@ -640,6 +681,11 @@
 
     // bats
     while (batRigs.length < bats.length) batRigs.push(batRig(bats[batRigs.length]));
+    // a bat whose look (or colour) changed gets a new rig
+    for (let k = 0; k < bats.length; k++) {
+      const b = bats[k];
+      if (b && batRigs[k].key !== lookKey(b)) { const yaw = batRigs[k].yaw; dropRig(batRigs[k]); batRigs[k] = batRig(b); batRigs[k].yaw = yaw; }
+    }
     batRigs.forEach((rig, k) => {
       const b = bats[k];
       let x = b?.x, y = b?.y, scale = 1 + (b && b.puff > 0 ? 0.4 * b.puff : 0), spin = 0, alpha = b ? v.batVisible(b) : 0;
@@ -669,7 +715,7 @@
       rig.g.rotation.order = 'YXZ';
       rig.g.rotation.set(-0.25, rig.yaw + (stunned ? clock * 6 : 0) + spin, Math.max(-0.35, Math.min(0.35, -speed * 0.04 * Math.sign(Math.sin(rig.yaw)))));
       rig.wings[0].rotation.z = -flap * 0.7; rig.wings[1].rotation.z = flap * 0.7;
-      rig.eyes.forEach((e) => e.scale.set(1, stunned ? 0.25 : 1, 1));
+      rig.eyes.scale.set(1, stunned ? 0.25 : 1, 1);
       rig.shield.visible = b.shield;
       rig.shield.rotation.y = clock;
       rig.stars.forEach((s, j) => {
@@ -677,7 +723,7 @@
         const a = clock * 5 + j * 2.1;
         s.position.set(Math.cos(a) * 0.38, 0.45, Math.sin(a) * 0.38);
       });
-      for (const m of rig.mats) m.opacity = alpha;
+      rigAlpha(rig, alpha, clock);
       rig.glow.material.opacity = alpha * (0.35 + (b.power ? 0.25 * (1 + Math.sin(clock * 10)) : 0));
     });
 
@@ -706,6 +752,8 @@
     camera.position.set(target.x + sx, BAT_Y + dist * Math.sin(PITCH), target.y + dist * Math.cos(PITCH) + sy);
     camera.lookAt(target.x + sx, BAT_Y, target.y + sy);
     camera.updateMatrixWorld();
+    // duel.js draws its special-power effects (walls, fireballs, twisters, ice) into the scene
+    if (v.extra) { try { v.extra(T, scene, dt); } catch (e) { console.warn('duel 3D effects', e); } }
     renderer.render(scene, camera);
     return true;
   }
@@ -724,7 +772,7 @@
   }
   function reset() {
     target.ready = false;
-    batRigs.forEach((r) => scene.remove(r.g, r.glow));
+    batRigs.forEach(dropRig);
     batRigs = [];
   }
 
@@ -856,13 +904,13 @@
 
     const dt = Math.max(0, Math.min(0.1, clock - c.last)); c.last = clock;
     // Co-op Run (coop.js) passes a whole team instead of Moka: v.bats, each
-    // { x, y, vx, face, color, alpha (0..1), hidden, flap (wing speed) }
+    // { x, y, vx, face, color, look (EchoLooks look, optional), alpha (0..1), hidden, flap (wing speed) }
     if (v.bats) {
       if (c.bat) c.bat.g.visible = false;
       c.team = c.team || [];
       v.bats.forEach((b, k) => {
         let r = c.team[k];
-        if (!r || r.color !== b.color) { if (r) c.scene.remove(r.g, r.glow); r = c.team[k] = batRig({ color: b.color }, c.scene); }
+        if (!r || r.key !== lookKey(b)) { dropRig(r); r = c.team[k] = batRig({ color: b.color, look: b.look }, c.scene); }
         r.g.visible = !b.hidden;
         r.g.position.set(b.x, -b.y, 0.15);
         r.g.scale.setScalar((v.mokaR || 0.28) / 0.3);
@@ -873,13 +921,16 @@
         r.wings[0].rotation.z = -fl * 0.7; r.wings[1].rotation.z = fl * 0.7;
         r.glow.visible = false; r.shield.visible = false; r.stars.forEach((st) => (st.visible = false));
         const al = b.alpha ?? 1;
-        for (const mt of r.mats) mt.opacity = al;
+        rigAlpha(r, al, clock);
       });
       for (let k = v.bats.length; k < c.team.length; k++) c.team[k].g.visible = false;
     } else if (c.team) for (const r of c.team) r.g.visible = false;
 
     // Moka
-    if (!c.bat) c.bat = batRig({ color: v.mokaColor }, c.scene);
+    // Moka wears v.mokaLook if the mode passes one, else this device's saved look
+    const mokaB = { color: v.mokaColor, look: v.mokaLook || (window.EchoLooks ? window.EchoLooks.mine() : null) };
+    if (c.bat && c.bat.key !== lookKey(mokaB)) { dropRig(c.bat); c.bat = null; }
+    if (!c.bat) c.bat = batRig(mokaB, c.scene);
     const m = v.moka || { x: -99, y: -99 }, rig = c.bat;
     rig.g.visible = !v.bats && !(m.hurt > 0 && Math.floor(m.hurt * 12) % 2 === 0);
     rig.g.position.set(m.x, -m.y, 0.15);
@@ -890,7 +941,7 @@
     const flap = Math.sin(clock * 18);
     rig.wings[0].rotation.z = -flap * 0.7; rig.wings[1].rotation.z = flap * 0.7;
     rig.glow.visible = false; rig.shield.visible = false; rig.stars.forEach((s) => (s.visible = false));
-    for (const mt of rig.mats) mt.opacity = 1;
+    rigAlpha(rig, 1, clock);
 
     // camera: square on to the cave plane so the flat layer lines up, raised a
     // little with a shifted lens so you can see the tops of ledges below you
@@ -909,8 +960,8 @@
     get supported() { return init(); },
     render: renderCave,
     reset() {
-      if (cave && cave.bat) { cave.scene.remove(cave.bat.g, cave.bat.glow); cave.bat = null; }
-      if (cave && cave.team) { for (const r of cave.team) cave.scene.remove(r.g, r.glow); cave.team = null; }
+      if (cave && cave.bat) { dropRig(cave.bat); cave.bat = null; }
+      if (cave && cave.team) { for (const r of cave.team) dropRig(r); cave.team = null; }
     },
     hide() { window.EchoDuel3D?.hide(); },
   };

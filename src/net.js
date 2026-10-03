@@ -231,8 +231,8 @@
   // owns the settings; this file handles codes, players and the connection.
   // role: null | 'host' | 'guest'
   let role = null, link = null, code = '', playing = false;
-  let guests = [];          // host: [{ id }] in join order; slot = index + 1
-  let roster = [];          // guest: [{ slot, me }] from the host's lobby message
+  let guests = [];          // host: [{ id, look }] in join order; slot = index + 1
+  let roster = [];          // guest: [{ slot, me, look }] from the host's lobby message
   let mySlot = -1;
   let coopOn = false;       // the running match is a co-op run rather than a battle
   const eng = () => (coopOn ? window.EchoCoop : window.EchoDuel);
@@ -259,20 +259,26 @@
   function renderRoom() {
     if (!role || (role === 'guest' && !roster.length)) { lobby.setRoom(null); return; }
     const host = role === 'host';
-    const people = host ? [{ slot: 0, me: true }, ...guests.map((g, k) => ({ slot: k + 1 }))] : roster;
+    const people = host ? [{ slot: 0, me: true }, ...guests.map((g, k) => ({ slot: k + 1, look: g.look }))] : roster;
     lobby.setRoom({ role, code, people });
     if (host) status(guests.length ? `${people.length} players in the room.` : 'Share the code with friends and keep this screen open while they join.');
   }
 
   function lobbyMessage() {
-    const { cpus, level, arenaId, rule, firstTo } = settings();
-    return { t: 'lobby', code, cpus, level, arenaId, rule, firstTo, players: [0, ...guests.map((g, k) => k + 1)] };
+    const { cpus, level, cpuLevels, arenaId, rule, firstTo, variant, powers } = settings();
+    const looks = [lobby.myLook(), ...guests.map((g) => g.look || null)];
+    return { t: 'lobby', code, cpus, level, cpuLevels, arenaId, rule, firstTo, variant, powers, cpuSeed: lobby.cpuSeed, looks, players: [0, ...guests.map((g, k) => k + 1)] };
   }
   function sendLobby() {
     if (role !== 'host' || !link) return;
     guests.forEach((g, k) => link.send(g.id, { ...lobbyMessage(), you: k + 1 }));
   }
   lobby.onChange = () => { if (role === 'host' && !playing) sendLobby(); };
+  // your bat's look: the host shares it with everyone, a guest tells the host
+  lobby.onLook = (look) => {
+    if (role === 'host' && !playing) sendLobby();
+    else if (role === 'guest' && link) link.send({ t: 'look', look });
+  };
 
   // ---- Host --------------------------------------------------------------------
   async function createRoom() {
@@ -312,6 +318,11 @@
     const k = guests.findIndex((g) => g.id === id);
     if (k < 0 || !msg || typeof msg !== 'object') return;
     if (msg.t === 'bye') { onLeave(id); return; }
+    if (msg.t === 'look') {
+      guests[k].look = window.EchoLooks?.clean?.(msg.look) || null;
+      if (!playing) { renderRoom(); sendLobby(); }
+      return;
+    }
     if (playing && (msg.t === 'in' || msg.t === 'act')) eng().remote(guests[k].slot, msg);
   }
 
@@ -331,16 +342,17 @@
   // The host starts (or restarts) a match. Guests keep their bat for the whole match.
   function startMatch() {
     if (role !== 'host') return;
-    const { cpus, level, rule, firstTo } = settings();
-    const { arenaMode, arena } = lobby.arenaOpts(settings());
+    const { cpus, level, rule } = settings();
+    const opts = lobby.matchOpts();
+    const { looks } = opts;
     const total = 1 + guests.length + cpus;
     if (rule === 'coop') {
       coopOn = true;
       playing = true;
       const seed = Math.floor(Math.random() * 1e9);
-      guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed }); });
+      guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed, variant: opts.variant, looks }); });
       window.EchoGame.startCoop({
-        mode: 'host', remotes: guests.length, cpus, level, seed, online: true,
+        ...opts, mode: 'host', remotes: guests.length, seed, online: true,
         net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
         rematch: startMatch,
         lobby: backToLobby,
@@ -351,9 +363,10 @@
     if (total < 2) return;
     coopOn = false;
     playing = true;
-    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, arena, rule, firstTo }); });
+    const { arenaMode, arena, firstTo, powerups } = opts;
+    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, arena, rule, firstTo, powerups, looks }); });
     window.EchoGame.startDuel({
-      mode: 'host', remotes: guests.length, cpus, level, arenaMode, arena, rule, firstTo, online: true,
+      ...opts, mode: 'host', remotes: guests.length, online: true,
       net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
       onResult: (result) => guests.forEach((g) => link.send(g.id, { t: 'end', result })),
       rematch: startMatch,
@@ -381,6 +394,7 @@
     leave(true);
     role = 'guest';
     code = c;
+    mySlot = -1;
     status(`Looking for room ${code}…`);
     $('join-go').disabled = true;
     let l;
@@ -402,8 +416,9 @@
     if (!msg || typeof msg !== 'object' || role !== 'guest') return;
     switch (msg.t) {
       case 'lobby':
+        if (mySlot !== msg.you && msg.you != null) link?.send({ t: 'look', look: lobby.myLook() });   // just joined: show the host my bat
         mySlot = msg.you;
-        roster = msg.players.map((slot) => ({ slot, me: slot === mySlot }));
+        roster = msg.players.map((slot) => ({ slot, me: slot === mySlot, look: Array.isArray(msg.looks) ? msg.looks[slot] || null : null }));
         renderRoom();
         lobby.applyHost(msg);
         status('');
@@ -420,7 +435,7 @@
         coopOn = msg.mode === 'coop';
         if (coopOn) {
           window.EchoGame.startCoop({
-            mode: 'client', mySlot: msg.slot, total: msg.total, level: msg.level, seed: msg.seed, online: true,
+            mode: 'client', mySlot: msg.slot, total: msg.total, level: msg.level, seed: msg.seed, variant: msg.variant, looks: msg.looks, online: true,
             net: { send: (m) => link?.send(m) },
             lobby: backToLobby,
             leave: () => leave(),
@@ -428,7 +443,7 @@
           break;
         }
         window.EchoGame.startDuel({
-          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, arena: msg.arena, rule: msg.rule, firstTo: msg.firstTo, online: true,
+          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, arena: msg.arena, rule: msg.rule, firstTo: msg.firstTo, powerups: msg.powerups, looks: msg.looks, online: true,
           net: { send: (m) => link?.send(m) },
           lobby: backToLobby,
           leave: () => leave(),
@@ -477,15 +492,23 @@
     if (!quiet) status('');
   }
 
+  const roomUrl = () => `${location.origin}${location.pathname}?room=${code}`;
   function copyLink() {
-    const url = `${location.origin}${location.pathname}?room=${code}`;
+    const url = roomUrl();
     const done = () => status('Link copied. Send it to a friend!');
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(done, () => status(url));
     else status(url);
   }
+  // the phone's share sheet when there is one, else copy the link
+  function invite() {
+    if (!code || !role) return;
+    if (navigator.share) navigator.share({ title: 'Echo Caves', text: `Join my Echo Caves room: ${code}`, url: roomUrl() }).catch(() => {});
+    else copyLink();
+  }
 
   $('room-create').addEventListener('click', createRoom);
   $('room-copy').addEventListener('click', copyLink);
+  $('room-invite').addEventListener('click', invite);
   $('join-form').addEventListener('submit', (e) => { e.preventDefault(); joinRoom($('join-code').value); });
   $('join-code').addEventListener('input', (e) => { e.target.value = cleanCode(e.target.value); });
   addEventListener('pagehide', () => leave(true));
@@ -502,7 +525,7 @@
     get role() { return role; },
     get code() { return code; },
     get guests() { return guests.length; },
-    createRoom, joinRoom, startMatch, leave,
+    createRoom, joinRoom, startMatch, leave, invite,
     clearStatus: () => status(''),
   };
 })();
