@@ -164,7 +164,8 @@
   // is itself served by that Worker.
   const ROOM_SERVER = '';
   const relayBase = (() => {
-    const r = params.get('relay') || ROOM_SERVER || (/\.workers\.dev$/.test(location.hostname) ? location.origin : '');
+    if (params.get('peer')) return '';   // tests with a local PeerJS server
+    const r = params.get('relay') || (/\.workers\.dev$/.test(location.hostname) ? location.origin : ROOM_SERVER);
     return r ? r.replace(/^http/, 'ws').replace(/\/$/, '') : '';
   })();
 
