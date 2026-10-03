@@ -186,3 +186,124 @@ window.makeRunLevel = function makeRunLevel(seed, length = 1200) {
   for (let y = 0; y < H; y++) map.push(cols.map((c) => c[y]).join(''));
   return { name: 'Cave Run', run: true, echoes: 8, map };
 };
+
+// Co-op Run: a finite side-scrolling cave for 1 to 4 bats, generated from a seed
+// (the host sends it, so every device builds the same cave). Extra tiles:
+//   K  checkpoint lantern     s  spider on the ceiling     c  cave crawler on the floor
+//   o  owl                    g  a swarm of ghost moths
+// It has four sections; monsters get denser and new kinds join in each one:
+// spiders and crawlers first, then owls, then ghost moths. `difficulty` is
+// 'easy', 'normal' or 'hard' and sets how close together the monsters are.
+window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal') {
+  let s = seed >>> 0;
+  const rand = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
+  const spread = { easy: 1.45, normal: 1, hard: 0.74 }[difficulty] || 1;
+
+  const H = 12, LEN = 400, SECTION = LEN / 4;
+  const cps = [1, 2, 3].map((k) => Math.round(k * SECTION));
+  const goalX = LEN - 7;
+  const safe = (x) => x < 16 || x > LEN - 15 || cps.some((c) => Math.abs(x - c) <= 5);
+
+  // pass 1: the tunnel's shape, as the first open row (top) and first floor row (bot) per column
+  const T = [], B = [];
+  let top = 3, bot = 9, tgtT = 2, tgtB = 10, nextChange = 0, nextPillar = 30;
+  const pillar = { left: 0, fromTop: false };
+  for (let x = 0; x < LEN; x++) {
+    const section = Math.min(3, Math.floor(x / SECTION));
+    if (safe(x)) { tgtT = 2; tgtB = 10; nextChange = x + 1; }
+    else if (x >= nextChange) {
+      if (rand() < 0.22) { tgtT = pick(1, 2); tgtB = pick(10, 11); }          // a roomy chamber
+      else {
+        const gap = pick(4, 7 - Math.min(2, section >> 1)), mid = pick(4, 7);
+        tgtT = Math.max(1, Math.min(H - 1 - gap, mid - (gap >> 1)));
+        tgtB = tgtT + gap;
+      }
+      nextChange = x + pick(7, 15);
+    }
+    if (top !== tgtT && rand() < 0.7) top += Math.sign(tgtT - top);
+    if (bot !== tgtB && rand() < 0.7) bot += Math.sign(tgtB - bot);
+    if (bot - top < 4) { if (top > 1) top--; else bot++; }
+    let t = top, b = bot;
+    // pillars from the ceiling or floor leave a 3-tile squeeze
+    if (!safe(x) && pillar.left === 0 && x >= nextPillar && b - t >= 6) {
+      pillar.left = pick(1, 2);
+      pillar.fromTop = rand() < 0.5;
+      nextPillar = x + pick(22, 38) - section * 3;
+    }
+    if (pillar.left > 0) {
+      if (pillar.fromTop) t = b - 3; else b = t + 3;
+      pillar.left--;
+    }
+    // always overlap the previous column by 3 rows, so a whole team fits through
+    if (x > 0) {
+      if (t > B[x - 1] - 3) t = B[x - 1] - 3;
+      if (b < T[x - 1] + 3) b = T[x - 1] + 3;
+    }
+    T.push(Math.max(1, t)); B.push(Math.min(H - 1, b));
+  }
+  // the far end is closed off just past the goal
+  for (let x = LEN - 2; x < LEN; x++) { T[x] = H; B[x] = H; }
+
+  const cols = [];
+  for (let x = 0; x < LEN; x++) {
+    const col = new Array(H).fill('#');
+    for (let y = T[x]; y < B[x]; y++) col[y] = '.';
+    cols.push(col);
+  }
+  const midRow = (x) => Math.floor((T[x] + B[x]) / 2);
+  const free = (x, y) => cols[x] && cols[x][y] === '.';
+
+  // pass 2: pickups
+  for (let x = 14; x < LEN - 6; x++) {
+    if (rand() < 1 / 11) { const y = pick(T[x], B[x] - 1); if (free(x, y)) cols[x][y] = 'm'; }
+  }
+  for (let x = 20; x < LEN - 8; x += pick(17, 25)) {
+    const y = pick(T[x], B[x] - 1);
+    if (free(x, y)) cols[x][y] = 'e'; else if (free(x, midRow(x))) cols[x][midRow(x)] = 'e';
+  }
+
+  // pass 3: monsters, spaced by section and difficulty
+  const kindsFor = (section) => [['s', 'c'], ['s', 'c', 'o'], ['s', 'c', 'o', 'g'], ['s', 'c', 'o', 'g']][section];
+  const fits = {
+    // a spider needs a ceiling with room below to drop into
+    s: (x) => B[x] - T[x] >= 4 && T[x - 1] === T[x] && free(x, T[x]) && T[x] > 0 ? [x, T[x]] : null,
+    // a crawler needs a flat stretch of floor to pace along
+    c: (x) => {
+      for (let k = -1; k <= 1; k++) if (B[x + k] !== B[x]) return null;
+      return B[x] - T[x] >= 4 && free(x, B[x] - 1) ? [x, B[x] - 1] : null;
+    },
+    o: (x) => B[x] - T[x] >= 5 && free(x, midRow(x) - 1) ? [x, midRow(x) - 1] : null,
+    g: (x) => B[x] - T[x] >= 4 && free(x, midRow(x)) ? [x, midRow(x)] : null,
+  };
+  // the kind seen least so far goes first, so every section gets a good mix
+  const used = { s: 0, c: 0, o: 0, g: 0 };
+  let x = 24;
+  while (x < LEN - 16) {
+    const section = Math.min(3, Math.floor(x / SECTION));
+    if (!safe(x)) {
+      const kinds = kindsFor(section).map((k) => [k, used[k] + rand() * 1.5]).sort((a, b) => a[1] - b[1]).map((a) => a[0]);
+      for (const k of kinds) {
+        const at = fits[k](x) || fits[k](x + 1) || fits[k](x + 2);
+        if (at) { cols[at[0]][at[1]] = k; used[k]++; break; }
+      }
+    }
+    x += Math.max(4, Math.round([15, 12, 10, 8.5][section] * spread * (0.75 + rand() * 0.5)));
+  }
+
+  // start, checkpoints and the goal
+  for (let x2 = 0; x2 < 12; x2++) for (let y = T[x2]; y < B[x2]; y++) cols[x2][y] = '.';
+  cols[5][6] = 'S';
+  for (const c of cps) cols[c][Math.min(B[c] - 1, Math.max(T[c], 6))] = 'K';
+  cols[goalX][midRow(goalX)] = 'E';
+
+  const map = [];
+  for (let y = 0; y < H; y++) map.push(cols.map((c) => c[y]).join(''));
+  return { name: 'Co-op Run', coop: true, echoes: 8, seed: seed >>> 0, difficulty, map };
+};

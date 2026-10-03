@@ -1,7 +1,10 @@
 // Bat Brawl: 2 to 4 bats in a pitch-dark arena. A squeak lights the walls
 // and stuns any rival it hits; dash into a rival to chomp it (stunned ones
-// can't dash away or parry). First to 3 (or 5, 7) bites wins. Bats can dash, grab power-ups, and every so often the cave
-// shifts into a new arena.
+// can't dash away or parry). Bats can dash and grab power-ups.
+// Two match rules:
+//   bites     first to 3 (or 5, 7) bites wins; an eaten bat comes back
+//   survivor  Last Bat Standing: an eaten bat is out until the round ends;
+//             the last bat flying wins the round, first to N round wins takes the match
 //
 // It runs in three modes:
 //   local   everyone on one device (split touch zones / shared keyboard) + CPU bats
@@ -35,22 +38,20 @@
   // stuns longer, but costs 2 echoes and misses anything off to the side.
   // Letting go early just squeaks as usual.
   const BEAM_CHARGE = 0.7, BEAM_LEN = 15, BEAM_WIDTH = 0.3, BEAM_STUN = 2.3, BEAM_COST = 2, BEAM_LIFE = 0.4, BEAM_COOLDOWN = 0.8, CHARGE_SLOW = 0.55;
-  const SHIFT_FADE = 0.9, OPEN_SKY_CHANCE = 0.3;
+  const OPEN_SKY_CHANCE = 0.3;
   // Arena modes, picked before a match:
-  //   shift  every 25s the cave jumps to the next arena (sometimes Open Sky)
   //   morph  the cave slowly reshapes itself, a few walls at a time, into the next one
-  //   chaos  the cave jumps every 9 seconds
+  //   still  one cave, picked in the lobby, that never changes
   //   sky    Open Sky the whole match: no cave at all
-  const ARENA_MODES = {
-    shift: { every: 25, warning: 3 },
-    morph: { every: 0 },
-    chaos: { every: 9, warning: 2 },
-    sky: { every: 0 },
-  };
-  const MORPH_STEP = 0.3, MORPH_PAUSE = 5, NO_SHIFT = 9999;
-  let arenaMode = 'shift';
-  const shiftEvery = () => ARENA_MODES[arenaMode].every || NO_SHIFT;
-  const shiftWarning = () => ARENA_MODES[arenaMode].warning || 0;
+  // (older lobbies may still send 'shift' or 'chaos'; those play as morph)
+  const ARENA_MODES = ['morph', 'still', 'sky'];
+  const MORPH_STEP = 0.3, MORPH_PAUSE = 5;
+  let arenaMode = 'morph';
+  // Last Bat Standing: the round banner shows for ROUND_BANNER seconds after
+  // the last chomp, then everyone respawns. A round that drags past
+  // ROUND_LIMIT seconds brings an echo storm: every bat glows, nobody can hide.
+  const ROUND_BANNER = 2.5, ROUND_LIMIT = 90, STORM_WARN = 10;
+  let rule = 'bites', round = 1, roundClock = 0, roundEnd = null, storm = false, stormWarned = false, matchWinner = null;
   const EAT_PULL = 0.35, EAT_TIME = 1.1;
   const SNAPSHOT_EVERY = 0.05;
   const POWERS = {
@@ -75,7 +76,7 @@
   ];
 
   // ---- Arena -------------------------------------------------------------
-  // Caves rotate in order; now and then a shift opens onto the wall-less Open Sky instead.
+  // Morph mode: caves morph in order; now and then the walls melt away into the wall-less Open Sky instead.
   let arena, arenaIndex = 0, lastCave = 0;
   const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open ? i : -1)).filter((i) => i >= 0);
   function nextArenaIndex() {
@@ -145,9 +146,8 @@
   let beams = [], beamId = 0;
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
   let parries = [], parryCount = 0;                      // parry flashes being drawn: { x, y, ax, ay, rgb, t }
-  let carved = [];                       // tiles opened up by the last shift so no bat ends up inside a wall
   let lit, litBy;
-  let clock = 0, countdown = 0, over = false, banner = null, shiftTimer = NO_SHIFT, shift = null, morph = null, tileGlow = null;
+  let clock = 0, countdown = 0, over = false, banner = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, snapTimer = 0, outbox = [], ringId = 0, ended = false;
   const remoteInput = new Map();         // slot -> { ix, iy }
 
@@ -156,7 +156,7 @@
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       echoes: START_ECHOES, cooldown: 0, stun: 0, safe: 0, dead: 0, score: 0, seen: 0, mouth: 0, puff: 0,
       dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false, charging: false, charge: 0,
-      parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0,
+      parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0, out: false,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
@@ -172,7 +172,8 @@
     net = o.net || null;
     onEnd = o.onEnd || null;
     cpuLevel = CPU_LEVELS[o.level] || CPU_LEVELS.normal;
-    arenaMode = ARENA_MODES[o.arenaMode] ? o.arenaMode : 'shift';
+    arenaMode = ARENA_MODES.includes(o.arenaMode) ? o.arenaMode : 'morph';
+    rule = o.rule === 'survivor' ? 'survivor' : 'bites';
     winScore = Math.max(1, Math.min(15, Math.round(+o.firstTo) || WIN_SCORE));
     bats = [];
     if (mode === 'local') {
@@ -193,17 +194,22 @@
       viewer = o.mySlot;
       for (let i = 0; i < (o.total || 2); i++) bats.push(makeBat(i, i === o.mySlot ? 'local' : 'remote', 0));
     }
-    const caves = arenaKinds(false);
-    loadArena(arenaMode === 'sky' ? arenaKinds(true)[0] : mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)]);
+    // o.arena picks the cave (0-3: Crystal Grotto, Lava Hollow, Mossy Den, Frozen Cavern)
+    // for 'still', and the first cave for 'morph'; otherwise a random one. Guests
+    // load whatever the host's snapshots say.
+    const caves = arenaKinds(false), want = o.arena == null || o.arena === '' ? NaN : Math.floor(+o.arena);
+    const cave = want >= 0 ? caves[want % caves.length] : mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)];
+    loadArena(arenaMode === 'sky' ? arenaKinds(true)[0] : cave);
     morph = arenaMode === 'morph' && mode !== 'client' ? { target: -1, timer: 0, pause: MORPH_PAUSE } : null;
     bats.forEach((b, k) => {
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
     });
-    rings = []; beams = []; particles = []; popups = []; eats = []; outbox = []; parries = []; carved = [];
+    rings = []; beams = []; particles = []; popups = []; eats = []; outbox = []; parries = [];
     remoteInput.clear();
-    clock = 0; countdown = 3; over = false; ended = false; shift = null; slowmo = 0; shake = 0;
-    shiftTimer = shiftEvery(); powerTimer = 6 + Math.random() * 3; snapTimer = 0;
+    clock = 0; countdown = 3; over = false; ended = false; slowmo = 0; shake = 0;
+    round = 1; roundClock = 0; roundEnd = null; storm = false; stormWarned = false; matchWinner = null; watchI = -1;
+    powerTimer = 6 + Math.random() * 3; snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     keys.clear();
     sticks.clear();
@@ -505,7 +511,7 @@
   // recent). Returns true if a window opened, 'late' if the press parried a
   // hit that had just landed, false otherwise.
   function parryPress(b) {
-    if (!active || countdown > 0 || over || shift || !b || b.dead || b.parryCd > 0) return false;
+    if (!active || countdown > 0 || over || roundEnd || !b || b.dead || b.parryCd > 0) return false;
     const late = b.ctrl === 'remote' ? PARRY_LATE_REMOTE : PARRY_LATE;
     if (b.stun > 0 && b.hitBy && clock - b.hitBy.t <= late) {
       const h = b.hitBy;
@@ -626,7 +632,7 @@
   }
 
   // ---- Actions -----------------------------------------------------------
-  const canAct = (b) => active && b && countdown <= 0 && !over && !shift && !b.dead && b.stun <= 0;
+  const canAct = (b) => active && b && countdown <= 0 && !over && !roundEnd && !b.dead && b.stun <= 0;
 
   function squeak(b) {
     if (!canAct(b) || b.cooldown > 0) return;
@@ -736,7 +742,8 @@
   // The bite: the stunned bat gets slurped into the eater's open mouth,
   // CHOMP, the eater puffs up, then burps out a few feathers.
   function eat(eater, food) {
-    eater.score++;
+    if (rule === 'survivor') food.out = true;   // out until the round ends: no respawn
+    else eater.score++;
     eater.biteT = 0; eater.dashT = 0;
     eater.vx *= 0.3; eater.vy *= 0.3;
     eats.push({ eater, food: { ...food }, t: 0, chomped: false, burped: false, ang: Math.atan2(food.y - eater.y, food.x - eater.x) });
@@ -745,7 +752,78 @@
     food.power = null; food.mega = false; food.shield = false; food.charging = false; food.charge = 0;
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
-    if (eater.score >= winScore) over = true;
+    if (rule === 'bites' && eater.score >= winScore) { over = true; matchWinner = eater; }
+    if (rule === 'survivor') checkRoundOver();
+  }
+
+  // Last Bat Standing: one bat left (or none, if that ever happens) ends the round
+  function checkRoundOver() {
+    if (roundEnd || over) return;
+    const alive = bats.filter((b) => !b.out);
+    if (alive.length > 1) return;
+    const w = alive[0] || null;
+    if (w) w.score++;
+    roundEnd = { t: 0, w: w ? w.i : -1, shown: false };
+    if (w && w.score >= winScore) {
+      over = true; matchWinner = w;
+      fx({ k: 'banner', text: `${w.name} wins the match!`, rgb: w.rgb, t: 2 });
+    }
+  }
+  function updateRound(dt) {
+    if (rule !== 'survivor' || over) return;
+    if (roundEnd) {
+      roundEnd.t += dt;
+      // the banner comes up as the jaws snap shut, then a fresh round starts
+      if (!roundEnd.shown && roundEnd.t >= EAT_PULL) {
+        roundEnd.shown = true;
+        const w = bats[roundEnd.w];
+        fx({ k: 'banner', text: w ? `${w.name} wins round ${round}!` : `Nobody wins round ${round}`, rgb: w ? w.rgb : '232, 236, 255', t: ROUND_BANNER });
+        fx({ k: 'sfx', n: 'power' });
+      }
+      if (roundEnd.t >= EAT_PULL + ROUND_BANNER) newRound();
+      return;
+    }
+    roundClock += dt;
+    if (!stormWarned && roundClock >= ROUND_LIMIT - STORM_WARN) {
+      stormWarned = true;
+      fx({ k: 'banner', text: `Echo storm in ${STORM_WARN}s!`, rgb: '255, 226, 120', t: 2 });
+      fx({ k: 'sfx', n: 'warn' });
+    }
+    if (!storm && roundClock >= ROUND_LIMIT) {
+      storm = true;
+      fx({ k: 'banner', text: 'Echo storm! Nobody can hide', rgb: '255, 226, 120', t: 2.4 });
+      fx({ k: 'sfx', n: 'crash' });
+      fx({ k: 'shake', v: 0.25 });
+    }
+    // the storm makes every bat glow, for everyone (and every CPU) to see
+    if (storm) for (const b of bats) if (!b.dead) b.seen = 1;
+  }
+  // everyone back to a spawn point, fresh: no stuns, power-ups or bites in progress
+  function newRound() {
+    round++;
+    roundEnd = null; roundClock = 0; storm = false; stormWarned = false;
+    rings = []; beams = []; eats = []; powerups = []; parries = [];
+    powerTimer = 6 + Math.random() * 3;
+    for (const c of crystals) { c.on = false; c.timer = 0.5 + Math.random() * 2.5; }
+    const taken = [];
+    bats.forEach((b, k) => {
+      let s = arena.spawns[k % arena.spawns.length];
+      // the morphing cave may have grown a wall over a spawn point
+      if (!s || solid(Math.floor(s.x), Math.floor(s.y)) || hitsWall(s.x, s.y, R)) {
+        s = arena.open.filter((p) => !hitsWall(p.x, p.y, R) && taken.every((q) => dist(p, q) > 3))
+          .sort((p, q) => dist(p, arena.spawns[k] || p) - dist(q, arena.spawns[k] || q))[0] || randomOpenSpot();
+      }
+      taken.push(s);
+      Object.assign(b, {
+        x: s.x, y: s.y, vx: 0, vy: 0, face: s.x < arena.w / 2 ? 1 : -1, out: false, dead: 0,
+        echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, cooldown: 0, dashCd: 0, dashT: 0, biteT: 0,
+        parryT: 0, parryCd: 0, parryRing: null, hitBy: null, power: null, powerT: 0, mega: false, shield: false,
+        charging: false, charge: 0, mouth: 0, puff: 0, seen: 0,
+      });
+      if (b.ai) { b.ai.path = []; b.ai.roam = null; b.ai.known = null; b.ai.beamAt = null; }
+    });
+    fx({ k: 'banner', text: `Round ${round}`, rgb: '232, 236, 255', t: 1.4 });
+    fx({ k: 'sfx', n: 'go' });
   }
 
   function updateEats(dt) {
@@ -774,11 +852,12 @@
     for (const b of bats) if (b.puff > 0) b.puff = Math.max(0, b.puff - dt * 1.6);
     const done = eats.filter((e) => e.t >= EAT_TIME);
     eats = eats.filter((e) => e.t < EAT_TIME);
-    if (over && !ended && !eats.length && done.length) {
+    if (over && !ended && !eats.length && (matchWinner || done.length)) {
       ended = true;
-      const winner = done[done.length - 1].eater;
+      const winner = matchWinner || done[done.length - 1].eater;
+      // score is bites (rule 'bites') or round wins (rule 'survivor')
       const result = {
-        winner: winner.name, winnerCpu: winner.ctrl === 'cpu', color: winner.color, humans: localCount, firstTo: winScore,
+        winner: winner.name, winnerCpu: winner.ctrl === 'cpu', color: winner.color, humans: localCount, firstTo: winScore, rule,
         standings: bats.map((o) => ({ name: o.name, score: o.score, cpu: o.ctrl === 'cpu', color: o.color })).sort((p, q) => q.score - p.score),
       };
       setTimeout(() => { if (active && onEnd) onEnd(result); }, 600);
@@ -827,100 +906,6 @@
     Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null });
   }
 
-  // Shifting and Chaos: the cave changes around the bats, but nobody moves.
-  // Bats, power-ups, sound rings and bites in progress all keep their places.
-  // A bat that would be inside a wall of the new cave gets a small pocket
-  // carved around it, joined to the rest of the cave so it is never sealed in.
-  let forceNext = -1;   // tests: which arena the next shift lands on
-  function shiftArena() {
-    const oldW = arena.w, oldH = arena.h, keepPowers = powerups;
-    loadArena(forceNext >= 0 ? forceNext : nextArenaIndex());
-    forceNext = -1;
-    const { w, h } = arena;
-    // a different-sized cave: scale positions across, then keep them inside the border
-    const sx = (w - 2) / (oldW - 2), sy = (h - 2) / (oldH - 2);
-    const fit = (p) => {
-      if (oldW !== w || oldH !== h) { p.x = 1 + (p.x - 1) * sx; p.y = 1 + (p.y - 1) * sy; }
-      p.x = Math.max(1 + R, Math.min(w - 1 - R, p.x));
-      p.y = Math.max(1 + R, Math.min(h - 1 - R, p.y));
-    };
-    const live = bats.filter((b) => !b.dead);
-    for (const b of live) fit(b);
-    for (const ring of rings) fit(ring);
-    beams = [];
-    const opened = [];
-    const open = (tx, ty) => {
-      if (tx < 1 || ty < 1 || tx > w - 2 || ty > h - 2) return;   // never the outer border
-      const k = ty * w + tx;
-      if (arena.grid[k]) { arena.grid[k] = 0; opened.push(k); }
-    };
-    for (const b of live) {
-      if (!hitsWall(b.x, b.y, R)) continue;
-      const cx = Math.floor(b.x), cy = Math.floor(b.y);
-      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) open(cx + dx, cy + dy);
-    }
-    // nobody may end up shut away from the rest of the cave: tunnel out of any closed pocket
-    for (const b of live) {
-      const path = tunnelOut(Math.floor(b.x), Math.floor(b.y));
-      for (const k of path) open(k % w, Math.floor(k / w));
-    }
-    carved = opened;
-    for (const k of opened) tileGlow[k] = 1;
-    if (opened.length) fx({ k: 'tiles', c: opened.map((k) => [k, 0]) });
-    // power-ups stay put; one swallowed by rock pops out into the nearest open spot
-    powerups = keepPowers.filter((p) => {
-      fit(p);
-      if (!solid(Math.floor(p.x), Math.floor(p.y))) return true;
-      const spot = arena.open.filter((q) => !solid(Math.floor(q.x), Math.floor(q.y))).sort((q, r) => dist(q, p) - dist(r, p))[0];
-      if (!spot || dist(spot, p) > 3) return false;
-      p.x = spot.x; p.y = spot.y;
-      return true;
-    });
-    for (const b of bats) if (b.ai) { b.ai.path = []; b.ai.roam = null; }
-    fx({ k: 'banner', text: arena.def.name, rgb: arena.theme.wall, t: 2.2 });
-    fx({ k: 'sfx', n: 'crash' });
-  }
-  // The cave's main open area is its biggest connected stretch of open tiles.
-  // If tile (sx, sy) isn't part of it, return the wall tiles to dig through to
-  // reach it by the shortest way (empty when it's already connected).
-  function tunnelOut(sx, sy) {
-    const { w, h, grid } = arena, n = w * h;
-    const comp = new Int32Array(n).fill(-1), sizes = [];
-    for (let k = 0; k < n; k++) {
-      if (grid[k] || comp[k] >= 0) continue;
-      const id = sizes.length, q = [k];
-      comp[k] = id;
-      for (let j = 0; j < q.length; j++) {
-        const c = q[j], cx = c % w, cy = (c / w) | 0;
-        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-          const nx = cx + dx, ny = cy + dy, m = ny * w + nx;
-          if (nx < 0 || ny < 0 || nx >= w || ny >= h || grid[m] || comp[m] >= 0) continue;
-          comp[m] = id; q.push(m);
-        }
-      }
-      sizes.push(q.length);
-    }
-    const main = sizes.indexOf(Math.max(...sizes)), start = sy * w + sx;
-    if (comp[start] === main) return [];
-    // breadth-first through rock (inside the border) until the main area
-    const prev = new Int32Array(n).fill(-1), q = [start];
-    prev[start] = start;
-    let goal = -1;
-    for (let j = 0; j < q.length && goal < 0; j++) {
-      const c = q[j], cx = c % w, cy = (c / w) | 0;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const nx = cx + dx, ny = cy + dy, m = ny * w + nx;
-        if (nx < 1 || ny < 1 || nx > w - 2 || ny > h - 2 || prev[m] >= 0) continue;
-        prev[m] = c;
-        if (comp[m] === main) { goal = m; break; }
-        q.push(m);
-      }
-    }
-    const path = [];
-    for (let c = goal >= 0 ? prev[goal] : start; c !== start; c = prev[c]) if (grid[c]) path.push(c);
-    return path;
-  }
-
   function spawnPowerup() {
     const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)) && bats.every((b) => b.dead || dist(p, b) > 5) && powerups.every((q) => dist(p, q) > 4));
     if (!spots.length) return;
@@ -951,21 +936,8 @@
     const dt = slowmo > 0 ? rawDt * 0.35 : rawDt;
     updateEats(rawDt);
 
-    if (!over) {
-      if (shift) {
-        shift.t += rawDt;
-        if (!shift.swapped && shift.t >= SHIFT_FADE / 2) { shift.swapped = true; shiftArena(); }
-        if (shift.t >= SHIFT_FADE) shift = null;
-        return;
-      }
-      shiftTimer -= rawDt;
-      if (shiftTimer <= shiftWarning() && shiftTimer + rawDt > shiftWarning()) {
-        fx({ k: 'banner', text: 'The cave is shifting!', rgb: arena.theme.wall, t: shiftWarning() });
-        fx({ k: 'sfx', n: 'warn' });
-      }
-      if (shiftTimer <= 0) { shift = { t: 0, swapped: false }; shiftTimer = shiftEvery(); }
-      updateMorph(rawDt);
-    }
+    if (!over) updateMorph(rawDt);
+    updateRound(rawDt);
 
     for (const b of bats) {
       b.cooldown = Math.max(0, b.cooldown - dt);
@@ -976,7 +948,7 @@
       b.biteT = Math.max(0, b.biteT - dt);
       if (b.parryT > 0) { b.parryT = Math.max(0, b.parryT - dt); if (b.parryT <= 0) b.parryRing = null; }
       if (b.power) { b.powerT -= dt; if (b.powerT <= 0) { b.power = null; b.powerT = 0; } }
-      if (b.dead > 0) { b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
+      if (b.dead > 0) { if (b.out) continue; b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
       else if (!over) {
@@ -1013,7 +985,7 @@
 
     // biting: a bat mid-dash (or just after) that touches any rival chomps it,
     // unless the rival parries, blocks with a shield, or is dashing too (a clash)
-    if (!over) {
+    if (!over && !roundEnd) {
       outer: for (const a of bats) {
         if (a.dead || a.stun > 0 || a.biteT <= 0) continue;
         for (const b of bats) {
@@ -1136,9 +1108,9 @@
   const r2 = (v) => Math.round(v * 100) / 100;
   function snapshot() {
     const s = {
-      t: 's', a: arenaIndex, am: arenaMode, st: r2(shiftTimer), sh: shift ? r2(shift.t) : -1, cd: r2(countdown), over,
+      t: 's', a: arenaIndex, am: arenaMode, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
-        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT)]),
+        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT), b.out ? 1 : 0]),
       bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
@@ -1147,7 +1119,8 @@
       fx: outbox,
       ft: winScore,
     };
-    if (carved.length) s.cv = carved;
+    // Last Bat Standing: [round, whole seconds into it, storm, round over]
+    if (rule === 'survivor') s.ru = [round, Math.floor(roundClock), storm ? 1 : 0, roundEnd ? 1 : 0];
     outbox = [];
     return s;
   }
@@ -1157,10 +1130,8 @@
     if (s.a !== arenaIndex) loadArena(s.a);
     if (s.am) arenaMode = s.am;
     if (s.ft) winScore = s.ft;
-    // pockets the host carved so nobody ended up inside a wall after a shift
-    if (s.cv) for (const k of s.cv) if (arena.grid[k]) { arena.grid[k] = 0; tileGlow[k] = 1; }
-    shiftTimer = s.st;
-    shift = s.sh >= 0 ? { t: s.sh, swapped: true } : null;
+    rule = s.ru ? 'survivor' : 'bites';
+    if (s.ru) { round = s.ru[0]; roundClock = s.ru[1]; storm = !!s.ru[2]; roundEnd = s.ru[3] ? roundEnd || { t: 0, w: -1 } : null; }
     countdown = s.cd;
     over = s.over;
     s.b.forEach((v, i) => {
@@ -1171,6 +1142,7 @@
       b.cpuFlag = !!v[18]; b.dashT = v[19];
       b.charging = v[20] >= 0; b.charge = Math.max(0, v[20] ?? -1);
       b.parryT = v[21] || 0;
+      b.out = !!v[22];
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
     const knownBeams = new Set(beams.map((m) => m.id));
@@ -1231,13 +1203,32 @@
     ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
   }
 
+  // Last Bat Standing: once every player on this screen is out, the view
+  // follows the action instead: the leading bat still flying (and sticks
+  // with it until it's out too).
+  let watchI = -1;
+  const ownBats = () => bats.filter((b) => b.ctrl === 'local');
+  const spectating = () => rule === 'survivor' && !over && ownBats().length > 0 && ownBats().every((b) => b.out);
+  function watched() {
+    if (!spectating()) return null;
+    const cur = bats[watchI];
+    if (cur && !cur.out) return cur;
+    const alive = bats.filter((b) => !b.out).sort((p, q) => q.score - p.score || p.i - q.i);
+    watchI = alive.length ? alive[0].i : -1;
+    return alive[0] || null;
+  }
   // Which bats sense their surroundings on this screen: the viewer online,
-  // every local player on a shared screen
-  const senses = () => bats.filter((b) => !b.dead && b.ctrl === 'local');
+  // every local player on a shared screen (or the bat being watched)
+  function senses() {
+    const own = bats.filter((b) => !b.dead && b.ctrl === 'local');
+    if (own.length) return own;
+    const w = watched();
+    return w && !w.dead ? [w] : own;
+  }
 
   // Other bats are invisible in the dark unless sound reaches them
   function batVisible(b) {
-    if (b.ctrl === 'local' || viewer === b.i) return 1;
+    if (b.ctrl === 'local' || viewer === b.i || (watchI === b.i && spectating())) return 1;
     // a bat mid-chomp is never hidden, however dark it is
     if (eats.some((e) => e.eater && e.eater.i === b.i)) return 1;
     return Math.max(litAt(b.x, b.y) * 0.9, b.seen, b.stun > 0 ? 1 : 0, b.mouth > 0 || b.puff > 0 ? 1 : 0);
@@ -1286,7 +1277,9 @@
   const BAT_RGB = BATS.map((b) => b.rgb.split(',').map((v) => +v / 255));
   function render() {
     if (in3d()) {
-      const follow = viewer >= 0 ? bats[viewer] : localBat(0);
+      let follow = viewer >= 0 ? bats[viewer] : localBat(0);
+      // out of the round: follow a teammate on this screen still flying, else the action
+      if (follow && follow.out) follow = bats.find((b) => b.ctrl === 'local' && !b.out) || watched() || follow;
       const ok = window.EchoDuel3D.render({
         W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams, crystals, powerups, eats, shake, follow,
         batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE, EAT_PULL,
@@ -1653,23 +1646,17 @@
   // Screen-space layer shared by both views: warnings, HUD, touch controls, fades
   function drawScreen() {
     const th = arena.theme;
-    // the shift warning pulses the screen edge instead of revealing the map
-    if (shiftTimer < shiftWarning() && !over && !shift) {
-      const a = 0.25 + 0.25 * Math.sin(clock * 14);
-      ctx.strokeStyle = `rgba(${th.wall}, ${a})`;
+    // the echo storm pulses the screen edge
+    if (storm && !over && !roundEnd) {
+      const a = 0.22 + 0.22 * Math.sin(clock * 10);
+      ctx.strokeStyle = `rgba(255, 226, 120, ${a})`;
       ctx.lineWidth = 6;
       ctx.strokeRect(3, 3, W - 6, H - 6);
     }
 
     drawHud();
     drawSticks();
-    if (localCount === 1 && countdown <= 0 && touchUsed) drawDashButton();
-
-    if (shift) {
-      const a = 1 - Math.abs(shift.t / (SHIFT_FADE / 2) - 1);
-      ctx.fillStyle = `rgba(0, 0, 0, ${Math.max(0, Math.min(1, a))})`;
-      ctx.fillRect(0, 0, W, H);
-    }
+    if (localCount === 1 && countdown <= 0 && touchUsed && !spectating()) drawDashButton();
   }
 
   function drawPowerup(p) {
@@ -1881,16 +1868,26 @@
   // The scoreboard and arena info only change when a number does, so they are
   // drawn into a cached layer and stamped each frame (much cheaper on phones)
   let hudLayer = null;
+  const stormIn = () => Math.max(0, Math.ceil(ROUND_LIMIT - roundClock));
   const infoText = () => {
-    const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `shifts in ${Math.max(0, Math.ceil(shiftTimer))}s`;
-    return `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}  ·  FIRST TO ${winScore}`;
+    const parts = [arena.def.name];
+    // (shorter in Last Bat Standing, which has more to say)
+    if (arenaMode === 'morph') parts.push(rule === 'survivor' ? 'morphing' : 'the cave keeps changing');
+    else if (arenaMode === 'sky' && rule !== 'survivor') parts.push('no cave tonight');
+    if (rule === 'survivor') {
+      parts.push(`round ${round}`);
+      if (storm) parts.push('echo storm');
+      else if (stormIn() <= STORM_WARN && !roundEnd) parts.push(`storm in ${stormIn()}s`);
+      parts.push(`first to ${winScore} round${winScore === 1 ? '' : 's'}`);
+    } else parts.push(`first to ${winScore}`);
+    return parts.join('  ·  ').toUpperCase();
   };
-  const infoUrgent = () => shiftTimer < shiftWarning() + 2 && arenaMode !== 'morph' && arenaMode !== 'sky';
+  const infoUrgent = () => rule === 'survivor' && !roundEnd && (storm || stormIn() <= STORM_WARN);
   function drawHud() {
     const dpr = ctx.getTransform().a || 1, ph = Math.max(30, Math.min(40, H * 0.085)), topH = Math.ceil(8 + ph + 12);
     const size = Math.max(13, Math.min(20, H / 26)), botH = Math.ceil(size * 1.55 + 22);
     let key = `${W},${H},${dpr},${viewer},${localCount},${infoText()},${infoUrgent()}`;
-    for (const b of bats) key += `|${b.name},${b.ctrl},${b.cpuFlag},${b.score},${b.echoes},${b.power},${b.power ? Math.ceil(b.powerT) : 0},${b.mega},${b.shield}`;
+    for (const b of bats) key += `|${b.name},${b.ctrl},${b.cpuFlag},${b.out},${b.score},${b.echoes},${b.power},${b.power ? Math.ceil(b.powerT) : 0},${b.mega},${b.shield}`;
     if (!hudLayer) { const c = document.createElement('canvas'); hudLayer = { c, g: c.getContext('2d'), key: '' }; }
     const c = hudLayer.c;
     if (hudLayer.key !== key) {
@@ -1942,6 +1939,7 @@
       ctx.fillText(sc, x1, cy + 1);
       // name, with a tag underneath
       const tags = [];
+      if (b.out) tags.push('OUT');
       if (b.ctrl === 'cpu' || b.cpuFlag) tags.push('CPU');
       if (mine) tags.push('YOU');
       if (b.power) tags.push(`${POWERS[b.power].label} ${Math.ceil(b.powerT)}`);
@@ -1964,6 +1962,15 @@
         ctx.beginPath(); ctx.arc(px0 + e * gap, cy, pr, 0, Math.PI * 2);
         if (b.power === 'frenzy' || e < b.echoes) { ctx.fillStyle = b.color; ctx.fill(); }
         else { ctx.fillStyle = 'rgba(214, 208, 255, 0.16)'; ctx.fill(); }
+      }
+      // out this round: the pill dims and the name gets struck through
+      if (b.out) {
+        ctx.font = `700 ${Math.round(ph * 0.42)}px ${HEAD}`;
+        const nw = ctx.measureText(b.name).width, ny = cy - (tags.length ? ph * 0.13 : 0);
+        ctx.strokeStyle = '#f4f1ff'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(nx - 2, ny); ctx.lineTo(nx + nw + 2, ny); ctx.stroke();
+        roundRect(x, y, pw, ph, ph / 2);
+        ctx.fillStyle = 'rgba(6, 5, 20, 0.55)'; ctx.fill();
       }
     });
 
@@ -1998,7 +2005,9 @@
       ctx.fillText(String(Math.ceil(countdown)), W / 2, mid - size * 1.5);
       ctx.font = `600 ${size}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.9)';
-      ctx.fillText(`Dash into a rival to chomp it (stun it with a squeak first). First to ${winScore} bites wins.`, W / 2, mid + size * 1.4);
+      ctx.fillText(rule === 'survivor'
+        ? `Last Bat Standing: get chomped and you're out for the round. First to ${winScore} round win${winScore === 1 ? '' : 's'}.`
+        : `Dash into a rival to chomp it (stun it with a squeak first). First to ${winScore} bites wins.`, W / 2, mid + size * 1.4);
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
@@ -2013,6 +2022,16 @@
       ctx.fillText(banner.text, W / 2, mid + 4);
       ctx.fillStyle = `rgba(${banner.rgb}, ${Math.min(1, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid);
+    }
+    // out of this round: say so, and whose flight we're following
+    if (countdown <= 0 && spectating() && !roundEnd) {
+      const w = watched();
+      ctx.font = `700 ${size * 0.95}px ${HEAD}`;
+      const text = w ? `You're out · watching ${w.name}` : "You're out · watching";
+      const tw = ctx.measureText(text).width + 36, th = size * 1.8, ty = Math.max(H * 0.2, 8 + Math.max(30, Math.min(40, H * 0.085)) + 14);
+      pill(W / 2 - tw / 2, ty, tw, th, w ? `rgba(${w.rgb}, 0.8)` : 'rgba(150, 130, 255, 0.75)', 6);
+      ctx.fillStyle = '#f4f1ff';
+      ctx.fillText(text, W / 2, ty + th / 2 + 1);
     }
     if (localCount > 1 && countdown > 0) {
       ctx.strokeStyle = 'rgba(232, 236, 255, 0.18)';
@@ -2063,20 +2082,25 @@
     get view() { return view; },
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide(); },
     setPaused: (p) => { paused = p; if (p) { keys.clear(); sticks.clear(); chargers.clear(); } },
-    setShiftTimer: (s) => { shiftTimer = s; },
+    setRoundClock: (s) => { roundClock = s; stormWarned = s >= ROUND_LIMIT - STORM_WARN; },
     spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },
     squeak: (i) => squeak(bats[i]),
     act: (i, a) => doAct(bats[i], a),
     beam: (i, ux, uy) => fireBeam(bats[i], ux === undefined ? undefined : { ux, uy }),
-    shiftTo: (i) => { forceNext = i; shiftTimer = 0.01; },
     get rings() { return rings; },
     get parries() { return parries; },
     get parryCount() { return parryCount; },
     get eats() { return eats; },
-    get carved() { return carved; },
     get winScore() { return winScore; },
     get arenaIndex() { return arenaIndex; },
-    get shifting() { return !!shift; },
+    get arenaMode() { return arenaMode; },
+    get rule() { return rule; },
+    get round() { return round; },
+    get roundEnd() { return roundEnd; },
+    get storm() { return storm; },
+    get spectating() { return spectating(); },
+    get watching() { return watched()?.i ?? -1; },
+    get banner() { return banner; },
     dash: (i, dx, dy) => dash(bats[i], dx, dy),
   };
 })();

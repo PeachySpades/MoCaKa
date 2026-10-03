@@ -1,7 +1,9 @@
 // Battle arenas. Same tile key as the caves, plus:
 //   A B C D  spawn points (one per bat)     e  crystal spot
-// Every arena is 34 x 15. During a match the cave shifts to the next one.
-// Arenas marked open: true are a rare treat: some shifts land there instead of the next cave.
+// Every arena is 34 x 15. The first four are caves: the lobby's arena pick
+// (0-3) is an index among them. 'Still' plays one cave all match, 'Morphing'
+// slowly reshapes one cave into the next, and Open Sky (open: true) is its own
+// mode; a morph now and then melts into it too.
 window.ECHO_ARENAS = [
   {
     name: 'Crystal Grotto',

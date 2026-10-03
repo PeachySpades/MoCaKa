@@ -110,7 +110,19 @@
     </div>
     <div class="lobby-main">
       <div class="settings">
-        <div class="arena-pick">
+        <div class="set-row" style="--c: var(--ka)" role="group" aria-label="Game">
+          <span>Game</span>
+          <div class="chips">
+            <button type="button" class="chip" data-rule="bites">Bites</button>
+            <button type="button" class="chip" data-rule="survivor">Last bat</button>
+            <button type="button" class="chip" data-rule="coop">Co-op run</button>
+          </div>
+        </div>
+        <div id="coop-card" class="coop-card" hidden>
+          <b>Co-op Cave Run</b>
+          <small>Fly a long dark level together. Monsters hunt you: squeak to stun them, dash to smash them. Knocked-out bats come back at lanterns. Add CPU buddies or invite friends.</small>
+        </div>
+        <div id="arena-pick" class="arena-pick">
           <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
           <div class="arena-text"><b id="arena-name">Shifting</b><small id="arena-desc">A new cave every 25s</small></div>
           <div class="arrows">
@@ -118,8 +130,8 @@
             <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
           </div>
         </div>
-        <div class="set-row" style="--c: var(--yellow)" role="group" aria-label="First to">
-          <span>First to</span>
+        <div id="first-row" class="set-row" style="--c: var(--yellow)" role="group" aria-label="First to">
+          <span id="first-label">First to</span>
           <div class="chips">
             <button type="button" class="chip" data-first="3">3</button>
             <button type="button" class="chip" data-first="5">5</button>
@@ -127,7 +139,7 @@
           </div>
         </div>
         <div class="set-row" style="--c: var(--exit)" role="group" aria-label="CPU skill">
-          <span>CPU skill</span>
+          <span id="skill-label">CPU skill</span>
           <div class="chips">
             <button type="button" class="chip" data-level="easy">Easy</button>
             <button type="button" class="chip" data-level="normal">Normal</button>
@@ -194,6 +206,7 @@
 <script src="src/vendor/three.min.js"></script>
 <script src="src/view3d.js"></script>
 <script src="src/duel.js"></script>
+<script src="src/coop.js"></script>
 <script src="src/net.js"></script>
 <script src="src/backdrop.js"></script>
 </body>

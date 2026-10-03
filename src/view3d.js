@@ -854,11 +854,34 @@
     mp.needsUpdate = true;
     c.motes.material.opacity = 0.45 + 0.2 * Math.sin(clock * 1.3);
 
+    const dt = Math.max(0, Math.min(0.1, clock - c.last)); c.last = clock;
+    // Co-op Run (coop.js) passes a whole team instead of Moka: v.bats, each
+    // { x, y, vx, face, color, alpha (0..1), hidden, flap (wing speed) }
+    if (v.bats) {
+      if (c.bat) c.bat.g.visible = false;
+      c.team = c.team || [];
+      v.bats.forEach((b, k) => {
+        let r = c.team[k];
+        if (!r || r.color !== b.color) { if (r) c.scene.remove(r.g, r.glow); r = c.team[k] = batRig({ color: b.color }, c.scene); }
+        r.g.visible = !b.hidden;
+        r.g.position.set(b.x, -b.y, 0.15);
+        r.g.scale.setScalar((v.mokaR || 0.28) / 0.3);
+        const wantK = Math.max(-0.7, Math.min(0.7, (b.vx || 0) * 0.15)) + (b.face || 0) * 0.15;
+        r.yaw += (wantK - r.yaw) * Math.min(1, dt * 8);
+        r.g.rotation.set(0.1, r.yaw, Math.max(-0.3, Math.min(0.3, -(b.vx || 0) * 0.04)));
+        const fl = Math.sin(clock * (b.flap || 18) + k);
+        r.wings[0].rotation.z = -fl * 0.7; r.wings[1].rotation.z = fl * 0.7;
+        r.glow.visible = false; r.shield.visible = false; r.stars.forEach((st) => (st.visible = false));
+        const al = b.alpha ?? 1;
+        for (const mt of r.mats) mt.opacity = al;
+      });
+      for (let k = v.bats.length; k < c.team.length; k++) c.team[k].g.visible = false;
+    } else if (c.team) for (const r of c.team) r.g.visible = false;
+
     // Moka
     if (!c.bat) c.bat = batRig({ color: v.mokaColor }, c.scene);
-    const m = v.moka, rig = c.bat;
-    const dt = Math.max(0, Math.min(0.1, clock - c.last)); c.last = clock;
-    rig.g.visible = !(m.hurt > 0 && Math.floor(m.hurt * 12) % 2 === 0);
+    const m = v.moka || { x: -99, y: -99 }, rig = c.bat;
+    rig.g.visible = !v.bats && !(m.hurt > 0 && Math.floor(m.hurt * 12) % 2 === 0);
     rig.g.position.set(m.x, -m.y, 0.15);
     rig.g.scale.setScalar(v.mokaR / 0.3);
     const want = Math.max(-0.7, Math.min(0.7, (m.vx || 0) * 0.15)) + (m.face || 0) * 0.15;
@@ -885,7 +908,11 @@
   window.EchoCave3D = {
     get supported() { return init(); },
     render: renderCave,
-    reset() { if (cave && cave.bat) { cave.scene.remove(cave.bat.g, cave.bat.glow); cave.bat = null; } },
+    reset() {
+      if (cave && cave.bat) { cave.scene.remove(cave.bat.g, cave.bat.glow); cave.bat = null; }
+      if (cave && cave.team) { for (const r of cave.team) cave.scene.remove(r.g, r.glow); cave.team = null; }
+    },
+    hide() { window.EchoDuel3D?.hide(); },
   };
 
   window.EchoDuel3D = {

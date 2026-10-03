@@ -234,6 +234,9 @@
   let guests = [];          // host: [{ id }] in join order; slot = index + 1
   let roster = [];          // guest: [{ slot, me }] from the host's lobby message
   let mySlot = -1;
+  let coopOn = false;       // the running match is a co-op run rather than a battle
+  const eng = () => (coopOn ? window.EchoCoop : window.EchoDuel);
+  const stopAll = () => { window.EchoDuel.stop(); window.EchoCoop?.stop(); };
   const lobby = window.EchoLobby;
   const settings = () => lobby.pick;
 
@@ -262,8 +265,8 @@
   }
 
   function lobbyMessage() {
-    const { cpus, level, arenaMode, firstTo } = settings();
-    return { t: 'lobby', code, cpus, level, arenaMode, firstTo, players: [0, ...guests.map((g, k) => k + 1)] };
+    const { cpus, level, arenaId, rule, firstTo } = settings();
+    return { t: 'lobby', code, cpus, level, arenaId, rule, firstTo, players: [0, ...guests.map((g, k) => k + 1)] };
   }
   function sendLobby() {
     if (role !== 'host' || !link) return;
@@ -309,15 +312,15 @@
     const k = guests.findIndex((g) => g.id === id);
     if (k < 0 || !msg || typeof msg !== 'object') return;
     if (msg.t === 'bye') { onLeave(id); return; }
-    if (playing && (msg.t === 'in' || msg.t === 'act')) window.EchoDuel.remote(guests[k].slot, msg);
+    if (playing && (msg.t === 'in' || msg.t === 'act')) eng().remote(guests[k].slot, msg);
   }
 
   function onLeave(id) {
     const k = guests.findIndex((g) => g.id === id);
     if (k < 0) return;
     const [g] = guests.splice(k, 1);
-    if (playing && window.EchoDuel.active) {
-      window.EchoDuel.dropRemote(g.slot);
+    if (playing && eng().active) {
+      eng().dropRemote(g.slot);
       // keep the remaining guests' slots stable for the rest of the match
       return;
     }
@@ -328,13 +331,29 @@
   // The host starts (or restarts) a match. Guests keep their bat for the whole match.
   function startMatch() {
     if (role !== 'host') return;
-    const { cpus, level, arenaMode, firstTo } = settings();
+    const { cpus, level, rule, firstTo } = settings();
+    const { arenaMode, arena } = lobby.arenaOpts(settings());
     const total = 1 + guests.length + cpus;
+    if (rule === 'coop') {
+      coopOn = true;
+      playing = true;
+      const seed = Math.floor(Math.random() * 1e9);
+      guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed }); });
+      window.EchoGame.startCoop({
+        mode: 'host', remotes: guests.length, cpus, level, seed, online: true,
+        net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
+        rematch: startMatch,
+        lobby: backToLobby,
+        leave: () => leave(),
+      });
+      return;
+    }
     if (total < 2) return;
+    coopOn = false;
     playing = true;
-    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, firstTo }); });
+    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, arena, rule, firstTo }); });
     window.EchoGame.startDuel({
-      mode: 'host', remotes: guests.length, cpus, level, arenaMode, firstTo, online: true,
+      mode: 'host', remotes: guests.length, cpus, level, arenaMode, arena, rule, firstTo, online: true,
       net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
       onResult: (result) => guests.forEach((g) => link.send(g.id, { t: 'end', result })),
       rematch: startMatch,
@@ -345,7 +364,7 @@
 
   // From the end screen: go back to the room so friends can come and go
   function backToLobby() {
-    window.EchoDuel.stop();
+    stopAll();
     if (role === 'host') {
       playing = false;
       guests.forEach((g) => link.send(g.id, { t: 'lobbyback' }));
@@ -398,15 +417,25 @@
       case 'start':
         playing = true;
         mySlot = msg.slot;
+        coopOn = msg.mode === 'coop';
+        if (coopOn) {
+          window.EchoGame.startCoop({
+            mode: 'client', mySlot: msg.slot, total: msg.total, level: msg.level, seed: msg.seed, online: true,
+            net: { send: (m) => link?.send(m) },
+            lobby: backToLobby,
+            leave: () => leave(),
+          });
+          break;
+        }
         window.EchoGame.startDuel({
-          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, firstTo: msg.firstTo, online: true,
+          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, arena: msg.arena, rule: msg.rule, firstTo: msg.firstTo, online: true,
           net: { send: (m) => link?.send(m) },
           lobby: backToLobby,
           leave: () => leave(),
         });
         break;
       case 's':
-        if (playing) window.EchoDuel.applySnapshot(msg);
+        if (playing) eng().applySnapshot(msg);
         break;
       case 'end':
         window.EchoGame.showEnd(msg.result, { guest: true });
@@ -427,7 +456,7 @@
     role = null;
     playing = false;
     roster = [];
-    window.EchoDuel.stop();
+    stopAll();
     window.EchoGame.showOverlay('battle');
     renderRoom();
     status(wasPlaying ? 'The host left the match.' : 'The host closed the room.', true);

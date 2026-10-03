@@ -207,6 +207,8 @@
   let state = 'title';          // title | play | win | lose | duel
   let mode = 'cave';            // cave (explore a hand-made cave) | run (side-scroller) | duel (battle)
   let duelCfg = { humans: 1, cpus: 1 };
+  // battles and co-op runs share the match plumbing (pause, menus, rooms); this is whichever is running
+  const engine = () => (duelCfg.coop ? window.EchoCoop : window.EchoDuel);
   let levelIndex = 0;
   let moka, rings, particles, cam, stats, shake, hintTimer, clock, scroll, endReason;
 
@@ -1197,20 +1199,20 @@
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
     $('pause-screen').hidden = which !== 'pause';
-    if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); }
+    if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); window.EchoCoop?.setPaused?.(false); }
   }
 
   // ---- Pause ---------------------------------------------------------------
   // Offline games freeze; an online match keeps running for everyone else.
   let paused = false, pauseOpen = false;
-  const inMatch = () => state === 'play' || (mode === 'duel' && state === 'duel' && window.EchoDuel.active && !window.EchoDuel.over);
+  const inMatch = () => state === 'play' || (mode === 'duel' && state === 'duel' && engine().active && !engine().over);
   const online = () => mode === 'duel' && duelCfg.online;
   function openPause() {
     if (!inMatch()) return;
     showOverlay('pause');
     pauseOpen = true;
     paused = !online();
-    window.EchoDuel.setPaused(paused);
+    engine().setPaused(paused);
     keys.clear(); stick = null;
     $('pause-title').textContent = online() ? 'Menu' : 'Paused';
     $('pause-note').hidden = !online();
@@ -1222,6 +1224,7 @@
     const wasOnline = online();
     if (wasOnline) duelCfg.leave();
     window.EchoDuel.stop();
+    window.EchoCoop?.stop();
     mode = 'cave';
     state = 'title';
     L = null;
@@ -1254,21 +1257,46 @@
     state = 'duel';
     L = null;
     showOverlay(null);
+    if (cfg.coop) {
+      window.EchoDuel.stop();
+      window.EchoCoop.setView(store.get('echo-view') || '3d');
+      window.EchoCoop.start({ ...cfg, onEnd: (result, info) => { cfg.onResult?.(result); endCoop(result, info); } });
+      return;
+    }
+    window.EchoCoop?.stop();
     window.EchoDuel.setView(store.get('echo-view') || '3d');
     window.EchoDuel.start({ ...cfg, onEnd: (result) => { cfg.onResult?.(result); endDuel(result); } });
   }
+  // Co-op Cave Run goes through the same match plumbing as battles
+  const startCoop = (cfg) => startDuel({ ...cfg, coop: true });
+
+  function endCoop(result, { guest = false } = {}) {
+    if (result.won) sfx.win();
+    const mySlot = duelCfg.mode === 'client' ? duelCfg.mySlot : 0;
+    const d = window.EchoCoop.describe(result, mySlot);
+    $('end-title').textContent = d.title;
+    $('end-stars').textContent = d.big;
+    $('end-stars').removeAttribute('aria-label');
+    $('end-detail').innerHTML = d.lines.map((l) => `<li class="${l.got ? 'got' : ''}"${l.color ? ` style="color:${l.color}"` : ''}>${l.text}</li>`).join('');
+    $('end-button').textContent = result.won ? 'Play again' : 'Try again';
+    $('end-button').hidden = guest;
+    $('menu-button').textContent = duelCfg.online ? 'Room' : 'Menu';
+    $('end-wait').hidden = !guest;
+    showOverlay('end');
+  }
 
   // Online guests get the result from the host and can only wait for a rematch or go back to the room
-  function endDuel({ winner, winnerCpu, standings, humans }, { guest = false } = {}) {
+  function endDuel({ winner, winnerCpu, standings, humans, rule }, { guest = false } = {}) {
+    const unit = rule === 'survivor' ? 'round' : 'bite';
     if (!duelCfg.online && guest) return;
     sfx.win();
     const me = duelCfg.online ? ['Mo', 'Ka', 'Ca', 'Bo'][duelCfg.mode === 'host' ? 0 : duelCfg.mySlot] : null;
     $('end-title').textContent = me === winner ? 'You win!'
       : winnerCpu && (humans === 1 || duelCfg.online) ? `${winner} (CPU) ate everyone!` : `${winner} wins!`;
     $('end-stars').textContent = standings.map((p) => p.score).join(' – ');
-    $('end-stars').setAttribute('aria-label', 'Final bites ' + standings.map((p) => `${p.name} ${p.score}`).join(', '));
+    $('end-stars').setAttribute('aria-label', `Final ${unit}s ` + standings.map((p) => `${p.name} ${p.score}`).join(', '));
     $('end-detail').innerHTML = standings
-      .map((p, k) => `<li class="${k === 0 ? 'got' : ''}" style="color:${p.color}">${p.name}${p.cpu ? ' (CPU)' : ''}${p.name === me ? ' (you)' : ''}: ${p.score} bite${p.score === 1 ? '' : 's'}</li>`)
+      .map((p, k) => `<li class="${k === 0 ? 'got' : ''}" style="color:${p.color}">${p.name}${p.cpu ? ' (CPU)' : ''}${p.name === me ? ' (you)' : ''}: ${p.score} ${unit}${p.score === 1 ? '' : 's'}</li>`)
       .join('');
     $('end-button').textContent = 'Rematch';
     $('end-button').hidden = guest;
@@ -1290,21 +1318,29 @@
     { name: 'Ca', c: 'var(--ca)' }, { name: 'Bo', c: 'var(--bo)' },
   ];
   const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
+  // arenas: one that slowly reshapes, one of the four caves kept still, or open sky
   const ARENA_CHOICES = [
-    { id: 'shift', name: 'Shifting', desc: 'A new cave every 25s' },
-    { id: 'morph', name: 'Morphing', desc: 'The walls slowly reshape' },
-    { id: 'chaos', name: 'Chaos', desc: 'A new cave every 9s' },
-    { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night' },
+    { id: 'morph', name: 'Morphing', desc: 'The walls slowly reshape', mode: 'morph' },
+    ...['Crystal Grotto', 'Lava Hollow', 'Mossy Den', 'Frozen Cavern'].map((name, i) => ({ id: `still-${i}`, name, desc: 'Stays the same all match', mode: 'still', arena: i })),
+    { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night', mode: 'sky' },
   ];
+  const RULES = {
+    bites: { hint: (n) => `first to ${n} bites` },
+    survivor: { hint: (n) => `last bat standing · ${n} round wins` },
+    coop: { hint: () => 'co-op run' },
+  };
+  const arenaOpts = (p) => { const a = ARENA_CHOICES.find((x) => x.id === p.arenaId) || ARENA_CHOICES[0]; return { arenaMode: a.mode, arena: a.arena }; };
   const savedPick = () => {
     const p = {
       humans: 1,
       cpus: Math.min(3, Math.max(0, store.get('echo-cpus') ?? 1)),
       level: store.get('echo-cpu-level') || 'normal',
-      arenaMode: store.get('echo-arena-mode') || 'shift',
+      arenaId: store.get('echo-arena') || 'morph',
+      rule: store.get('echo-rule') || 'bites',
       firstTo: [3, 5, 7].includes(store.get('echo-first-to')) ? store.get('echo-first-to') : 3,
     };
-    if (!ARENA_CHOICES.some((a) => a.id === p.arenaMode)) p.arenaMode = 'shift';
+    if (!ARENA_CHOICES.some((a) => a.id === p.arenaId)) p.arenaId = 'morph';
+    if (!RULES[p.rule]) p.rule = 'bites';
     if (!LEVEL_NAMES[p.level]) p.level = 'normal';
     return p;
   };
@@ -1317,7 +1353,8 @@
   function drawArenaPreview() {
     const c = $('arena-preview'), g = c.getContext('2d');
     const arenas = window.ECHO_ARENAS;
-    const def = pick.arenaMode === 'sky' ? arenas.find((a) => a.open) : arenas[{ shift: 0, morph: 2, chaos: 1 }[pick.arenaMode]];
+    const ch = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
+    const def = ch.mode === 'sky' ? arenas.find((a) => a.open) : arenas[ch.mode === 'morph' ? 2 : ch.arena];
     const w = def.map[0].length, h = def.map.length, s = Math.min(c.width / w, c.height / h);
     const x0 = (c.width - w * s) / 2, y0 = (c.height - h * s) / 2;
     g.fillStyle = def.theme.bg; g.fillRect(0, 0, c.width, c.height);
@@ -1331,15 +1368,16 @@
     }
   }
   function renderPickers() {
-    const ppl = people(), n = ppl.length, edit = canEdit();
+    const ppl = people(), n = ppl.length, edit = canEdit(), coop = pick.rule === 'coop';
     pick.cpus = Math.max(0, Math.min(pick.cpus, 4 - n));
-    const total = n + pick.cpus;
+    const cpus = pick.cpus;
+    const total = n + cpus;
     // seats
     $('seats').innerHTML = BAT_SEATS.map((bat, k) => {
       const p = ppl.find((q) => q.slot === k);
       const cpu = !p && k >= n && k < total;
       const host = room && k === 0;
-      const label = p ? (p.me ? 'You' : 'Friend') : cpu ? LEVEL_NAMES[pick.level] : edit ? '+ Add CPU' : 'Open';
+      const label = p ? (p.me ? 'You' : 'Friend') : cpu ? LEVEL_NAMES[pick.level] : edit ? (coop ? '+ CPU buddy' : '+ Add CPU') : 'Open';
       const cls = p ? 'slot you' : cpu ? 'slot on' : 'slot';
       return `<button type="button" class="${cls}" data-seat="${k}" style="--c: ${bat.c}" ${p || !edit ? 'disabled' : ''} aria-pressed="${cpu}">`
         + `<svg class="avatar"><use href="#i-bat"/></svg><b>${bat.name}</b>`
@@ -1359,8 +1397,13 @@
     });
     mark('[data-level]', 'level', pick.level);
     mark('[data-first]', 'first', pick.firstTo);
+    mark('[data-rule]', 'rule', pick.rule);
+    $('first-label').textContent = pick.rule === 'survivor' ? 'Rounds' : 'First to';
+    $('skill-label').textContent = coop ? 'Monsters' : 'CPU skill';
+    $('arena-pick').hidden = $('first-row').hidden = coop;
+    $('coop-card').hidden = !coop;
     $('arena-prev').disabled = $('arena-next').disabled = !edit;
-    const a = ARENA_CHOICES.find((x) => x.id === pick.arenaMode);
+    const a = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
     $('arena-name').textContent = a.name;
     $('arena-desc').textContent = a.desc;
     drawArenaPreview();
@@ -1372,8 +1415,11 @@
     $('back-label').textContent = room ? 'Leave' : 'Back';
     const guest = room?.role === 'guest';
     $('duel-start').hidden = guest;
-    $('duel-start').disabled = total < 2;
-    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < 2 ? 'Add a CPU or invite a friend' : `${total} bats · first to ${pick.firstTo}`;
+    const need = coop ? 1 : 2;
+    $('duel-start').textContent = coop ? "Let's fly ›" : "Let's fight ›";
+    $('duel-start').disabled = total < need;
+    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend'
+      : coop ? `${total} bat${total > 1 ? 's' : ''} · co-op run` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
   }
   // net.js tells the lobby when a room opens, changes or closes, and gets told about setting changes
   const lobby = {
@@ -1387,10 +1433,11 @@
       renderPickers();
     },
     applyHost(s) {   // a guest mirrors the host's settings
-      for (const k of ['cpus', 'level', 'arenaMode', 'firstTo']) if (s[k] != null) pick[k] = s[k];
+      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo']) if (s[k] != null) pick[k] = s[k];
       renderPickers();
     },
   };
+  lobby.arenaOpts = arenaOpts;
   window.EchoLobby = lobby;
   const changed = () => { renderPickers(); lobby.onChange?.(); };
   $('seats').addEventListener('click', (e) => {
@@ -1410,11 +1457,15 @@
     if (!canEdit()) return;
     pick.firstTo = +b.dataset.first; store.set('echo-first-to', pick.firstTo); changed();
   }));
+  document.querySelectorAll('[data-rule]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.rule = b.dataset.rule; store.set('echo-rule', pick.rule); changed();
+  }));
   const stepArena = (d) => {
     if (!canEdit()) return;
-    const i = ARENA_CHOICES.findIndex((x) => x.id === pick.arenaMode);
-    pick.arenaMode = ARENA_CHOICES[(i + d + ARENA_CHOICES.length) % ARENA_CHOICES.length].id;
-    store.set('echo-arena-mode', pick.arenaMode);
+    const i = Math.max(0, ARENA_CHOICES.findIndex((x) => x.id === pick.arenaId));
+    pick.arenaId = ARENA_CHOICES[(i + d + ARENA_CHOICES.length) % ARENA_CHOICES.length].id;
+    store.set('echo-arena', pick.arenaId);
     changed();
   };
   $('arena-prev').addEventListener('click', () => stepArena(-1));
@@ -1422,7 +1473,8 @@
   renderPickers();
   $('duel-start').addEventListener('click', () => {
     if (room?.role === 'host') window.EchoNet.startMatch();
-    else if (!room && pick.cpus > 0) startDuel({ ...pick, humans: 1 });
+    else if (!room && pick.rule === 'coop') startCoop({ mode: 'local', humans: 1, cpus: pick.cpus, level: pick.level });
+    else if (!room && pick.cpus > 0) startDuel({ ...pick, ...arenaOpts(pick), humans: 1 });
   });
   $('duel-back').addEventListener('click', () => {
     if (room) window.EchoNet.leave();
@@ -1438,6 +1490,7 @@
     store.set('echo-view', v);
     view3d = v === '3d';
     window.EchoDuel?.setView(v);
+    window.EchoCoop?.setView(v);
     document.querySelectorAll('[data-view]').forEach((b) => { b.classList.toggle('on', b.dataset.view === v); b.setAttribute('aria-pressed', String(b.dataset.view === v)); });
     $('pause-view').textContent = v === '3d' ? 'Switch to 2D view' : 'Switch to 3D view';
   }
@@ -1453,7 +1506,7 @@
   $('pause-menu').addEventListener('click', toMenu);
 
   // Used by the online rooms (net.js)
-  window.EchoGame = { startDuel, showEnd: endDuel, showOverlay };
+  window.EchoGame = { startDuel, startCoop, showEnd: (r, o) => (duelCfg.coop ? endCoop(r, o) : endDuel(r, o)), showOverlay };
 
   function updateBests() {
     // Explore: which cave is next, and the stars earned across all three
@@ -1475,14 +1528,14 @@
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
     // jazz everywhere: each mode has its own tune, and the menus have a mellow one
-    const fighting = mode === 'duel' && state === 'duel' && window.EchoDuel.active && !window.EchoDuel.over;
+    const fighting = mode === 'duel' && state === 'duel' && engine().active && !engine().over;
     if (portrait.matches || document.hidden) music.set(false);
-    else music.set(state === 'play' ? (mode === 'run' ? 'run' : 'explore') : fighting ? 'battle' : 'lobby');
+    else music.set(state === 'play' ? (mode === 'run' ? 'run' : 'explore') : fighting ? (duelCfg.coop ? 'run' : 'battle') : 'lobby');
     $('pause-button').hidden = !inMatch() || pauseOpen;
     const frozen = paused || portrait.matches || document.hidden;
     if (mode === 'duel' && state === 'duel') {
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      if (!portrait.matches && !document.hidden) window.EchoDuel.frame(frozen ? 0 : dt, ctx, W, H);
+      if (!portrait.matches && !document.hidden) engine().frame(frozen ? 0 : dt, ctx, W, H);
       requestAnimationFrame(frame);
       return;
     }
