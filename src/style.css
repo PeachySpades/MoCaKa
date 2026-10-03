@@ -235,3 +235,24 @@ button:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) {
   .phone { animation: none; transform: rotate(-90deg); }
 }
+
+/* Sound on/off, tucked in the bottom-left corner on every screen */
+#sound-toggle {
+  position: fixed;
+  left: calc(10px + env(safe-area-inset-left));
+  bottom: calc(10px + env(safe-area-inset-bottom));
+  z-index: 20;
+  width: 38px;
+  height: 38px;
+  min-height: 0;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(232, 236, 255, 0.35);
+  background: rgba(10, 16, 32, 0.6);
+  color: var(--ink);
+  font: 600 18px/1 var(--display);
+  letter-spacing: 0;
+  box-shadow: none;
+  opacity: 0.75;
+}
+#sound-toggle.off { opacity: 0.45; text-decoration: line-through; }

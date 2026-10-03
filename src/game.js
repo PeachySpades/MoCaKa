@@ -39,14 +39,36 @@
   };
 
   // ---- Audio -------------------------------------------------------------
-  let ac = null;
+  // Everything is synthesized: no sound files. Sound effects and music each
+  // have their own volume, and both go through one master switch (the ♪ button).
+  let ac = null, master = null, sfxBus = null, musicBus = null, noiseBuf = null;
+  let muted = !!store.get('echo-muted');
   function unlockAudio() {
     if (!ac) {
       try { ac = new (window.AudioContext || window.webkitAudioContext)(); } catch { ac = null; }
+      if (ac) {
+        master = ac.createGain();
+        master.gain.value = muted ? 0 : 1;
+        master.connect(ac.destination);
+        sfxBus = ac.createGain(); sfxBus.connect(master);
+        musicBus = ac.createGain(); musicBus.gain.value = 0.55; musicBus.connect(master);
+        noiseBuf = ac.createBuffer(1, ac.sampleRate * 0.5, ac.sampleRate);
+        const d = noiseBuf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+      }
     }
     if (ac && ac.state === 'suspended') ac.resume().catch(() => {});
   }
-  function tone(f0, f1, dur, type = 'sine', vol = 0.12, delay = 0) {
+  function setMuted(m) {
+    muted = m;
+    store.set('echo-muted', m);
+    if (master) master.gain.setTargetAtTime(m ? 0 : 1, ac.currentTime, 0.03);
+    const b = $('sound-toggle');
+    b.classList.toggle('off', m);
+    b.setAttribute('aria-pressed', String(!m));
+    b.title = m ? 'Sound off' : 'Sound on';
+  }
+  function tone(f0, f1, dur, type = 'sine', vol = 0.12, delay = 0, dest = sfxBus) {
     if (!ac) return;
     const t = ac.currentTime + delay;
     const o = ac.createOscillator(), g = ac.createGain();
@@ -55,25 +77,108 @@
     o.frequency.exponentialRampToValueAtTime(f1, t + dur);
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g).connect(ac.destination);
+    o.connect(g).connect(dest);
     o.start(t);
     o.stop(t + dur + 0.02);
+  }
+  // a burst of filtered noise: hats, snares, whooshes, rumbles
+  function hiss(dur, vol, freq, at, dest = sfxBus, type = 'highpass') {
+    if (!ac) return;
+    const t = at ?? ac.currentTime;
+    const src = ac.createBufferSource(), f = ac.createBiquadFilter(), g = ac.createGain();
+    src.buffer = noiseBuf;
+    f.type = type; f.frequency.value = freq;
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(g).connect(dest);
+    src.start(t, Math.random() * 0.3);
+    src.stop(t + dur + 0.02);
   }
   const sfx = {
     squeak() { tone(2300, 3600, 0.08, 'sine', 0.1); tone(2300, 3600, 0.08, 'sine', 0.03, 0.22); },
     moth() { tone(880, 1320, 0.14, 'triangle', 0.1); tone(1320, 1760, 0.18, 'triangle', 0.07, 0.08); },
     hurt() { tone(240, 70, 0.3, 'square', 0.07); },
     wake() { tone(320, 160, 0.25, 'sawtooth', 0.035); },
-    crash() { tone(180, 40, 0.35, 'triangle', 0.12); },
+    crash() { tone(180, 40, 0.35, 'triangle', 0.12); hiss(0.4, 0.08, 400, undefined, sfxBus, 'lowpass'); },
     empty() { tone(260, 180, 0.12, 'sine', 0.06); },
     crystal() { tone(1500, 2600, 0.12, 'sine', 0.08); tone(2600, 3200, 0.1, 'sine', 0.05, 0.07); },
-    chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); },
+    chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); hiss(0.08, 0.1, 2000); },
     slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
-    dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); tone(1800, 600, 0.1, 'sine', 0.04); },
+    dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); hiss(0.18, 0.09, 1800, undefined, sfxBus, 'bandpass'); },
     burp() { tone(140, 90, 0.28, 'sawtooth', 0.06); tone(110, 70, 0.2, 'sawtooth', 0.04, 0.12); },
-    win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); },
+    win() { [523, 659, 784, 1047].forEach((f, i) => tone(f, f * 1.01, 0.22, 'triangle', 0.1, i * 0.11)); tone(1047, 1050, 0.6, 'sine', 0.06, 0.44); },
+    // battle
+    stun() { for (let k = 0; k < 4; k++) tone(700 - k * 60, 900 - k * 60, 0.09, 'triangle', 0.06, k * 0.08); },
+    block() { tone(1200, 1180, 0.25, 'sine', 0.08); tone(1800, 1790, 0.2, 'sine', 0.05, 0.02); hiss(0.1, 0.05, 3000); },
+    power() { [660, 880, 1100, 1320].forEach((f, i) => tone(f, f * 1.02, 0.1, 'square', 0.035, i * 0.05)); },
+    beep() { tone(880, 880, 0.12, 'square', 0.05); },
+    go() { tone(1320, 1320, 0.3, 'square', 0.06); tone(660, 660, 0.3, 'square', 0.04); },
+    warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
   };
-  window.EchoAudio = { sfx, unlock: unlockAudio };
+
+  // Battle music: a looping minor-key groove (Am F Dm E) with drums, bass,
+  // arpeggio and a soft pad, scheduled slightly ahead on the audio clock.
+  const music = (() => {
+    const STEP = 60 / 120 / 4;
+    const hz = (m) => 440 * 2 ** ((m - 69) / 12);
+    const CHORDS = [[57, 60, 64], [53, 57, 60], [50, 53, 57], [52, 56, 59]];
+    const BASS = [33, 29, 26, 28];
+    const BASS_STEPS = [0, 3, 6, 8, 10, 11, 14];
+    const ARP = [0, 1, 2, 1, 2, 0, 1, 2, 0, 1, 2, 1, 2, 0, 2, 1];
+    let timer = null, bus = null, next = 0, step = 0;
+    function voice(m, t, dur, type, vol, cutoff) {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.type = type; o.frequency.value = hz(m);
+      let out = o;
+      if (cutoff) { const f = ac.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = cutoff; out = o.connect(f); }
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.02, dur / 4));
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+      out.connect(g).connect(bus);
+      o.start(t); o.stop(t + dur + 0.02);
+    }
+    function kick(t) {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.setValueAtTime(140, t);
+      o.frequency.exponentialRampToValueAtTime(42, t + 0.16);
+      g.gain.setValueAtTime(0.5, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+      o.connect(g).connect(bus);
+      o.start(t); o.stop(t + 0.25);
+    }
+    function play(s, t) {
+      const bar = Math.floor(s / 16) % 4, k = s % 16, chord = CHORDS[bar];
+      if (k % 4 === 0) kick(t);
+      if (k === 4 || k === 12) hiss(0.16, 0.16, 1200, t, bus, 'bandpass');
+      if (k % 2 === 1) hiss(0.04, 0.05, 7000, t, bus);
+      if (BASS_STEPS.includes(k)) voice(BASS[bar] + (k === 10 ? 12 : 0), t, STEP * 1.6, 'sawtooth', 0.12, 420);
+      // the arpeggio sits out every fourth bar so the loop breathes
+      if (s % 64 < 48) voice(chord[ARP[k]] + 12, t, 0.14, 'square', 0.028, 2600);
+      if (k === 0) chord.forEach((m) => voice(m, t, STEP * 16, 'triangle', 0.035));
+    }
+    function schedule() {
+      while (next < ac.currentTime + 0.15) { play(step, next); next += STEP; step = (step + 1) % 128; }
+    }
+    return {
+      // idempotent: call every frame with whether music should be playing
+      set(on) {
+        if (on && !timer && ac && ac.state === 'running') {
+          bus = ac.createGain();
+          bus.gain.value = 1;
+          bus.connect(musicBus);
+          next = ac.currentTime + 0.08; step = 0;
+          timer = setInterval(schedule, 30);
+          schedule();
+        } else if (!on && timer) {
+          clearInterval(timer); timer = null;
+          const old = bus;
+          old.gain.setTargetAtTime(0.0001, ac.currentTime, 0.12);
+          setTimeout(() => old.disconnect(), 800);
+        }
+      },
+    };
+  })();
+  window.EchoAudio = { sfx, music, unlock: unlockAudio };
 
   // ---- Level -------------------------------------------------------------
   let L;          // the current level's runtime state
@@ -330,6 +435,7 @@
       `<li class="${stats.moths ? 'got' : ''}">Moths ${stats.moths}</li>` +
       (endReason === 'dark' ? `<li>Keep up with the screen. If a wall pins you at the left edge, the dark catches you.</li>` : '');
     updateBests();
+  document.addEventListener('visibilitychange', () => { if (document.hidden) music.set(false); });
   }
 
   const runDistance = () => Math.max(0, Math.floor(moka.x - L.start.x));
@@ -860,6 +966,8 @@
     showOverlay('end');
   }
 
+  $('sound-toggle').addEventListener('click', () => { unlockAudio(); setMuted(!muted); });
+  setMuted(muted);
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
@@ -917,6 +1025,8 @@
   function frame(now) {
     const dt = Math.min(0.05, (now - last) / 1000);
     last = now;
+    // music only plays during a running battle (the battle turns it on each frame)
+    if (!(mode === 'duel' && state === 'duel') || portrait.matches || document.hidden) music.set(false);
     if (mode === 'duel' && state === 'duel') {
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
       if (!portrait.matches && !document.hidden) window.EchoDuel.frame(dt, ctx, W, H);

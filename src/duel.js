@@ -16,7 +16,7 @@
   const START_ECHOES = 4, MAX_ECHOES = 6, CRYSTAL_ECHOES = 2;
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
   const WIN_SCORE = 3;
-  const SHIFT_EVERY = 25, SHIFT_WARNING = 3, SHIFT_FADE = 0.9;
+  const SHIFT_EVERY = 25, SHIFT_WARNING = 3, SHIFT_FADE = 0.9, OPEN_SKY_CHANCE = 0.3;
   const EAT_PULL = 0.35, EAT_TIME = 1.1;
   const SNAPSHOT_EVERY = 0.05;
   const POWERS = {
@@ -41,11 +41,19 @@
   ];
 
   // ---- Arena -------------------------------------------------------------
-  let arena, arenaIndex = 0;
+  // Caves rotate in order; now and then a shift opens onto the wall-less Open Sky instead.
+  let arena, arenaIndex = 0, lastCave = 0;
+  const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open ? i : -1)).filter((i) => i >= 0);
+  function nextArenaIndex() {
+    const caves = arenaKinds(false), skies = arenaKinds(true);
+    if (!arena.def.open && skies.length && Math.random() < OPEN_SKY_CHANCE) return skies[Math.floor(Math.random() * skies.length)];
+    return caves[(caves.indexOf(lastCave) + 1) % caves.length];
+  }
   function loadArena(i) {
     const n = window.ECHO_ARENAS.length;
     arenaIndex = ((i % n) + n) % n;
     const def = window.ECHO_ARENAS[arenaIndex];
+    if (!def.open) lastCave = arenaIndex;
     const h = def.map.length, w = def.map[0].length;
     const a = { def, theme: def.theme, w, h, grid: new Uint8Array(w * h), spawns: [], crystalSpots: [], open: [] };
     def.map.forEach((row, y) => [...row].forEach((c, x) => {
@@ -86,6 +94,7 @@
       p.phase += dt;
       if (kind === 'ember') { p.y -= p.v * 0.8 * dt; p.x += Math.sin(p.phase * 2) * 0.3 * dt; }
       else if (kind === 'snow') { p.y += p.v * 0.6 * dt; p.x += Math.sin(p.phase) * 0.4 * dt; }
+      else if (kind === 'firefly') { p.x += Math.cos(p.phase * 0.9) * 0.5 * dt; p.y += Math.sin(p.phase * 1.3) * 0.35 * dt; }
       else if (kind === 'spore') { p.x += Math.cos(p.phase * 0.7) * 0.25 * dt; p.y += Math.sin(p.phase * 0.5) * 0.2 * dt; }
       if (p.y < 0) p.y += arena.h;
       if (p.y > arena.h) p.y -= arena.h;
@@ -136,7 +145,8 @@
       viewer = o.mySlot;
       for (let i = 0; i < (o.total || 2); i++) bats.push(makeBat(i, i === o.mySlot ? 'local' : 'remote', 0));
     }
-    loadArena(mode === 'client' ? 0 : Math.floor(Math.random() * window.ECHO_ARENAS.length));
+    const caves = arenaKinds(false);
+    loadArena(mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)]);
     bats.forEach((b, k) => {
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
@@ -201,7 +211,8 @@
 
   // A dash button for the single-player-per-device layouts, on touch screens
   let touchUsed = matchMedia('(pointer: coarse)').matches;
-  const dashButton = () => ({ x: W - 64, y: H - 64, r: 42 });
+  // kept well above the bottom-right corner, where hosting badges like to sit
+  const dashButton = () => ({ x: W - 64, y: H - Math.max(124, H * 0.3), r: 42 });
   const inDashButton = (cx, cy) => {
     if (localCount !== 1) return false;
     const rect = canvas.getBoundingClientRect(), b = dashButton();
@@ -434,7 +445,7 @@
   }
 
   function shiftArena() {
-    loadArena(arenaIndex + 1);
+    loadArena(nextArenaIndex());
     rings = [];
     bats.forEach((b, k) => {
       const s = arena.spawns[k % arena.spawns.length];
@@ -458,7 +469,7 @@
     else { b.power = p.type; b.powerT = p.type === 'speed' ? 6 : 5; }
     fx({ k: 'burst', x: p.x, y: p.y, rgb: POWERS[p.type].rgb, n: 14 });
     fx({ k: 'popup', x: b.x, y: b.y - 1, text: POWERS[p.type].label, rgb: POWERS[p.type].rgb, life: 1.1 });
-    fx({ k: 'sfx', n: 'crystal' });
+    fx({ k: 'sfx', n: 'power' });
   }
 
   // ---- Update (local and host) -------------------------------------------
@@ -468,7 +479,7 @@
     if (countdown > 0) {
       const before = Math.ceil(countdown);
       countdown -= rawDt;
-      if (Math.ceil(countdown) !== before) fx({ k: 'sfx', n: 'squeak' });
+      if (Math.ceil(countdown) !== before) fx({ k: 'sfx', n: countdown <= 0 ? 'go' : 'beep' });
       return;
     }
     slowmo = Math.max(0, slowmo - rawDt);
@@ -485,7 +496,7 @@
       shiftTimer -= rawDt;
       if (shiftTimer <= SHIFT_WARNING && shiftTimer + rawDt > SHIFT_WARNING) {
         fx({ k: 'banner', text: 'The cave is shifting!', rgb: arena.theme.wall, t: SHIFT_WARNING });
-        fx({ k: 'sfx', n: 'wake' });
+        fx({ k: 'sfx', n: 'warn' });
       }
       if (shiftTimer <= 0) { shift = { t: 0, swapped: false }; shiftTimer = SHIFT_EVERY; }
     }
@@ -593,6 +604,7 @@
             foe.vx = ((foe.x - ring.x) / k) * 3; foe.vy = ((foe.y - ring.y) / k) * 3;
             fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
             fx({ k: 'burst', x: foe.x, y: foe.y, rgb: POWERS.shield.rgb, n: 12 });
+            fx({ k: 'sfx', n: 'block' });
             continue;
           }
           foe.stun = ring.stun;
@@ -601,7 +613,7 @@
           foe.vx = ((foe.x - ring.x) / k) * push;
           foe.vy = ((foe.y - ring.y) / k) * push;
           fx({ k: 'burst', x: foe.x, y: foe.y, rgb: '255, 226, 120', n: 10 });
-          fx({ k: 'sfx', n: 'wake' });
+          fx({ k: 'sfx', n: 'stun' });
         }
       }
     }
@@ -714,6 +726,38 @@
     return Math.max(litAt(b.x, b.y) * 0.9, b.seen, b.stun > 0 ? 1 : 0, b.mouth > 0 || b.puff > 0 ? 1 : 0);
   }
 
+  // Open Sky: no cave at all, just a starry night and a moon. The stars never
+  // reveal anyone; bats are still found by sound.
+  let stars = null;
+  function drawSky() {
+    if (!stars) {
+      let seed = 7;
+      const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+      stars = Array.from({ length: 110 }, () => ({ x: rnd(), y: rnd(), s: 1 + rnd() * 1.6, p: rnd() * 6 }));
+    }
+    const x0 = X(0), y0 = Y(0), w = arena.w * PX, h = arena.h * PX;
+    for (const st of stars) {
+      ctx.fillStyle = `rgba(232, 236, 255, ${0.3 + 0.5 * Math.sin(clock * 1.5 + st.p) ** 2})`;
+      ctx.fillRect(x0 + st.x * w, y0 + st.y * h, st.s, st.s);
+    }
+    const mx = x0 + w * 0.82, my = y0 + h * 0.2, mr = PX * 1.1;
+    glow(mx, my, mr * 3, '255, 236, 190', 0.12);
+    // a crescent: the moon disc with a shadow bite, clipped so the bite never shows outside it
+    ctx.save();
+    ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = 'rgba(255, 244, 214, 0.6)';
+    ctx.fillRect(mx - mr, my - mr, mr * 2, mr * 2);
+    ctx.fillStyle = arena.theme.bg;
+    ctx.beginPath(); ctx.arc(mx + mr * 0.55, my - mr * 0.3, mr * 0.85, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    // a faint edge so players know where the sky ends
+    ctx.strokeStyle = 'rgba(255, 236, 190, 0.12)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 8]);
+    ctx.strokeRect(X(1), Y(1), (arena.w - 2) * PX, (arena.h - 2) * PX);
+    ctx.setLineDash([]);
+  }
+
   function render() {
     const th = arena.theme;
     ctx.fillStyle = th.bg;
@@ -725,6 +769,8 @@
     ox = (W - arena.w * PX) / 2 + sx;
     oy = top + (H - top - bottom - arena.h * PX) / 2 + sy;
     const near = senses();
+
+    if (arena.def.open) drawSky();
 
     // ambient particles only show where sound has lit the cave
     for (const p of ambient) {
@@ -1073,6 +1119,7 @@
   function frame(dt, context, width, height) {
     ctx = context; W = width; H = height;
     if (active) { if (mode === 'client') clientUpdate(dt); else update(dt); }
+    window.EchoAudio?.music?.set(active && !over && !document.hidden);
     if (arena) render();
   }
 
