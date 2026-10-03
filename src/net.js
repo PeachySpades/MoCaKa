@@ -227,12 +227,15 @@
   const transport = useLocal ? localTransport : relayBase ? relayTransport : peerTransport;
 
   // ---- Room state ------------------------------------------------------------
+  // The room lives on the Battle screen: game.js draws it (window.EchoLobby) and
+  // owns the settings; this file handles codes, players and the connection.
   // role: null | 'host' | 'guest'
-  let role = null, link = null, code = '', cpus = 1, playing = false;
-  let level = 'normal', arenaMode = 'shift';
+  let role = null, link = null, code = '', playing = false;
   let guests = [];          // host: [{ id }] in join order; slot = index + 1
   let roster = [];          // guest: [{ slot, me }] from the host's lobby message
   let mySlot = -1;
+  const lobby = window.EchoLobby;
+  const settings = () => lobby.pick;
 
   function status(text, bad = false) {
     const el = $('online-status');
@@ -250,44 +253,23 @@
     return 'Something went wrong. Try again.';
   }
 
-  function show(view) {
-    $('online-home').hidden = view !== 'home';
-    $('online-room').hidden = view !== 'room';
-  }
-
   function renderRoom() {
-    $('room-code').textContent = code;
+    if (!role || (role === 'guest' && !roster.length)) { lobby.setRoom(null); return; }
     const host = role === 'host';
-    const slots = host ? [{ slot: 0, me: true }, ...guests.map((g, k) => ({ slot: k + 1 }))] : roster;
-    $('room-players').innerHTML = slots
-      .map((p) => `<li><span class="dot ${BATS[p.slot].name.toLowerCase()}"></span><span style="color:${BATS[p.slot].color}">${BATS[p.slot].name}</span>${p.slot === 0 ? ' · host' : ''}${p.me ? ' · you' : ''}</li>`)
-      .join('');
-    const people = slots.length;
-    cpus = Math.max(0, Math.min(cpus, MAX_PLAYERS - people));
-    if (people + cpus < 2) cpus = 2 - people;
-    document.querySelectorAll('[data-room-cpus]').forEach((b) => {
-      const n = +b.dataset.roomCpus;
-      b.disabled = !host || people + n > MAX_PLAYERS || people + n < 2;
-      b.classList.toggle('on', n === cpus);
-      b.setAttribute('aria-pressed', String(n === cpus));
-    });
-    for (const [attr, val] of [['roomLevel', level], ['roomArena', arenaMode]]) {
-      document.querySelectorAll(`[data-${attr === 'roomLevel' ? 'room-level' : 'room-arena'}]`).forEach((b) => {
-        b.disabled = !host;
-        b.classList.toggle('on', b.dataset[attr] === val);
-        b.setAttribute('aria-pressed', String(b.dataset[attr] === val));
-      });
-    }
-    $('room-start').hidden = !host;
-    if (host) status(guests.length ? `${people} players in the room.` : 'Share the code with a friend and keep this screen open while they join. You can also start now against CPU bats.');
+    const people = host ? [{ slot: 0, me: true }, ...guests.map((g, k) => ({ slot: k + 1 }))] : roster;
+    lobby.setRoom({ role, code, people });
+    if (host) status(guests.length ? `${people.length} players in the room.` : 'Share the code with friends and keep this screen open while they join.');
   }
 
   function lobbyMessage() {
-    return { t: 'lobby', code, cpus, level, arenaMode, players: [0, ...guests.map((g, k) => k + 1)] };
+    const { cpus, level, arenaMode, firstTo } = settings();
+    return { t: 'lobby', code, cpus, level, arenaMode, firstTo, players: [0, ...guests.map((g, k) => k + 1)] };
   }
   function sendLobby() {
+    if (role !== 'host' || !link) return;
     guests.forEach((g, k) => link.send(g.id, { ...lobbyMessage(), you: k + 1 }));
   }
+  lobby.onChange = () => { if (role === 'host' && !playing) sendLobby(); };
 
   // ---- Host --------------------------------------------------------------------
   async function createRoom() {
@@ -312,7 +294,6 @@
     $('room-create').disabled = false;
     if (role !== 'host') { link?.close(); link = null; return; }  // left while connecting
     guests = [];
-    show('room');
     renderRoom();
   }
 
@@ -320,7 +301,7 @@
     if (playing) { link.send(id, { t: 'nope', why: 'started' }); return; }
     if (guests.length + 1 >= MAX_PLAYERS) { link.send(id, { t: 'nope', why: 'full' }); return; }
     guests.push({ id });
-    renderRoom();
+    renderRoom();     // may drop a CPU to make a seat
     sendLobby();
   }
 
@@ -347,11 +328,13 @@
   // The host starts (or restarts) a match. Guests keep their bat for the whole match.
   function startMatch() {
     if (role !== 'host') return;
-    playing = true;
+    const { cpus, level, arenaMode, firstTo } = settings();
     const total = 1 + guests.length + cpus;
-    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode }); });
+    if (total < 2) return;
+    playing = true;
+    guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, firstTo }); });
     window.EchoGame.startDuel({
-      mode: 'host', remotes: guests.length, cpus, level, arenaMode, online: true,
+      mode: 'host', remotes: guests.length, cpus, level, arenaMode, firstTo, online: true,
       net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
       onResult: (result) => guests.forEach((g) => link.send(g.id, { t: 'end', result })),
       rematch: startMatch,
@@ -368,8 +351,7 @@
       guests.forEach((g) => link.send(g.id, { t: 'lobbyback' }));
       sendLobby();
     }
-    window.EchoGame.showOverlay('online');
-    show('room');
+    window.EchoGame.showOverlay('battle');
     renderRoom();
   }
 
@@ -402,13 +384,10 @@
     switch (msg.t) {
       case 'lobby':
         mySlot = msg.you;
-        cpus = msg.cpus;
-        if (msg.level) level = msg.level;
-        if (msg.arenaMode) arenaMode = msg.arenaMode;
         roster = msg.players.map((slot) => ({ slot, me: slot === mySlot }));
-        show('room');
         renderRoom();
-        status('Waiting for the host to start…');
+        lobby.applyHost(msg);
+        status('');
         break;
       case 'nope': {
         const why = msg.why;
@@ -420,7 +399,7 @@
         playing = true;
         mySlot = msg.slot;
         window.EchoGame.startDuel({
-          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, online: true,
+          mode: 'client', mySlot: msg.slot, total: msg.total, arenaMode: msg.arenaMode, firstTo: msg.firstTo, online: true,
           net: { send: (m) => link?.send(m) },
           lobby: backToLobby,
           leave: () => leave(),
@@ -447,9 +426,10 @@
     link = null;
     role = null;
     playing = false;
+    roster = [];
     window.EchoDuel.stop();
-    window.EchoGame.showOverlay('online');
-    show('home');
+    window.EchoGame.showOverlay('battle');
+    renderRoom();
     status(wasPlaying ? 'The host left the match.' : 'The host closed the room.', true);
   }
 
@@ -464,47 +444,29 @@
     playing = false;
     guests = [];
     roster = [];
-    show('home');
+    renderRoom();
     if (!quiet) status('');
   }
 
-  function openOnline() {
-    window.EchoGame.showOverlay('online');
-    if (!role) { show('home'); status(''); }
+  function copyLink() {
+    const url = `${location.origin}${location.pathname}?room=${code}`;
+    const done = () => status('Link copied. Send it to a friend!');
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(url).then(done, () => status(url));
+    else status(url);
   }
 
-  $('online-button').addEventListener('click', openOnline);
   $('room-create').addEventListener('click', createRoom);
+  $('room-copy').addEventListener('click', copyLink);
   $('join-form').addEventListener('submit', (e) => { e.preventDefault(); joinRoom($('join-code').value); });
   $('join-code').addEventListener('input', (e) => { e.target.value = cleanCode(e.target.value); });
-  $('room-start').addEventListener('click', startMatch);
-  document.querySelectorAll('[data-room-level]').forEach((b) => b.addEventListener('click', () => {
-    if (role !== 'host') return;
-    level = b.dataset.roomLevel;
-    renderRoom();
-    sendLobby();
-  }));
-  document.querySelectorAll('[data-room-arena]').forEach((b) => b.addEventListener('click', () => {
-    if (role !== 'host') return;
-    arenaMode = b.dataset.roomArena;
-    renderRoom();
-    sendLobby();
-  }));
-  document.querySelectorAll('[data-room-cpus]').forEach((b) => b.addEventListener('click', () => {
-    if (role !== 'host') return;
-    cpus = +b.dataset.roomCpus;
-    renderRoom();
-    sendLobby();
-  }));
-  $('room-leave').addEventListener('click', () => leave());
-  $('online-back').addEventListener('click', () => { leave(); window.EchoGame.showOverlay('title'); });
   addEventListener('pagehide', () => leave(true));
 
-  // Link straight into a room: ...?room=ABCD
+  // Link straight into a room: ...?room=ABCD opens Battle and joins
   const linked = cleanCode(params.get('room'));
   if (linked.length === 4) {
     $('join-code').value = linked;
-    openOnline();
+    window.EchoGame.showOverlay('battle');
+    joinRoom(linked);
   }
 
   window.EchoNet = {
@@ -512,5 +474,6 @@
     get code() { return code; },
     get guests() { return guests.length; },
     createRoom, joinRoom, startMatch, leave,
+    clearStatus: () => status(''),
   };
 })();

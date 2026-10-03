@@ -643,7 +643,7 @@
     batRigs.forEach((rig, k) => {
       const b = bats[k];
       let x = b?.x, y = b?.y, scale = 1 + (b && b.puff > 0 ? 0.4 * b.puff : 0), spin = 0, alpha = b ? v.batVisible(b) : 0;
-      const eat = b && b.dead ? v.eats.find((e) => e.food === b && e.eater && e.t < v.EAT_PULL) : null;
+      const eat = b && b.dead ? v.eats.find((e) => (e.food === b || e.food.i === b.i) && e.eater && e.t < v.EAT_PULL) : null;
       if (eat) {
         const p = eat.t / v.EAT_PULL, ease = p * p;
         x = b.x + (eat.eater.x - b.x) * ease; y = b.y + (eat.eater.y - b.y) * ease;

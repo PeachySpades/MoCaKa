@@ -1,12 +1,12 @@
 // Echo Caves: the painted cave behind the menus. Everything is drawn in code:
 // stalactites, rocky walls framing the screen, glowing crystals and mushrooms,
 // an underground pool, a few bats roosting, and drifting motes of light.
-// It shows whenever the title, battle setup or online screens are open.
+// It shows whenever the title or battle lobby is open.
 (() => {
   'use strict';
   const canvas = document.getElementById('backdrop');
   const ctx = canvas.getContext('2d');
-  const screens = ['title-screen', 'battle-screen', 'online-screen'].map((id) => document.getElementById(id));
+  const screens = ['title-screen', 'battle-screen'].map((id) => document.getElementById(id));
   let W = 0, H = 0, DPR = 1, art = null, motes = [], on = false, last = 0;
 
   // a seeded random source, so the cave looks the same every time

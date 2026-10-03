@@ -1,6 +1,6 @@
 // Bat Brawl: 2 to 4 bats in a pitch-dark arena. A squeak lights the walls
-// and stuns any rival it hits; fly into a stunned bat to eat it. First to 3
-// bites wins. Bats can dash, grab power-ups, and every so often the cave
+// and stuns any rival it hits; dash into a rival to chomp it (stunned ones
+// can't dash away or parry). First to 3 (or 5, 7) bites wins. Bats can dash, grab power-ups, and every so often the cave
 // shifts into a new arena.
 //
 // It runs in three modes:
@@ -14,8 +14,22 @@
   const RING_SPEED = 11, RING_MAX = 7, MEGA_RING = 11, COOLDOWN = 0.45, FRENZY_COOLDOWN = 0.22;
   const STUN_TIME = 1.8, MEGA_STUN = 2.6, SPAWN_SAFE = 1.6, RESPAWN_DELAY = 1.4;
   const START_ECHOES = 4, MAX_ECHOES = 6, CRYSTAL_ECHOES = 2;
-  const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
+  // Dash is the attack: dashing into any rival chomps it (stunned or not).
+  // BITE_GRACE lets a bite land just after the burst ends. Plain flying
+  // contact does nothing. The cooldown keeps it from being spammy.
+  const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 2.2, BITE_GRACE = 0.15, BITE_REACH = R * 2 + 0.15;
+  // Match length: first to this many bites wins (the lobby offers 3, 5 or 7)
   const WIN_SCORE = 3;
+  let winScore = WIN_SCORE;
+  // Echo parry: press squeak just before a rival's ring or beam reaches you
+  // and it bounces off. You aren't stunned, the attacker is, and the squeak
+  // you made is refunded. Each press opens a short parry window; a press that
+  // parries nothing just squeaks as usual, and you can't open another window
+  // until PARRY_COOLDOWN has passed, so mashing squeak isn't a free shield.
+  // A hit that lands a hair before the press still counts (PARRY_LATE, a bit
+  // more for online guests, whose presses reach the host late).
+  const PARRY_WINDOW = 0.25, PARRY_LATE = 0.06, PARRY_LATE_REMOTE = 0.14, PARRY_COOLDOWN = 1, PARRY_STUN = 1.8, PARRY_FX = 0.7;
+  const PARRY_RGB = '255, 246, 200';
   // Sonic beam: hold squeak to charge, let go to fire a narrow beam straight
   // ahead (the way you're flying). It reaches much farther than a ring and
   // stuns longer, but costs 2 echoes and misses anything off to the side.
@@ -130,6 +144,8 @@
   let localCount = 1;                    // humans on this device (local mode)
   let beams = [], beamId = 0;
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
+  let parries = [], parryCount = 0;                      // parry flashes being drawn: { x, y, ax, ay, rgb, t }
+  let carved = [];                       // tiles opened up by the last shift so no bat ends up inside a wall
   let lit, litBy;
   let clock = 0, countdown = 0, over = false, banner = null, shiftTimer = NO_SHIFT, shift = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, snapTimer = 0, outbox = [], ringId = 0, ended = false;
@@ -140,6 +156,7 @@
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       echoes: START_ECHOES, cooldown: 0, stun: 0, safe: 0, dead: 0, score: 0, seen: 0, mouth: 0, puff: 0,
       dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false, charging: false, charge: 0,
+      parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
@@ -156,6 +173,7 @@
     onEnd = o.onEnd || null;
     cpuLevel = CPU_LEVELS[o.level] || CPU_LEVELS.normal;
     arenaMode = ARENA_MODES[o.arenaMode] ? o.arenaMode : 'shift';
+    winScore = Math.max(1, Math.min(15, Math.round(+o.firstTo) || WIN_SCORE));
     bats = [];
     if (mode === 'local') {
       localCount = Math.max(1, Math.min(4, o.humans || 1));
@@ -182,7 +200,7 @@
       const s = arena.spawns[k];
       b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
     });
-    rings = []; beams = []; particles = []; popups = []; eats = []; outbox = [];
+    rings = []; beams = []; particles = []; popups = []; eats = []; outbox = []; parries = []; carved = [];
     remoteInput.clear();
     clock = 0; countdown = 3; over = false; ended = false; shift = null; slowmo = 0; shake = 0;
     shiftTimer = shiftEvery(); powerTimer = 6 + Math.random() * 3; snapTimer = 0;
@@ -201,7 +219,7 @@
   }
   function applyFx(ev) {
     const s = (window.EchoAudio && window.EchoAudio.sfx) || {};
-    if (ev.k === 'sfx') s[ev.n]?.();
+    if (ev.k === 'sfx') (s[ev.n] || s[ev.alt])?.();
     else if (ev.k === 'burst') burst(ev.x, ev.y, ev.rgb, ev.n, ev.sp || 3, ev.sz || 4);
     else if (ev.k === 'popup') popups.push({ x: ev.x, y: ev.y, text: ev.text, rgb: ev.rgb, t: 0, life: ev.life || 0.9, big: !!ev.big });
     else if (ev.k === 'shake') shake = Math.max(shake, ev.v);
@@ -210,6 +228,11 @@
       for (let k = 0; k < 4; k++) particles.push({ x: ev.x, y: ev.y, vx: ev.face * (1 + Math.random()), vy: -0.5 - Math.random(), life: 1, rgb: ev.rgb, size: 6, feather: true });
     } else if (ev.k === 'slowmo') slowmo = ev.t;
     else if (ev.k === 'tiles') for (const [k, v] of ev.c) { if (arena.grid[k] !== v) { arena.grid[k] = v; tileGlow[k] = 1; } }
+    else if (ev.k === 'parry') {
+      parries.push({ x: ev.x, y: ev.y, ax: ev.ax, ay: ev.ay, rgb: ev.rgb, t: 0 });
+      // a bright two-tone ping; game.js may provide its own 'parry' sound
+      if (s.parry) s.parry(); else { s.block?.(); s.crystal?.(); s.charged?.(); }
+    }
   }
   function burst(x, y, rgb, n, speed = 3, size = 4) {
     for (let k = 0; k < n; k++) {
@@ -319,6 +342,11 @@
     if (paused) return;
     const b = localBat(slot);
     if (!b) return;
+    // a dash goes the way you're steering right now (guests' copies of velocity lag behind)
+    if (a === 'dash' && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
+      const { ix, iy } = localInput(slot);
+      if (Math.hypot(ix, iy) > 0.2) { dx = ix; dy = iy; }
+    }
     if (mode === 'client') {
       net?.send({ t: 'act', a, dx, dy });
       if (a === 'squeak' && b.echoes <= 0) applyFx({ k: 'sfx', n: 'empty' });
@@ -327,9 +355,11 @@
     doAct(b, a, dx, dy);
   }
   function doAct(b, a, dx, dy) {
-    if (a === 'squeak') squeak(b);
+    // a squeak press (a tap, or squeak key / second finger going down) is also a parry attempt
+    if ((a === 'squeak' || a === 'charge') && parryPress(b) === 'late') return;
+    if (a === 'squeak') tracked(b, () => squeak(b));
     else if (a === 'charge') startCharge(b);
-    else if (a === 'release') releaseCharge(b);
+    else if (a === 'release') tracked(b, () => releaseCharge(b));
     else if (a === 'dash') dash(b, dx, dy);
   }
 
@@ -378,9 +408,9 @@
   // bat's dizzy stars) or it's right next to them. Otherwise they hunt from
   // the last place they noticed it, or roam and squeak to look around.
   const CPU_LEVELS = {
-    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3 },
-    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5 },
-    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7 },
+    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3, parry: 0 },
+    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5, parry: 0.3 },
+    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7, parry: 0.55 },
   };
   let cpuLevel = CPU_LEVELS.normal;
   function randomOpenSpot() {
@@ -397,6 +427,7 @@
       const noticed = o.stun > 0 || o.seen > 0.25 || litAt(o.x, o.y) > 0.35 || dist(o, b) < lv.sense;
       if (noticed) ai.known.set(o.i, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, age: 0, bat: o });
     }
+    cpuParry(b, foes);
     for (const [i, k] of ai.known) {
       k.age += dt;
       if (k.age > lv.memory || k.bat.dead) ai.known.delete(i);
@@ -453,10 +484,145 @@
       if (shootable && !b.charging && canShoot && Math.random() < lv.squeak) squeak(b);
       // lost everyone: sometimes squeak just to look around
       else if (!known.length && !b.charging && b.echoes > 2 && Math.random() < lv.search) squeak(b);
-      if (snack && dist(snack, b) < 4 && b.dashCd <= 0 && Math.random() < lv.dash) dash(b, dx / len, dy / len);
+      // the bite is a dash: lunge at a stunned rival in reach, or (less often) at one it can perceive close by
+      if (b.dashCd <= 0 && !b.charging) {
+        const prey = snack && dist(snack, b) < 2.6 ? snack
+          : fresh.map((k) => k.bat).find((o) => o.safe <= 0 && dist(o, b) < 2.2);
+        if (prey && Math.random() < (prey.stun > 0 ? lv.dash : lv.dash * 0.6)) {
+          const k = prey.stun > 0 ? prey : ai.known.get(prey.i) || prey;
+          const ax = k.x + (k.vx || 0) * 0.1 - b.x, ay = k.y + (k.vy || 0) * 0.1 - b.y, d = Math.hypot(ax, ay) || 1;
+          const err = (Math.random() - 0.5) * 2 * lv.aimErr, c = Math.cos(err), sn = Math.sin(err);
+          if (castRay(b.x, b.y, ax / d, ay / d, d) >= d - 0.4) dash(b, (ax * c - ay * sn) / d, (ax * sn + ay * c) / d);
+        }
+      }
     }
     const speed = (snack ? 1 : 0.85) * lv.speed;
     return { ix: (dx / len) * speed, iy: (dy / len) * speed };
+  }
+
+  // ---- Echo parry ----------------------------------------------------------
+  // A squeak press opens a short parry window (unless the last one was too
+  // recent). Returns true if a window opened, 'late' if the press parried a
+  // hit that had just landed, false otherwise.
+  function parryPress(b) {
+    if (!active || countdown > 0 || over || shift || !b || b.dead || b.parryCd > 0) return false;
+    const late = b.ctrl === 'remote' ? PARRY_LATE_REMOTE : PARRY_LATE;
+    if (b.stun > 0 && b.hitBy && clock - b.hitBy.t <= late) {
+      const h = b.hitBy;
+      b.hitBy = null;
+      b.stun = 0; b.vx = h.vx; b.vy = h.vy;
+      b.parryCd = PARRY_COOLDOWN;
+      parrySucceed(b, bats[h.by], h.x, h.y);
+      return 'late';
+    }
+    if (b.stun > 0) return false;
+    b.parryT = PARRY_WINDOW; b.parryCd = PARRY_COOLDOWN; b.parryRing = null;
+    return true;
+  }
+  // remember the squeak made during a parry window, so a parry can refund it
+  function tracked(b, act2) {
+    const e0 = b.echoes, m0 = b.mega, id0 = ringId;
+    act2();
+    if (b.parryT > 0 && ringId !== id0 && !b.parryRing) b.parryRing = { id: ringId, cost: Math.max(0, e0 - b.echoes), mega: m0 && !b.mega };
+  }
+  // b parried an attack from attacker (sx, sy: where it came from)
+  function parrySucceed(b, attacker, sx, sy, dashed) {
+    b.parryT = 0;
+    if (b.parryRing) {
+      const pr = b.parryRing;
+      b.parryRing = null;
+      for (const g of rings) if (g.id === pr.id) g.gone = true;
+      rings = rings.filter((g) => !g.gone);
+      b.echoes = Math.min(MAX_ECHOES, b.echoes + pr.cost);
+      if (pr.mega) b.mega = true;
+      b.cooldown = 0;
+    }
+    b.charging = false; b.charge = 0;
+    b.seen = 1;
+    let ax = sx, ay = sy;
+    if (attacker && attacker !== b && !attacker.dead) {
+      ax = attacker.x; ay = attacker.y;
+      attacker.seen = 1;
+      attacker.biteT = 0;
+      if (dashed) {
+        // a parried dash bounces straight back
+        const dx = attacker.x - b.x, dy = attacker.y - b.y, d = Math.hypot(dx, dy) || 1;
+        attacker.dashT = 0; attacker.vx = (dx / d) * 6; attacker.vy = (dy / d) * 6;
+      }
+      if (attacker.safe <= 0 && attacker.stun <= 0) {
+        const dx = attacker.x - b.x, dy = attacker.y - b.y, d = Math.hypot(dx, dy) || 1;
+        if (attacker.shield) {
+          attacker.shield = false;
+          fx({ k: 'popup', x: attacker.x, y: attacker.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
+          fx({ k: 'sfx', n: 'block' });
+        } else {
+          attacker.stun = PARRY_STUN;
+          attacker.dashT = 0; attacker.charging = false; attacker.charge = 0;
+          const kick = dashed ? 6 : 3;
+          attacker.vx = (dx / d) * kick; attacker.vy = (dy / d) * kick;
+          fx({ k: 'burst', x: attacker.x, y: attacker.y, rgb: '255, 226, 120', n: 12 });
+          fx({ k: 'sfx', n: 'stun' });
+        }
+      }
+    }
+    parryCount++;
+    fx({ k: 'parry', x: r2(b.x), y: r2(b.y), ax: r2(ax), ay: r2(ay), rgb: b.rgb });
+    fx({ k: 'popup', x: b.x, y: b.y - 1.1, text: 'PARRY!', rgb: PARRY_RGB, big: true, life: 1 });
+    fx({ k: 'burst', x: b.x, y: b.y, rgb: PARRY_RGB, n: 18, sp: 4, sz: 4 });
+    fx({ k: 'shake', v: 0.15 });
+  }
+  // the attack was not parried: note it, so a press a moment late still counts
+  function noteHit(foe, by, x, y, vx, vy) {
+    foe.hitBy = { by, t: clock, x, y, vx, vy };
+  }
+  // CPU bats parry now and then (never on Easy), and only attacks they can
+  // perceive: a squeak ring they hear coming, or a beam charging at them from
+  // a rival they know is there.
+  function cpuParry(b, foes) {
+    const lv = cpuLevel, ai = b.ai;
+    if (!lv.parry || b.parryCd > 0 || b.parryT > 0) return;
+    ai.parried = ai.parried || new Set();
+    if (ai.parried.size > 60) ai.parried.clear();
+    let go = false;
+    for (const g of rings) {
+      if (g.owner === b.i || g.hit.has(b.i) || ai.parried.has('r' + g.id)) continue;
+      const d = dist(g, b), tti = (d - R - g.r) / RING_SPEED;
+      if (d > g.max + R || tti > 0.2 || tti < 0.02) continue;
+      ai.parried.add('r' + g.id);
+      if (Math.random() < lv.parry) { go = true; break; }
+    }
+    // a rival dashing at it, heard (a dash is loud) and about to arrive
+    for (const o of foes) {
+      if (go) break;
+      if (o.biteT <= 0 || o.stun > 0 || ai.parried.has('d' + o.i + ':' + o.dashSeq)) continue;
+      const k = ai.known.get(o.i);
+      if (!k || k.age > 0.3) continue;
+      const d = dist(o, b), closing = ((o.vx - b.vx) * (b.x - o.x) + (o.vy - b.vy) * (b.y - o.y)) / (d || 1);
+      if (closing <= 1 || (d - BITE_REACH) / closing > 0.2) continue;
+      ai.parried.add('d' + o.i + ':' + o.dashSeq);
+      if (Math.random() < lv.parry) go = true;
+    }
+    for (const o of foes) {
+      if (go) break;
+      if (!o.charging) { ai.parried.delete('b' + o.i); continue; }
+      const k = ai.known.get(o.i);
+      if (!k || k.age > 0.4 || o.charge < BEAM_CHARGE - 0.2 || ai.parried.has('b' + o.i)) continue;
+      const d = dist(o, b);
+      if (d > BEAM_LEN) continue;
+      ai.parried.add('b' + o.i);
+      if (Math.random() < lv.parry * 0.6) go = true;
+    }
+    if (go && parryPress(b) === true) tracked(b, () => squeak(b));
+  }
+
+  // two bats dashing into each other bounce apart, and nobody gets a bite
+  function clash(a, b, ux, uy) {
+    for (const [o, s] of [[a, -1], [b, 1]]) { o.biteT = 0; o.dashT = 0; o.vx = ux * s * 6; o.vy = uy * s * 6; o.seen = 1; }
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    fx({ k: 'burst', x: mx, y: my, rgb: '255, 255, 255', n: 16, sp: 4 });
+    fx({ k: 'popup', x: mx, y: my - 1, text: 'CLASH!', rgb: '232, 236, 255', big: true, life: 0.8 });
+    fx({ k: 'sfx', n: 'block' });
+    fx({ k: 'shake', v: 0.18 });
   }
 
   // ---- Actions -----------------------------------------------------------
@@ -520,6 +686,7 @@
       if (Math.abs(rx * uy - ry * ux) > BEAM_WIDTH + R) continue;
       foe.seen = 1;
       if (foe.stun > 0) continue;
+      if (foe.parryT > 0) { parrySucceed(foe, b, b.x, b.y); continue; }
       if (foe.shield) {
         foe.shield = false;
         foe.vx = ux * 3; foe.vy = uy * 3;
@@ -528,6 +695,7 @@
         fx({ k: 'sfx', n: 'block' });
         continue;
       }
+      noteHit(foe, b.i, b.x, b.y, foe.vx, foe.vy);
       foe.stun = BEAM_STUN;
       foe.dashT = 0; foe.charging = false; foe.charge = 0;
       foe.vx = ux * 5; foe.vy = uy * 5;
@@ -558,6 +726,8 @@
     b.vx = (ux / len) * DASH_SPEED;
     b.vy = (uy / len) * DASH_SPEED;
     b.dashT = DASH_TIME;
+    b.biteT = DASH_TIME + BITE_GRACE;
+    b.dashSeq++;
     b.dashCd = DASH_COOLDOWN;
     b.seen = Math.max(b.seen, 0.5);
     fx({ k: 'sfx', n: 'dash' });
@@ -567,13 +737,15 @@
   // CHOMP, the eater puffs up, then burps out a few feathers.
   function eat(eater, food) {
     eater.score++;
-    eats.push({ eater, food: { ...food }, t: 0, chomped: false, burped: false });
+    eater.biteT = 0; eater.dashT = 0;
+    eater.vx *= 0.3; eater.vy *= 0.3;
+    eats.push({ eater, food: { ...food }, t: 0, chomped: false, burped: false, ang: Math.atan2(food.y - eater.y, food.x - eater.x) });
     food.dead = RESPAWN_DELAY + EAT_TIME;
     food.stun = 0;
     food.power = null; food.mega = false; food.shield = false; food.charging = false; food.charge = 0;
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
-    if (eater.score >= WIN_SCORE) over = true;
+    if (eater.score >= winScore) over = true;
   }
 
   function updateEats(dt) {
@@ -581,12 +753,13 @@
       e.t += dt;
       const b = e.eater;
       b.mouth = e.t < EAT_PULL ? Math.min(1, e.t / 0.12) : 0;
+      // the chomp sound starts with a short whoosh, so it begins just before the jaws snap
+      if (!e.snd && e.t >= EAT_PULL - 0.11) { e.snd = true; fx({ k: 'sfx', n: 'bigChomp', alt: 'chomp' }); }
       if (!e.chomped && e.t >= EAT_PULL) {
         e.chomped = true;
         b.puff = 1;
         const mx = b.x + b.face * R * 0.4, my = b.y + R * 0.3;
-        fx({ k: 'sfx', n: 'chomp' });
-        fx({ k: 'shake', v: 0.25 });
+        fx({ k: 'shake', v: 0.3 });
         fx({ k: 'burst', x: mx, y: my, rgb: e.food.rgb, n: 22, sp: 4, sz: 5 });
         fx({ k: 'burst', x: mx, y: my, rgb: '255, 255, 255', n: 8, sp: 3, sz: 3 });
         fx({ k: 'popup', x: b.x, y: b.y - 1.1, text: 'CHOMP!', rgb: b.rgb, big: true });
@@ -605,7 +778,7 @@
       ended = true;
       const winner = done[done.length - 1].eater;
       const result = {
-        winner: winner.name, winnerCpu: winner.ctrl === 'cpu', color: winner.color, humans: localCount,
+        winner: winner.name, winnerCpu: winner.ctrl === 'cpu', color: winner.color, humans: localCount, firstTo: winScore,
         standings: bats.map((o) => ({ name: o.name, score: o.score, cpu: o.ctrl === 'cpu', color: o.color })).sort((p, q) => q.score - p.score),
       };
       setTimeout(() => { if (active && onEnd) onEnd(result); }, 600);
@@ -651,19 +824,101 @@
     const score = (s) => foes.length ? Math.min(...foes.map((o) => Math.hypot(o.x - s.x, o.y - s.y))) : 0;
     const free = arena.spawns.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
     const s = (free.length ? free : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
-    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0 });
+    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null });
   }
 
+  // Shifting and Chaos: the cave changes around the bats, but nobody moves.
+  // Bats, power-ups, sound rings and bites in progress all keep their places.
+  // A bat that would be inside a wall of the new cave gets a small pocket
+  // carved around it, joined to the rest of the cave so it is never sealed in.
+  let forceNext = -1;   // tests: which arena the next shift lands on
   function shiftArena() {
-    loadArena(nextArenaIndex());
-    rings = []; beams = [];
-    bats.forEach((b, k) => {
-      const s = arena.spawns[k % arena.spawns.length];
-      Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, safe: SPAWN_SAFE, stun: 0, dashT: 0 });
-      if (b.ai) b.ai.path = [];
+    const oldW = arena.w, oldH = arena.h, keepPowers = powerups;
+    loadArena(forceNext >= 0 ? forceNext : nextArenaIndex());
+    forceNext = -1;
+    const { w, h } = arena;
+    // a different-sized cave: scale positions across, then keep them inside the border
+    const sx = (w - 2) / (oldW - 2), sy = (h - 2) / (oldH - 2);
+    const fit = (p) => {
+      if (oldW !== w || oldH !== h) { p.x = 1 + (p.x - 1) * sx; p.y = 1 + (p.y - 1) * sy; }
+      p.x = Math.max(1 + R, Math.min(w - 1 - R, p.x));
+      p.y = Math.max(1 + R, Math.min(h - 1 - R, p.y));
+    };
+    const live = bats.filter((b) => !b.dead);
+    for (const b of live) fit(b);
+    for (const ring of rings) fit(ring);
+    beams = [];
+    const opened = [];
+    const open = (tx, ty) => {
+      if (tx < 1 || ty < 1 || tx > w - 2 || ty > h - 2) return;   // never the outer border
+      const k = ty * w + tx;
+      if (arena.grid[k]) { arena.grid[k] = 0; opened.push(k); }
+    };
+    for (const b of live) {
+      if (!hitsWall(b.x, b.y, R)) continue;
+      const cx = Math.floor(b.x), cy = Math.floor(b.y);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) open(cx + dx, cy + dy);
+    }
+    // nobody may end up shut away from the rest of the cave: tunnel out of any closed pocket
+    for (const b of live) {
+      const path = tunnelOut(Math.floor(b.x), Math.floor(b.y));
+      for (const k of path) open(k % w, Math.floor(k / w));
+    }
+    carved = opened;
+    for (const k of opened) tileGlow[k] = 1;
+    if (opened.length) fx({ k: 'tiles', c: opened.map((k) => [k, 0]) });
+    // power-ups stay put; one swallowed by rock pops out into the nearest open spot
+    powerups = keepPowers.filter((p) => {
+      fit(p);
+      if (!solid(Math.floor(p.x), Math.floor(p.y))) return true;
+      const spot = arena.open.filter((q) => !solid(Math.floor(q.x), Math.floor(q.y))).sort((q, r) => dist(q, p) - dist(r, p))[0];
+      if (!spot || dist(spot, p) > 3) return false;
+      p.x = spot.x; p.y = spot.y;
+      return true;
     });
+    for (const b of bats) if (b.ai) { b.ai.path = []; b.ai.roam = null; }
     fx({ k: 'banner', text: arena.def.name, rgb: arena.theme.wall, t: 2.2 });
     fx({ k: 'sfx', n: 'crash' });
+  }
+  // The cave's main open area is its biggest connected stretch of open tiles.
+  // If tile (sx, sy) isn't part of it, return the wall tiles to dig through to
+  // reach it by the shortest way (empty when it's already connected).
+  function tunnelOut(sx, sy) {
+    const { w, h, grid } = arena, n = w * h;
+    const comp = new Int32Array(n).fill(-1), sizes = [];
+    for (let k = 0; k < n; k++) {
+      if (grid[k] || comp[k] >= 0) continue;
+      const id = sizes.length, q = [k];
+      comp[k] = id;
+      for (let j = 0; j < q.length; j++) {
+        const c = q[j], cx = c % w, cy = (c / w) | 0;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = cx + dx, ny = cy + dy, m = ny * w + nx;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h || grid[m] || comp[m] >= 0) continue;
+          comp[m] = id; q.push(m);
+        }
+      }
+      sizes.push(q.length);
+    }
+    const main = sizes.indexOf(Math.max(...sizes)), start = sy * w + sx;
+    if (comp[start] === main) return [];
+    // breadth-first through rock (inside the border) until the main area
+    const prev = new Int32Array(n).fill(-1), q = [start];
+    prev[start] = start;
+    let goal = -1;
+    for (let j = 0; j < q.length && goal < 0; j++) {
+      const c = q[j], cx = c % w, cy = (c / w) | 0;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, ny = cy + dy, m = ny * w + nx;
+        if (nx < 1 || ny < 1 || nx > w - 2 || ny > h - 2 || prev[m] >= 0) continue;
+        prev[m] = c;
+        if (comp[m] === main) { goal = m; break; }
+        q.push(m);
+      }
+    }
+    const path = [];
+    for (let c = goal >= 0 ? prev[goal] : start; c !== start; c = prev[c]) if (grid[c]) path.push(c);
+    return path;
   }
 
   function spawnPowerup() {
@@ -717,6 +972,9 @@
       b.safe = Math.max(0, b.safe - dt);
       b.seen = Math.max(0, b.seen - dt * 0.8);
       b.dashCd = Math.max(0, b.dashCd - dt);
+      b.parryCd = Math.max(0, b.parryCd - dt);
+      b.biteT = Math.max(0, b.biteT - dt);
+      if (b.parryT > 0) { b.parryT = Math.max(0, b.parryT - dt); if (b.parryT <= 0) b.parryRing = null; }
       if (b.power) { b.powerT -= dt; if (b.powerT <= 0) { b.power = null; b.powerT = 0; } }
       if (b.dead > 0) { b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
@@ -753,13 +1011,27 @@
 
     advanceRings(dt, true);
 
-    // eating: a bat that isn't stunned touches a stunned one
+    // biting: a bat mid-dash (or just after) that touches any rival chomps it,
+    // unless the rival parries, blocks with a shield, or is dashing too (a clash)
     if (!over) {
       outer: for (const a of bats) {
-        if (a.dead || a.stun > 0) continue;
+        if (a.dead || a.stun > 0 || a.biteT <= 0) continue;
         for (const b of bats) {
-          if (b === a || b.dead || b.stun <= 0) continue;
-          if (Math.hypot(a.x - b.x, a.y - b.y) < R * 2 + 0.15) { eat(a, b); break outer; }
+          if (b === a || b.dead || b.safe > 0 || Math.hypot(a.x - b.x, a.y - b.y) >= BITE_REACH) continue;
+          const d = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / d, uy = (b.y - a.y) / d;
+          if (b.biteT > 0 && b.stun <= 0) { clash(a, b, ux, uy); continue outer; }
+          if (b.parryT > 0 && b.stun <= 0) { parrySucceed(b, a, a.x, a.y, true); continue outer; }
+          if (b.shield) {
+            b.shield = false;
+            a.biteT = 0; a.dashT = 0; a.vx = -ux * 5; a.vy = -uy * 5;
+            b.vx = ux * 3; b.vy = uy * 3;
+            fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
+            fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.shield.rgb, n: 12 });
+            fx({ k: 'sfx', n: 'block' });
+            continue outer;
+          }
+          eat(a, b);
+          break outer;
         }
       }
     }
@@ -801,6 +1073,7 @@
     for (const beam of beams) beam.t += dt;
     beams = beams.filter((beam) => beam.t < BEAM_LIFE);
     for (const ring of rings) {
+      if (ring.gone) continue;
       const prev = ring.r;
       ring.r += RING_SPEED * dt;
       const r = ring.r, { w, h } = arena;
@@ -819,6 +1092,7 @@
           foe.seen = 1;
           if (foe.stun > 0) continue;
           const k = d || 1;
+          if (foe.parryT > 0) { parrySucceed(foe, bats[ring.owner], ring.x, ring.y); continue; }
           if (foe.shield) {
             foe.shield = false;
             foe.vx = ((foe.x - ring.x) / k) * 3; foe.vy = ((foe.y - ring.y) / k) * 3;
@@ -827,6 +1101,7 @@
             fx({ k: 'sfx', n: 'block' });
             continue;
           }
+          noteHit(foe, ring.owner, ring.x, ring.y, foe.vx, foe.vy);
           foe.stun = ring.stun;
           foe.dashT = 0;
           const push = 2 + 4 * (1 - d / ring.max);
@@ -837,7 +1112,7 @@
         }
       }
     }
-    rings = rings.filter((ring) => ring.r < ring.max);
+    rings = rings.filter((ring) => ring.r < ring.max && !ring.gone);
   }
 
   function tickCosmetics(dt) {
@@ -847,6 +1122,8 @@
     if (tileGlow) for (let k = 0; k < tileGlow.length; k++) if (tileGlow[k] > 0) tileGlow[k] = Math.max(0, tileGlow[k] - dt * 0.6);
     for (const p of popups) p.t += dt;
     popups = popups.filter((p) => p.t < p.life);
+    for (const p of parries) p.t += dt;
+    parries = parries.filter((p) => p.t < PARRY_FX);
     for (const p of particles) {
       p.x += p.vx * dt; p.y += p.vy * dt;
       if (p.feather) { p.vy += 1.5 * dt; p.vx *= 1 - 1.5 * dt; } else { p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; }
@@ -861,14 +1138,16 @@
     const s = {
       t: 's', a: arenaIndex, am: arenaMode, st: r2(shiftTimer), sh: shift ? r2(shift.t) : -1, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
-        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1]),
+        r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT)]),
       bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
       p: powerups.map((p) => [r2(p.x), r2(p.y), p.type]),
-      e: eats.map((e) => [e.eater.i, e.food.i, r2(e.food.x), r2(e.food.y), r2(e.t)]),
+      e: eats.map((e) => [e.eater.i, e.food.i, r2(e.food.x), r2(e.food.y), r2(e.t), r2(e.ang)]),
       fx: outbox,
+      ft: winScore,
     };
+    if (carved.length) s.cv = carved;
     outbox = [];
     return s;
   }
@@ -877,6 +1156,9 @@
     if (mode !== 'client' || !active) return;
     if (s.a !== arenaIndex) loadArena(s.a);
     if (s.am) arenaMode = s.am;
+    if (s.ft) winScore = s.ft;
+    // pockets the host carved so nobody ended up inside a wall after a shift
+    if (s.cv) for (const k of s.cv) if (arena.grid[k]) { arena.grid[k] = 0; tileGlow[k] = 1; }
     shiftTimer = s.st;
     shift = s.sh >= 0 ? { t: s.sh, swapped: true } : null;
     countdown = s.cd;
@@ -888,6 +1170,7 @@
       b.power = v[14] || null; b.powerT = v[15]; b.mega = !!v[16]; b.shield = !!v[17];
       b.cpuFlag = !!v[18]; b.dashT = v[19];
       b.charging = v[20] >= 0; b.charge = Math.max(0, v[20] ?? -1);
+      b.parryT = v[21] || 0;
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
     const knownBeams = new Set(beams.map((m) => m.id));
@@ -903,9 +1186,9 @@
     });
     [...s.c].forEach((ch, k) => { if (crystals[k]) crystals[k].on = ch === '1'; });
     powerups = s.p.map(([x, y, type], k) => ({ x, y, type, phase: powerups[k]?.phase ?? Math.random() * 6 }));
-    eats = s.e.map(([ei, fi, fx2, fy2, t]) => {
+    eats = s.e.map(([ei, fi, fx2, fy2, t, ang]) => {
       const f = bats[fi];
-      return { eater: bats[ei], food: { ...f, x: fx2, y: fy2 }, t };
+      return { eater: bats[ei], food: { ...f, x: fx2, y: fy2 }, t, ang };
     });
     for (const ev of s.fx || []) applyFx(ev);
   }
@@ -955,6 +1238,8 @@
   // Other bats are invisible in the dark unless sound reaches them
   function batVisible(b) {
     if (b.ctrl === 'local' || viewer === b.i) return 1;
+    // a bat mid-chomp is never hidden, however dark it is
+    if (eats.some((e) => e.eater && e.eater.i === b.i)) return 1;
     return Math.max(litAt(b.x, b.y) * 0.9, b.seen, b.stun > 0 ? 1 : 0, b.mouth > 0 || b.puff > 0 ? 1 : 0);
   }
 
@@ -1109,14 +1394,6 @@
       ctx.lineCap = 'butt';
     }
 
-    for (const e of eats) {
-      if (e.t >= EAT_PULL || !e.eater) continue;
-      const p = e.t / EAT_PULL, ease = p * p;
-      const mx = e.eater.x + e.eater.face * R * 0.4, my = e.eater.y + R * 0.3;
-      const fx2 = e.food.x + (mx - e.food.x) * ease, fy2 = e.food.y + (my - e.food.y) * ease;
-      drawBat(e.food, X(fx2), Y(fy2), { scale: 1 - 0.85 * ease, rot: p * 9, alpha: 1, stunned: true, tag: false });
-    }
-
     for (const p of particles) {
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
       if (p.feather) {
@@ -1130,6 +1407,8 @@
       const v = batVisible(b);
       if (v > 0.03) drawBat(b, X(b.x), Y(b.y), { alpha: b.ctrl === 'local' || viewer === b.i ? undefined : v });
     }
+    drawChomps((x, y) => ({ x: X(x), y: Y(y), s: PX }), true);
+    drawParries((x, y) => ({ x: X(x), y: Y(y), s: PX }));
 
     for (const p of popups) {
       const k = p.t / p.life;
@@ -1201,6 +1480,8 @@
       ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, q.x, q.y + s * 0.78);
       ctx.globalAlpha = 1;
     }
+    drawChomps(P);
+    drawParries(P);
     for (const p of popups) {
       const k = p.t / p.life;
       const pop = p.big ? 1 + 0.6 * Math.max(0, 1 - p.t * 6) : 1;
@@ -1211,6 +1492,162 @@
       ctx.fillText(p.text, q.x, q.y);
     }
     drawScreen();
+  }
+
+  // The chomp: a big Pac-Man mouth with jagged teeth opens wide toward the
+  // victim, snaps shut on it, then three bold slashes rip across the bite.
+  // P(x, y) maps arena to screen: { x, y, s } (s = pixels per tile).
+  function drawChomps(P, flat) {
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (const e of eats) {
+      const b = e.eater;
+      if (!b) continue;
+      const t = e.t, ang = e.ang ?? (e.ang = Math.atan2(e.food.y - b.y, e.food.x - b.x));
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const q = P(b.x + ca * 0.25, b.y + sa * 0.25);
+      if (q.off) continue;
+      const S = q.s;
+      // the mouth: pops up, gapes, snaps shut at EAT_PULL, then shrinks away
+      if (t < EAT_PULL + 0.3) {
+        const grow = Math.min(1, t / 0.08), after = Math.max(0, t - EAT_PULL) / 0.3;
+        const rad = S * (0.85 + 0.35 * grow) * (1 - after * 0.6) * (1 + 0.12 * Math.max(0, 1 - Math.abs(t - EAT_PULL) / 0.06));
+        const gape = t < EAT_PULL * 0.6 ? 0.95 * Math.min(1, t / (EAT_PULL * 0.45)) : t < EAT_PULL ? 0.95 * (1 - ((t - EAT_PULL * 0.6) / (EAT_PULL * 0.4)) ** 2) : 0;
+        const op = gape + 0.02, alpha = 1 - after;
+        ctx.globalAlpha = alpha;
+        glow(q.x, q.y, rad * 1.7, b.rgb, 0.35);
+        // dark throat behind the jaws
+        ctx.fillStyle = '#1a0610';
+        ctx.beginPath(); ctx.arc(q.x, q.y, rad * 0.94, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = b.color;
+        ctx.beginPath();
+        ctx.moveTo(q.x, q.y);
+        ctx.arc(q.x, q.y, rad, ang + op, ang - op + Math.PI * 2);
+        ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'; ctx.lineWidth = Math.max(1.5, S * 0.05); ctx.stroke();
+        // jagged teeth along both jaws, pointing into the gap
+        if (gape > 0.08) {
+          ctx.fillStyle = '#fff';
+          for (const side of [1, -1]) {
+            const ja = ang + side * op, jx = Math.cos(ja), jy = Math.sin(ja);
+            const nx = -jy * side, ny = jx * side;   // into the gap
+            for (let k = 0; k < 4; k++) {
+              const f0 = 0.3 + k * 0.17, f1 = f0 + 0.15, tip = rad * (0.13 + 0.04 * (k % 2));
+              const x0 = q.x + jx * rad * f0, y0 = q.y + jy * rad * f0, x1 = q.x + jx * rad * f1, y1 = q.y + jy * rad * f1;
+              ctx.beginPath();
+              ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+              ctx.lineTo((x0 + x1) / 2 - nx * tip, (y0 + y1) / 2 - ny * tip);
+              ctx.closePath(); ctx.fill();
+            }
+          }
+        }
+        // a fierce eye above the jaw
+        const up = ca >= 0 ? [sa, -ca] : [-sa, ca];   // the side of the jaw facing up the screen
+        const ex = q.x + up[0] * rad * 0.5 - ca * rad * 0.12, ey = q.y + up[1] * rad * 0.5 - sa * rad * 0.12;
+        ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(ex, ey, rad * 0.13, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#1a1030'; ctx.beginPath(); ctx.arc(ex + ca * rad * 0.04, ey + sa * rad * 0.04, rad * 0.07, 0, Math.PI * 2); ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // the victim, spinning and shrinking as it's sucked into the jaws
+      if (t < EAT_PULL) {
+        const k = t / EAT_PULL, ease = k * k;
+        const mx = b.x + ca * 0.3, my = b.y + sa * 0.3;
+        const v = P(e.food.x + (mx - e.food.x) * ease, e.food.y + (my - e.food.y) * ease);
+        if (flat) drawBat(e.food, v.x, v.y, { scale: 1 - 0.8 * ease, rot: k * 9, alpha: 1, stunned: true, tag: false });
+        else if (!v.off) {
+          const r = v.s * R * 1.15 * (1 - 0.8 * ease);
+          ctx.save(); ctx.translate(v.x, v.y); ctx.rotate(k * 9);
+          ctx.fillStyle = e.food.color;
+          ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
+          ctx.beginPath(); ctx.moveTo(-r * 0.6, -r * 0.2); ctx.lineTo(-r * 2.1, -r * 0.7); ctx.lineTo(-r * 1.5, r * 0.4); ctx.closePath();
+          ctx.moveTo(r * 0.6, -r * 0.2); ctx.lineTo(r * 2.1, -r * 0.7); ctx.lineTo(r * 1.5, r * 0.4); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, r * 0.14);
+          for (const sd of [-1, 1]) {
+            const ex = sd * r * 0.35, ey = -r * 0.1, q2 = r * 0.16;
+            ctx.beginPath(); ctx.moveTo(ex - q2, ey - q2); ctx.lineTo(ex + q2, ey + q2); ctx.moveTo(ex + q2, ey - q2); ctx.lineTo(ex - q2, ey + q2); ctx.stroke();
+          }
+          ctx.restore();
+        }
+      }
+      // three big slashes across the bite, drawn in fast and fading out
+      const st = t - EAT_PULL + 0.04;
+      if (st > 0 && st < 0.75) {
+        const c = P(b.x + ca * 0.6, b.y + sa * 0.6), L = c.s * 1.5, fade = st < 0.45 ? 1 : 1 - (st - 0.45) / 0.3;
+        const sl = ang + Math.PI / 2 + 0.6, ux = Math.cos(sl), uy = Math.sin(sl), px = -uy, py = ux;
+        for (let k = 0; k < 3; k++) {
+          const draw = Math.min(1, Math.max(0, (st - k * 0.035) / 0.09));
+          if (draw <= 0) continue;
+          const off = (k - 1) * c.s * 0.42, x0 = c.x + px * off - ux * L, y0 = c.y + py * off - uy * L;
+          const x1 = x0 + ux * L * 2 * draw, y1 = y0 + uy * L * 2 * draw;
+          ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+          ctx.strokeStyle = `rgba(${b.rgb}, ${0.5 * fade})`; ctx.lineWidth = Math.max(6, c.s * 0.34); ctx.stroke();
+          ctx.strokeStyle = `rgba(255, 70, 90, ${0.75 * fade})`; ctx.lineWidth = Math.max(3.5, c.s * 0.17); ctx.stroke();
+          ctx.strokeStyle = `rgba(255, 255, 255, ${fade})`; ctx.lineWidth = Math.max(1.5, c.s * 0.065); ctx.stroke();
+        }
+      }
+    }
+    ctx.restore();
+  }
+
+  // Parry: a bat's open parry window shows as a thin bright guard ring; a
+  // successful parry flashes white-gold rings with a spark burst and a crackle
+  // of light back to the attacker. P(x, y) maps arena to screen: { x, y, s }.
+  function drawParries(P) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const b of bats) {
+      if (b.dead || b.parryT <= 0 || batVisible(b) < 0.3) continue;
+      const q = P(b.x, b.y);
+      if (q.off) continue;
+      const k = b.parryT / PARRY_WINDOW;
+      ctx.strokeStyle = `rgba(${PARRY_RGB}, ${0.35 + 0.55 * k})`;
+      ctx.lineWidth = Math.max(1.5, q.s * 0.06);
+      ctx.beginPath(); ctx.arc(q.x, q.y, q.s * (0.62 + 0.15 * (1 - k)), 0, Math.PI * 2); ctx.stroke();
+    }
+    let flash = 0;
+    for (const p of parries) {
+      const q = P(p.x, p.y);
+      if (q.off) continue;
+      const k = p.t / PARRY_FX, f = 1 - k;
+      flash = Math.max(flash, 1 - p.t / 0.18);
+      // crackle of light back to the attacker
+      if (p.t < 0.45 && Math.hypot(p.ax - p.x, p.ay - p.y) > 0.6) {
+        const a = P(p.ax, p.ay);
+        if (!a.off) {
+          const fl = 1 - p.t / 0.45, dx = a.x - q.x, dy = a.y - q.y, len = Math.hypot(dx, dy) || 1;
+          ctx.beginPath(); ctx.moveTo(q.x, q.y);
+          for (let j = 1; j < 8; j++) {
+            const t = j / 8, jig = (((j * 7919 + Math.floor(p.t * 30) * 31) % 13) / 13 - 0.5) * q.s * 0.5;
+            ctx.lineTo(q.x + dx * t - (dy / len) * jig, q.y + dy * t + (dx / len) * jig);
+          }
+          ctx.lineTo(a.x, a.y);
+          ctx.strokeStyle = `rgba(${p.rgb}, ${0.45 * fl})`; ctx.lineWidth = Math.max(4, q.s * 0.22); ctx.stroke();
+          ctx.strokeStyle = `rgba(255, 255, 255, ${0.95 * fl})`; ctx.lineWidth = Math.max(1.5, q.s * 0.06); ctx.stroke();
+        }
+      }
+      // two rings bursting outwards, white then gold
+      for (const [d, rgb] of [[0, '255, 255, 255'], [0.08, PARRY_RGB]]) {
+        const t = Math.max(0, k - d);
+        if (t <= 0) continue;
+        ctx.strokeStyle = `rgba(${rgb}, ${0.95 * (1 - t)})`;
+        ctx.lineWidth = Math.max(2, q.s * 0.14 * (1 - t));
+        ctx.beginPath(); ctx.arc(q.x, q.y, q.s * (0.4 + 1.6 * Math.sqrt(t)), 0, Math.PI * 2); ctx.stroke();
+      }
+      // a star of short spikes
+      if (k < 0.4) {
+        ctx.strokeStyle = `rgba(255, 255, 255, ${1 - k / 0.4})`;
+        ctx.lineWidth = Math.max(1.5, q.s * 0.07);
+        ctx.beginPath();
+        for (let j = 0; j < 8; j++) {
+          const ang = (j / 8) * Math.PI * 2 + 0.2, r0 = q.s * (0.5 + k), r1 = q.s * (0.9 + 1.6 * k);
+          ctx.moveTo(q.x + Math.cos(ang) * r0, q.y + Math.sin(ang) * r0); ctx.lineTo(q.x + Math.cos(ang) * r1, q.y + Math.sin(ang) * r1);
+        }
+        ctx.stroke();
+      }
+      glow(q.x, q.y, q.s * 1.6, PARRY_RGB, 0.5 * f);
+    }
+    if (flash > 0) { ctx.fillStyle = `rgba(255, 250, 225, ${0.16 * flash})`; ctx.fillRect(0, 0, W, H); }
+    ctx.restore();
   }
 
   // Screen-space layer shared by both views: warnings, HUD, touch controls, fades
@@ -1446,7 +1883,7 @@
   let hudLayer = null;
   const infoText = () => {
     const tail = arenaMode === 'morph' ? 'the cave keeps changing' : arenaMode === 'sky' ? 'no cave tonight' : `shifts in ${Math.max(0, Math.ceil(shiftTimer))}s`;
-    return `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}`;
+    return `${arena.def.name.toUpperCase()}  ·  ${tail.toUpperCase()}  ·  FIRST TO ${winScore}`;
   };
   const infoUrgent = () => shiftTimer < shiftWarning() + 2 && arenaMode !== 'morph' && arenaMode !== 'sky';
   function drawHud() {
@@ -1485,14 +1922,24 @@
       const mine = viewer === b.i || (b.ctrl === 'local' && localCount === 1);
       pill(x, y, pw, ph, mine ? b.color : `rgba(${b.rgb}, 0.6)`, mine ? 12 : 6);
       // the score in a coloured lozenge at the left
-      const sh = ph * 0.66, sw = sh * 1.45, sx = x + ph * 0.2, cy = y + ph / 2;
+      // the score out of the match length, e.g. 2/5
+      const sh = ph * 0.66, sw = sh * 2.05, sx = x + ph * 0.2, cy = y + ph / 2;
       roundRect(sx, cy - sh / 2, sw, sh, sh / 2);
       ctx.fillStyle = b.color; ctx.fill();
       ctx.globalAlpha = 0.25; ctx.strokeStyle = b.color; ctx.lineWidth = 5; ctx.stroke(); ctx.globalAlpha = 1;
       ctx.fillStyle = '#16123a';
       ctx.font = `700 ${Math.round(sh * 0.72)}px ${HEAD}`;
       ctx.textAlign = 'center';
-      ctx.fillText(String(b.score), sx + sw / 2, cy + 1);
+      const sc = String(b.score), tot = `/${winScore}`;
+      const w1 = ctx.measureText(sc).width;
+      ctx.font = `600 ${Math.round(sh * 0.45)}px ${HEAD}`;
+      const w2 = ctx.measureText(tot).width, x1 = sx + sw / 2 - (w1 + w2) / 2;
+      ctx.textAlign = 'left';
+      ctx.fillStyle = 'rgba(22, 18, 58, 0.62)';
+      ctx.fillText(tot, x1 + w1, cy + 2);
+      ctx.fillStyle = '#16123a';
+      ctx.font = `700 ${Math.round(sh * 0.72)}px ${HEAD}`;
+      ctx.fillText(sc, x1, cy + 1);
       // name, with a tag underneath
       const tags = [];
       if (b.ctrl === 'cpu' || b.cpuFlag) tags.push('CPU');
@@ -1551,7 +1998,7 @@
       ctx.fillText(String(Math.ceil(countdown)), W / 2, mid - size * 1.5);
       ctx.font = `600 ${size}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.9)';
-      ctx.fillText('Squeak to stun. Fly into a stunned bat to eat it.', W / 2, mid + size * 1.4);
+      ctx.fillText(`Dash into a rival to chomp it (stun it with a squeak first). First to ${winScore} bites wins.`, W / 2, mid + size * 1.4);
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
@@ -1559,7 +2006,7 @@
           : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to dash · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
-      ctx.fillText('Grab glowing power-ups: Mega Screech, Speed, Shield, Echo Frenzy', W / 2, mid + size * 3.9);
+      ctx.fillText('Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
     } else if (banner) {
       ctx.font = `700 ${size * 2}px ${HEAD}`;
       ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
@@ -1619,6 +2066,17 @@
     setShiftTimer: (s) => { shiftTimer = s; },
     spawnPowerup: (type) => { spawnPowerup(); if (type && powerups.length) powerups[powerups.length - 1].type = type; },
     squeak: (i) => squeak(bats[i]),
+    act: (i, a) => doAct(bats[i], a),
+    beam: (i, ux, uy) => fireBeam(bats[i], ux === undefined ? undefined : { ux, uy }),
+    shiftTo: (i) => { forceNext = i; shiftTimer = 0.01; },
+    get rings() { return rings; },
+    get parries() { return parries; },
+    get parryCount() { return parryCount; },
+    get eats() { return eats; },
+    get carved() { return carved; },
+    get winScore() { return winScore; },
+    get arenaIndex() { return arenaIndex; },
+    get shifting() { return !!shift; },
     dash: (i, dx, dy) => dash(bats[i], dx, dy),
   };
 })();

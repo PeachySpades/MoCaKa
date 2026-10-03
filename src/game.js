@@ -12,6 +12,8 @@
   const LIGHT_FADE = 0.7;      // lit walls fade over ~1.4s
   const MAX_HEARTS = 3, HURT_TIME = 1.3;
   const MAX_ECHOES = 15, CRYSTAL_ECHOES = 3;
+  // Dash: a short burst the way Moka is flying, the same as in battle
+  const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6;
   // Cave Run: the screen scrolls right on its own, speeding up over time
   const RUN_START_SPEED = 2.0, RUN_MAX_SPEED = 4.0, RUN_SPEEDUP = 0.025;
 
@@ -130,6 +132,15 @@
     charged() { tone(1200, 2400, 0.12, 'sine', 0.05); },
     beam() { tone(2400, 300, 0.35, 'sawtooth', 0.07); tone(1600, 200, 0.3, 'square', 0.04, 0.02); hiss(0.25, 0.08, 3000); },
     warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
+    // the dash-bite: a whoosh in, a hard snap of teeth, then a meaty crunch (duel.js)
+    bigChomp() {
+      hiss(0.16, 0.12, 1400, undefined, sfxBus, 'bandpass'); tone(500, 1400, 0.12, 'sawtooth', 0.04);
+      tone(1800, 300, 0.05, 'square', 0.12, 0.11); hiss(0.05, 0.18, 4000, ac && ac.currentTime + 0.11);
+      tone(160, 45, 0.3, 'square', 0.11, 0.13); tone(95, 40, 0.35, 'triangle', 0.14, 0.13);
+      for (let k = 0; k < 4; k++) hiss(0.06, 0.1 - k * 0.018, 900 + k * 500, ac && ac.currentTime + 0.17 + k * 0.055, sfxBus, 'bandpass');
+    },
+    // echo parry: a bright metallic ting with a rising shimmer (duel.js)
+    parry() { tone(2600, 2500, 0.3, 'triangle', 0.09); tone(3900, 3850, 0.22, 'sine', 0.06, 0.01); tone(1300, 2600, 0.12, 'square', 0.04); hiss(0.08, 0.08, 5000); },
   };
 
   // Music: an upbeat jazz band (horns, piano, bass, guitar, vibes, drums),
@@ -206,6 +217,7 @@
     moka = {
       x: L.start.x, y: L.start.y, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, hurt: 0, cooldown: 0, echoes: L.def.echoes, noEcho: 0,
+      dashT: 0, dashCd: 0,
     };
     rings = [];
     particles = [];
@@ -236,15 +248,27 @@
       return;
     }
     keys.add(e.code);
-    if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) squeak();
+    if ((e.code === 'Space' || e.code === 'Enter' || e.code === 'KeyF') && !e.repeat) squeak();
+    if ((e.code === 'KeyG' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') && !e.repeat) dash();
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
   addEventListener('blur', () => { keys.clear(); stick = null; });
+
+  // the DASH button, bottom right on touch screens (in the same spot as in battle)
+  let touchUsed = isTouch;
+  const dashButton = () => ({ x: W - 64, y: H - Math.max(124, H * 0.3), r: 42 });
+  const inDashButton = (cx, cy) => {
+    const rect = canvas.getBoundingClientRect(), b = dashButton();
+    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
+  };
 
   canvas.addEventListener('pointerdown', (e) => {
     e.preventDefault();
     if (state !== 'play') return;
     unlockAudio();
+    if (e.pointerType === 'touch') touchUsed = true;
+    // a press on DASH only dashes: it never squeaks or starts steering
+    if (touchUsed && inDashButton(e.clientX, e.clientY)) { dash(); return; }
     if (!stick) {
       stick = { id: e.pointerId, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false };
       canvas.setPointerCapture?.(e.pointerId);
@@ -260,7 +284,9 @@
   });
   const endStick = (e) => {
     if (!stick || stick.id !== e.pointerId) return;
-    if (!stick.moved && performance.now() - stick.t < 280) squeak();
+    const dt = performance.now() - stick.t, dx = stick.x - stick.sx, dy = stick.y - stick.sy, d = Math.hypot(dx, dy);
+    if (!stick.moved && dt < 280) squeak();
+    else if (dt < 230 && d > 30) dash(dx / d, dy / d);   // a quick flick dashes, as in battle
     stick = null;
   };
   canvas.addEventListener('pointerup', endStick);
@@ -301,6 +327,25 @@
     rings.push({ x: moka.x, y: moka.y, r: 0 });
     hintTimer = Math.min(hintTimer, 2.5);
     sfx.squeak();
+  }
+
+  // a quick burst the way Moka is steering (or flying, or facing), then a short cooldown
+  function dash(dx, dy) {
+    if (state !== 'play' || paused || moka.dashCd > 0) return;
+    let ux = dx, uy = dy;
+    if (!(Math.hypot(ux || 0, uy || 0) > 0.1)) {
+      const { ix, iy } = readInput(), sp = Math.hypot(moka.vx, moka.vy);
+      if (Math.hypot(ix, iy) > 0.2) { ux = ix; uy = iy; }
+      else if (sp > 0.5) { ux = moka.vx / sp; uy = moka.vy / sp; }
+      else { ux = moka.face; uy = 0; }
+    }
+    const len = Math.hypot(ux, uy) || 1;
+    moka.vx = (ux / len) * DASH_SPEED;
+    moka.vy = (uy / len) * DASH_SPEED;
+    if (Math.abs(ux) > 0.2) moka.face = Math.sign(ux);
+    moka.dashT = DASH_TIME;
+    moka.dashCd = DASH_COOLDOWN;
+    sfx.dash();
   }
 
   function wake(h) {
@@ -351,7 +396,9 @@
     if (won) sfx.win();
     if (mode === 'run') endRun(won);
     else endCave(won);
-    $('end-button').textContent = won ? 'Play again' : 'Try again';
+    updateBests();
+    const moreCaves = mode !== 'run' && levelIndex < window.ECHO_LEVELS.length - 1;
+    $('end-button').textContent = !won ? 'Try again' : moreCaves ? 'Next cave' : 'Play again';
     $('end-button').hidden = false;
     $('end-wait').hidden = true;
     $('menu-button').textContent = 'Menu';
@@ -365,11 +412,14 @@
       const stars = 1 + (allMoths ? 1 : 0) + (spare ? 1 : 0);
       const key = 'echo-caves-best-' + levelIndex;
       store.set(key, Math.max(stars, store.get(key) || 0));
-      $('end-title').textContent = 'Out of the dark!';
+      // Explore picks up from the next cave; after the last one it starts over
+      const last = levelIndex >= window.ECHO_LEVELS.length - 1;
+      store.set('echo-caves-next', last ? 0 : levelIndex + 1);
+      $('end-title').textContent = last ? 'You escaped all three caves!' : `Cave ${levelIndex + 1} cleared!`;
       $('end-stars').textContent = '★'.repeat(stars) + '☆'.repeat(3 - stars);
       $('end-stars').setAttribute('aria-label', stars + ' of 3 stars');
       $('end-detail').innerHTML =
-        `<li class="got">Found the exit</li>` +
+        `<li class="got">Found the exit${last ? ' of the last cave' : `. Next: ${window.ECHO_LEVELS[levelIndex + 1].name}`}</li>` +
         `<li class="${allMoths ? 'got' : ''}">Moths ${stats.moths} of ${L.moths.length}</li>` +
         `<li class="${spare ? 'got' : ''}">Echoes left ${moka.echoes}, need ${L.def.spare}</li>`;
     } else {
@@ -411,20 +461,30 @@
 
     // Moka
     const { ix, iy } = readInput();
-    if (ix || iy) {
+    moka.dashCd = Math.max(0, moka.dashCd - dt);
+    if (moka.dashT > 0) {
+      // dashing: no steering, just the burst (and a trail of sparks)
+      moka.dashT -= dt;
+      if (Math.random() < 0.7) particles.push({ x: moka.x, y: moka.y, vx: 0, vy: 0, life: 0.3, rgb: '139, 108, 255' });
+    } else if (ix || iy) {
       moka.vx += ix * ACCEL * dt;
       moka.vy += iy * ACCEL * dt;
     } else {
       moka.vx -= moka.vx * DRAG * dt;
       moka.vy -= moka.vy * DRAG * dt;
     }
+    const maxSp = moka.dashT > 0 ? DASH_SPEED : MAX_SPEED;
     const sp = Math.hypot(moka.vx, moka.vy);
-    if (sp > MAX_SPEED) { moka.vx *= MAX_SPEED / sp; moka.vy *= MAX_SPEED / sp; }
+    if (sp > maxSp) { moka.vx *= maxSp / sp; moka.vy *= maxSp / sp; }
     if (Math.abs(moka.vx) > 0.2) moka.face = Math.sign(moka.vx);
-    const nx = moka.x + moka.vx * dt;
-    if (!hitsWall(nx, moka.y, MOKA_R)) moka.x = nx; else moka.vx *= -0.25;
-    const ny = moka.y + moka.vy * dt;
-    if (!hitsWall(moka.x, ny, MOKA_R)) moka.y = ny; else moka.vy *= -0.25;
+    // move in small steps so a dash (or a slow frame) can never skip through a wall
+    const steps = Math.max(1, Math.ceil((Math.hypot(moka.vx, moka.vy) * dt) / 0.2)), sdt = dt / steps;
+    for (let k = 0; k < steps; k++) {
+      const nx = moka.x + moka.vx * sdt;
+      if (!hitsWall(nx, moka.y, MOKA_R)) moka.x = nx; else { moka.vx *= -0.25; if (moka.dashT > 0) moka.dashT = 0; }
+      const ny = moka.y + moka.vy * sdt;
+      if (!hitsWall(moka.x, ny, MOKA_R)) moka.y = ny; else { moka.vy *= -0.25; if (moka.dashT > 0) moka.dashT = 0; }
+    }
 
     // Cave Run: the left edge of the screen keeps moving right and pushes Moka along
     if (mode === 'run') {
@@ -794,6 +854,7 @@
     ctx.fillStyle = vignette.g;
     ctx.fillRect(0, 0, W, H);
     drawHud();
+    if (touchUsed && state === 'play') drawDashButton();
     drawStick();
   }
   let vignette = null;
@@ -877,8 +938,8 @@
 
   function drawMoka(x, y) {
     if (moka.hurt > 0 && Math.floor(moka.hurt * 12) % 2 === 0) return;
-    glow(x, y, PX * 0.9, '139, 108, 255', 0.25);
-    const flap = Math.sin(clock * 18);
+    glow(x, y, PX * 0.9, '139, 108, 255', moka.dashT > 0 ? 0.5 : 0.25);
+    const flap = Math.sin(clock * (moka.dashT > 0 ? 40 : 18));
     const r = PX * MOKA_R;
     ctx.fillStyle = COL.moka;
     for (const side of [-1, 1]) {
@@ -1027,6 +1088,49 @@
     }
   }
 
+  // The DASH button: the battle's glassy violet disc, its ring filling up again
+  // while the dash recharges
+  function drawDashButton() {
+    const b = dashButton(), ready = moka.dashCd <= 0, k = ready ? 1 : 0.55;
+    const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(120, 90, 235, ${0.55 * k})`);
+    g.addColorStop(1, `rgba(36, 22, 92, ${0.72 * k})`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    // soft halo from wide faint strokes (canvas shadows are slow on phones)
+    if (ready) {
+      ctx.strokeStyle = 'rgba(160, 120, 255, 1)';
+      ctx.globalAlpha = 0.1; ctx.lineWidth = 12.5; ctx.stroke();
+      ctx.globalAlpha = 0.22; ctx.lineWidth = 7.5; ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+    ctx.strokeStyle = 'rgba(80, 60, 160, 0.7)'; ctx.lineWidth = 3.5; ctx.stroke();
+    ctx.strokeStyle = '#a68bff';
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - moka.dashCd / DASH_COOLDOWN)); ctx.stroke();
+    ctx.font = `700 ${Math.round(b.r * 0.4)}px ${HUD_FONT}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.45)';
+    ctx.fillText('DASH', b.x, b.y - b.r * 0.12);
+    // a little flying-bat silhouette under the word
+    const x = b.x, y = b.y + b.r * 0.38, s = b.r * 0.31;
+    ctx.fillStyle = ready ? '#8f6dff' : 'rgba(143, 109, 255, 0.45)';
+    ctx.beginPath();
+    ctx.moveTo(x, y - s * 0.22);
+    ctx.lineTo(x - s * 0.14, y - s * 0.42); ctx.lineTo(x - s * 0.2, y - s * 0.2);
+    ctx.quadraticCurveTo(x - s * 0.6, y - s * 0.5, x - s, y - s * 0.38);
+    ctx.quadraticCurveTo(x - s * 0.8, y - s * 0.1, x - s * 0.82, y + s * 0.12);
+    ctx.quadraticCurveTo(x - s * 0.62, y - s * 0.02, x - s * 0.5, y + s * 0.16);
+    ctx.quadraticCurveTo(x - s * 0.36, y + s * 0.02, x - s * 0.2, y + s * 0.3);
+    ctx.lineTo(x, y + s * 0.42);
+    ctx.lineTo(x + s * 0.2, y + s * 0.3);
+    ctx.quadraticCurveTo(x + s * 0.36, y + s * 0.02, x + s * 0.5, y + s * 0.16);
+    ctx.quadraticCurveTo(x + s * 0.62, y - s * 0.02, x + s * 0.82, y + s * 0.12);
+    ctx.quadraticCurveTo(x + s * 0.8, y - s * 0.1, x + s, y - s * 0.38);
+    ctx.quadraticCurveTo(x + s * 0.6, y - s * 0.5, x + s * 0.2, y - s * 0.2);
+    ctx.lineTo(x + s * 0.14, y - s * 0.42);
+    ctx.closePath(); ctx.fill();
+  }
+
   function drawHint() {
     if (!(hintTimer > 0 && state === 'play')) return;
     const { pill } = hudShapes(ctx);
@@ -1037,7 +1141,7 @@
       const k = Math.min(1, hintTimer);
       ctx.globalAlpha = k;
       ctx.font = `600 ${Math.round(size * 0.78)}px ${HUD_FONT}`;
-      const hint = isTouch ? 'DRAG TO FLY  ·  TAP TO SQUEAK' : 'ARROWS OR DRAG TO FLY  ·  SPACE OR CLICK TO SQUEAK';
+      const hint = touchUsed ? 'DRAG TO FLY  ·  TAP TO SQUEAK  ·  FLICK OR TAP DASH' : 'ARROWS OR DRAG TO FLY  ·  SPACE OR CLICK TO SQUEAK  ·  G TO DASH';
       const iw = ctx.measureText(hint).width + 40, ih = size * 1.55, iy = H - ih - 10, ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
       ctx.strokeStyle = 'rgba(150, 130, 255, 0.45)'; ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1052,6 +1156,11 @@
         ctx.font = `600 ${Math.round(size * 0.85)}px ${HUD_FONT}`;
         ctx.fillStyle = 'rgba(234, 230, 255, 0.9)';
         ctx.fillText('Keep moving right. The dark is coming.', W / 2, iy - size * 0.9);
+      } else if (L.def.name) {
+        // which cave this is, e.g. "Cave 2: The Hollows"
+        ctx.font = `700 ${Math.round(size * 0.95)}px ${HUD_FONT}`;
+        ctx.fillStyle = 'rgba(234, 230, 255, 0.95)';
+        ctx.fillText(L.def.name, W / 2, iy - size * 0.95);
       }
       ctx.globalAlpha = 1;
     }
@@ -1087,7 +1196,6 @@
     $('title-screen').hidden = which !== 'title';
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
-    $('online-screen').hidden = which !== 'online';
     $('pause-screen').hidden = which !== 'pause';
     if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); }
   }
@@ -1117,20 +1225,23 @@
     mode = 'cave';
     state = 'title';
     L = null;
-    showOverlay(wasOnline ? 'online' : 'title');
+    showOverlay(wasOnline ? 'battle' : 'title');
   }
 
   function enterGame(newMode) {
     unlockAudio();
     try { document.documentElement.requestFullscreen?.().catch(() => {}); } catch { /* not allowed here */ }
     try { screen.orientation?.lock?.('landscape').catch(() => {}); } catch { /* not supported */ }
-    startGame(newMode, 0);
+    // Explore carries on from the next cave not yet flown
+    const next = Math.max(0, Math.min(window.ECHO_LEVELS.length - 1, store.get('echo-caves-next') || 0));
+    startGame(newMode, newMode === 'cave' ? next : 0);
   }
 
   function primaryAction() {
     unlockAudio();
     if (mode === 'duel') (duelCfg.rematch || (() => startDuel(duelCfg)))();
     else if (state === 'title') enterGame('cave');
+    else if (state === 'win' && mode === 'cave') startGame(mode, (levelIndex + 1) % window.ECHO_LEVELS.length);
     else if (state === 'win' || state === 'lose') startGame(mode, levelIndex);
   }
 
@@ -1172,16 +1283,36 @@
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
   $('battle-button').addEventListener('click', () => { unlockAudio(); showOverlay('battle'); });
-  // Battle setup: you are always P1 (one player per device); fill the other
-  // slots with CPU bats, pick their level, and flip through the arena modes.
+  // Battle lobby: one screen for CPU matches and online rooms (net.js drives the room part).
+  // Seats fill in order: the people in the room (just you when offline), then CPU bats.
+  const BAT_SEATS = [
+    { name: 'Mo', c: 'var(--mo)' }, { name: 'Ka', c: 'var(--ka)' },
+    { name: 'Ca', c: 'var(--ca)' }, { name: 'Bo', c: 'var(--bo)' },
+  ];
+  const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
   const ARENA_CHOICES = [
     { id: 'shift', name: 'Shifting', desc: 'A new cave every 25s' },
     { id: 'morph', name: 'Morphing', desc: 'The walls slowly reshape' },
     { id: 'chaos', name: 'Chaos', desc: 'A new cave every 9s' },
     { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night' },
   ];
-  const pick = { humans: 1, cpus: Math.min(3, Math.max(1, store.get('echo-cpus') || 1)), level: store.get('echo-cpu-level') || 'normal', arenaMode: store.get('echo-arena-mode') || 'shift' };
-  if (!ARENA_CHOICES.some((a) => a.id === pick.arenaMode)) pick.arenaMode = 'shift';
+  const savedPick = () => {
+    const p = {
+      humans: 1,
+      cpus: Math.min(3, Math.max(0, store.get('echo-cpus') ?? 1)),
+      level: store.get('echo-cpu-level') || 'normal',
+      arenaMode: store.get('echo-arena-mode') || 'shift',
+      firstTo: [3, 5, 7].includes(store.get('echo-first-to')) ? store.get('echo-first-to') : 3,
+    };
+    if (!ARENA_CHOICES.some((a) => a.id === p.arenaMode)) p.arenaMode = 'shift';
+    if (!LEVEL_NAMES[p.level]) p.level = 'normal';
+    return p;
+  };
+  const pick = savedPick();
+  // room: null offline, else { role: 'host' | 'guest', code, people: [{ slot, me }] }
+  let room = null;
+  const canEdit = () => !room || room.role === 'host';
+  const people = () => (room ? room.people : [{ slot: 0, me: true }]);
   // a little map of the arena, drawn from its tiles
   function drawArenaPreview() {
     const c = $('arena-preview'), g = c.getContext('2d');
@@ -1200,38 +1331,103 @@
     }
   }
   function renderPickers() {
-    document.querySelectorAll('[data-slot]').forEach((b) => {
-      const on = +b.dataset.slot <= pick.cpus;
+    const ppl = people(), n = ppl.length, edit = canEdit();
+    pick.cpus = Math.max(0, Math.min(pick.cpus, 4 - n));
+    const total = n + pick.cpus;
+    // seats
+    $('seats').innerHTML = BAT_SEATS.map((bat, k) => {
+      const p = ppl.find((q) => q.slot === k);
+      const cpu = !p && k >= n && k < total;
+      const host = room && k === 0;
+      const label = p ? (p.me ? 'You' : 'Friend') : cpu ? LEVEL_NAMES[pick.level] : edit ? '+ Add CPU' : 'Open';
+      const cls = p ? 'slot you' : cpu ? 'slot on' : 'slot';
+      return `<button type="button" class="${cls}" data-seat="${k}" style="--c: ${bat.c}" ${p || !edit ? 'disabled' : ''} aria-pressed="${cpu}">`
+        + `<svg class="avatar"><use href="#i-bat"/></svg><b>${bat.name}</b>`
+        + (p ? '<span class="ready">Ready!</span>' : '')
+        + `<span class="add">${label}</span><span class="tag">P${k + 1}</span>`
+        + (host ? '<span class="badge">Host</span>' : cpu ? '<span class="badge">CPU</span>' : '')
+        + '</button>';
+    }).join('');
+    $('seat-dots').innerHTML = BAT_SEATS.map((bat, k) => `<i class="${k < n ? 'full' : k < total ? 'cpu' : ''}" style="--c: ${bat.c}"></i>`).join('');
+    $('headcount').textContent = n;
+    // settings
+    const mark = (sel, key, val) => document.querySelectorAll(sel).forEach((b) => {
+      const on = String(b.dataset[key]) === String(val);
       b.classList.toggle('on', on);
       b.setAttribute('aria-pressed', String(on));
-      b.querySelector('.add').textContent = on ? 'CPU rival' : '+ Add CPU';
+      b.disabled = !edit;
     });
-    document.querySelectorAll('[data-level]').forEach((b) => { b.classList.toggle('on', b.dataset.level === pick.level); b.setAttribute('aria-pressed', String(b.dataset.level === pick.level)); });
+    mark('[data-level]', 'level', pick.level);
+    mark('[data-first]', 'first', pick.firstTo);
+    $('arena-prev').disabled = $('arena-next').disabled = !edit;
     const a = ARENA_CHOICES.find((x) => x.id === pick.arenaMode);
     $('arena-name').textContent = a.name;
     $('arena-desc').textContent = a.desc;
     drawArenaPreview();
+    // room bar and start
+    $('room-none').hidden = !!room;
+    $('room-box').hidden = !room;
+    $('room-code').innerHTML = room ? [...room.code].map((ch) => `<b>${ch}</b>`).join('') : '';
+    $('room-code').setAttribute('aria-label', room ? `Room code ${room.code}` : '');
+    $('back-label').textContent = room ? 'Leave' : 'Back';
+    const guest = room?.role === 'guest';
+    $('duel-start').hidden = guest;
+    $('duel-start').disabled = total < 2;
+    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < 2 ? 'Add a CPU or invite a friend' : `${total} bats · first to ${pick.firstTo}`;
   }
-  document.querySelectorAll('[data-slot]').forEach((b) => b.addEventListener('click', () => {
-    const k = +b.dataset.slot;
-    pick.cpus = k <= pick.cpus ? Math.max(1, k - 1) : k;   // at least one rival
+  // net.js tells the lobby when a room opens, changes or closes, and gets told about setting changes
+  const lobby = {
+    pick,
+    get room() { return room; },
+    onChange: null,
+    setRoom(r) {
+      const wasGuest = room?.role === 'guest';
+      room = r;
+      if (!r && wasGuest) Object.assign(pick, savedPick());   // back to your own settings
+      renderPickers();
+    },
+    applyHost(s) {   // a guest mirrors the host's settings
+      for (const k of ['cpus', 'level', 'arenaMode', 'firstTo']) if (s[k] != null) pick[k] = s[k];
+      renderPickers();
+    },
+  };
+  window.EchoLobby = lobby;
+  const changed = () => { renderPickers(); lobby.onChange?.(); };
+  $('seats').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-seat]');
+    if (!b || b.disabled || !canEdit()) return;
+    const n = people().length, k = +b.dataset.seat;
+    if (k < n) return;
+    pick.cpus = k < n + pick.cpus ? k - n : k - n + 1;   // tap a CPU to remove it (and any after it)
     store.set('echo-cpus', pick.cpus);
-    renderPickers();
-  }));
+    changed();
+  });
   document.querySelectorAll('[data-level]').forEach((b) => b.addEventListener('click', () => {
-    pick.level = b.dataset.level; store.set('echo-cpu-level', pick.level); renderPickers();
+    if (!canEdit()) return;
+    pick.level = b.dataset.level; store.set('echo-cpu-level', pick.level); changed();
+  }));
+  document.querySelectorAll('[data-first]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.firstTo = +b.dataset.first; store.set('echo-first-to', pick.firstTo); changed();
   }));
   const stepArena = (d) => {
+    if (!canEdit()) return;
     const i = ARENA_CHOICES.findIndex((x) => x.id === pick.arenaMode);
     pick.arenaMode = ARENA_CHOICES[(i + d + ARENA_CHOICES.length) % ARENA_CHOICES.length].id;
     store.set('echo-arena-mode', pick.arenaMode);
-    renderPickers();
+    changed();
   };
   $('arena-prev').addEventListener('click', () => stepArena(-1));
   $('arena-next').addEventListener('click', () => stepArena(1));
   renderPickers();
-  $('duel-start').addEventListener('click', () => startDuel(pick));
-  $('duel-back').addEventListener('click', () => showOverlay('title'));
+  $('duel-start').addEventListener('click', () => {
+    if (room?.role === 'host') window.EchoNet.startMatch();
+    else if (!room && pick.cpus > 0) startDuel({ ...pick, humans: 1 });
+  });
+  $('duel-back').addEventListener('click', () => {
+    if (room) window.EchoNet.leave();
+    else { window.EchoNet?.clearStatus?.(); showOverlay('title'); }
+  });
   $('menu-button').addEventListener('click', () => {
     if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
     toMenu();
@@ -1260,8 +1456,10 @@
   window.EchoGame = { startDuel, showEnd: endDuel, showOverlay };
 
   function updateBests() {
-    const best = store.get('echo-caves-best-0');
-    $('best-cave').textContent = best ? `Best ${'★'.repeat(best)}${'☆'.repeat(3 - best)}` : 'Explore one cave';
+    // Explore: which cave is next, and the stars earned across all three
+    const n = window.ECHO_LEVELS.length, next = Math.min(n - 1, store.get('echo-caves-next') || 0);
+    const stars = window.ECHO_LEVELS.reduce((t, _, i) => t + (store.get('echo-caves-best-' + i) || 0), 0);
+    $('best-cave').textContent = stars ? `Cave ${next + 1} of ${n} · ${stars}/${n * 3} ★` : `${n} caves to explore`;
     const run = store.get('echo-caves-run-best');
     $('best-run').textContent = run ? `Best ${run} m` : 'Endless side-scroller';
   }

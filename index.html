@@ -71,13 +71,8 @@
         <span class="go"><svg><use href="#i-arrow"/></svg></span>
       </button>
       <button id="battle-button" type="button" class="mode" style="--c: var(--ka)">
-        <svg class="icon"><use href="#i-fang"/></svg><b>Battle</b><small>You vs CPU bats</small>
+        <svg class="icon"><use href="#i-fang"/></svg><b>Battle</b><small>CPU bats or friends online</small>
         <svg class="scene" viewBox="0 0 160 50" aria-hidden="true" preserveAspectRatio="xMidYMax slice"><ellipse cx="80" cy="30" rx="60" ry="16" fill="#ff7ad9" opacity=".12"/><use href="#i-bat" x="18" y="12" width="52" height="32" style="color:#8b6cff"/><use href="#i-bat" x="92" y="12" width="52" height="32" style="color:#ff7ad9"/><path d="M80 18l3 8 8 1-7 4 2 8-6-5-6 5 2-8-7-4 8-1z" fill="#ff7ad9"/></svg>
-        <span class="go"><svg><use href="#i-arrow"/></svg></span>
-      </button>
-      <button id="online-button" type="button" class="mode" style="--c: var(--yellow)">
-        <svg class="icon"><use href="#i-globe"/></svg><b>Online</b><small>Friends join with a code</small>
-        <svg class="scene" viewBox="0 0 160 50" aria-hidden="true" preserveAspectRatio="xMidYMax slice"><path d="M0 50V34l20-6 18 8 22-6 20 6 24-8 26 6 30-4v20z" fill="#2a1f0a"/><circle cx="118" cy="26" r="14" fill="none" stroke="#ffd23f" stroke-width="3" opacity=".7"/><circle cx="118" cy="26" r="8" fill="#ffd23f" opacity=".2"/><use href="#i-bat" x="34" y="10" width="22" height="14" style="color:#1a1408"/><use href="#i-bat" x="62" y="16" width="16" height="10" style="color:#1a1408"/></svg>
         <span class="go"><svg><use href="#i-arrow"/></svg></span>
       </button>
     </div>
@@ -89,114 +84,73 @@
   </div>
 </section>
 
+<!-- Battle: one lobby for CPU matches and online rooms. Seats fill with you,
+     friends who join by code, and CPU bats. -->
 <section id="battle-screen" class="overlay" hidden>
-  <div class="card wide">
-    <div class="setup-head">
-      <header class="hero left">
-        <svg class="mascot sm" aria-hidden="true"><use href="#i-bat"/></svg>
-        <h2 class="logo">Bat <span>Brawl!</span></h2>
-        <p class="tagline">Tiny bats. Big brawls.</p>
-      </header>
-      <div class="arena-pick">
-        <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
-        <div class="arena-text"><b id="arena-name">Shifting</b><small id="arena-desc">A new cave every 25s</small></div>
-        <div class="arrows">
-          <button id="arena-prev" type="button" class="round sm" aria-label="Previous arena">‹</button>
-          <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
+  <div class="card lobby">
+    <div class="lobby-top">
+      <button id="duel-back" type="button" class="btn ghost back"><span aria-hidden="true">‹</span> <span id="back-label">Back</span></button>
+      <div id="room-none" class="room-box">
+        <span class="room-label"><svg><use href="#i-globe"/></svg>Play friends</span>
+        <button id="room-create" type="button" class="btn yellow sm">Create room</button>
+        <form id="join-form" class="join sm">
+          <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
+          <button id="join-go" type="submit" class="btn violet sm">Join</button>
+        </form>
+      </div>
+      <div id="room-box" class="room-box" hidden>
+        <span class="room-label"><svg><use href="#i-globe"/></svg>Room code</span>
+        <div id="room-code" class="code-tiles" aria-live="polite"></div>
+        <button id="room-copy" type="button" class="btn violet sm">Copy link</button>
+      </div>
+      <div class="headcount" aria-label="Players">
+        <span id="seat-dots" class="seat-dots"></span>
+        <b id="headcount">1</b><small>/4</small>
+      </div>
+    </div>
+    <div class="lobby-main">
+      <div class="settings">
+        <div class="arena-pick">
+          <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
+          <div class="arena-text"><b id="arena-name">Shifting</b><small id="arena-desc">A new cave every 25s</small></div>
+          <div class="arrows">
+            <button id="arena-prev" type="button" class="round sm" aria-label="Previous arena">‹</button>
+            <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
+          </div>
+        </div>
+        <div class="set-row" style="--c: var(--yellow)" role="group" aria-label="First to">
+          <span>First to</span>
+          <div class="chips">
+            <button type="button" class="chip" data-first="3">3</button>
+            <button type="button" class="chip" data-first="5">5</button>
+            <button type="button" class="chip" data-first="7">7</button>
+          </div>
+        </div>
+        <div class="set-row" style="--c: var(--exit)" role="group" aria-label="CPU skill">
+          <span>CPU skill</span>
+          <div class="chips">
+            <button type="button" class="chip" data-level="easy">Easy</button>
+            <button type="button" class="chip" data-level="normal">Normal</button>
+            <button type="button" class="chip" data-level="hard">Hard</button>
+          </div>
+        </div>
+        <div class="set-row" style="--c: var(--echo)" role="group" aria-label="View">
+          <span>View</span>
+          <div class="chips">
+            <button type="button" class="chip" data-view="3d">3D</button>
+            <button type="button" class="chip" data-view="2d">2D</button>
+          </div>
         </div>
       </div>
+      <div id="seats" class="slots"></div>
     </div>
-    <div class="slots">
-      <div class="slot you" style="--c: var(--mo)">
-        <svg class="avatar"><use href="#i-bat"/></svg>
-        <b>Mo</b><span class="ready">Ready!</span>
-        <span class="tag">P1</span><span class="badge">You</span>
-      </div>
-      <button type="button" class="slot" data-slot="1" style="--c: var(--ka)"><svg class="avatar"><use href="#i-bat"/></svg><b>Ka</b><span class="add">+ Add CPU</span><span class="tag">P2</span></button>
-      <button type="button" class="slot" data-slot="2" style="--c: var(--ca)"><svg class="avatar"><use href="#i-bat"/></svg><b>Ca</b><span class="add">+ Add CPU</span><span class="tag">P3</span></button>
-      <button type="button" class="slot" data-slot="3" style="--c: var(--bo)"><svg class="avatar"><use href="#i-bat"/></svg><b>Bo</b><span class="add">+ Add CPU</span><span class="tag">P4</span></button>
-    </div>
-    <div class="seg double">
-      <div class="seg-part" role="group" aria-label="CPU level">
-        <span>CPU</span>
-        <button type="button" class="chip" data-level="easy">Easy</button>
-        <button type="button" class="chip" data-level="normal">Normal</button>
-        <button type="button" class="chip" data-level="hard">Hard</button>
-      </div>
-      <i class="divider" aria-hidden="true"></i>
-      <div class="seg-part" role="group" aria-label="View">
-        <span>View</span>
-        <button type="button" class="chip" data-view="3d">3D</button>
-        <button type="button" class="chip" data-view="2d">2D</button>
+    <div class="lobby-bottom">
+      <p id="online-status" class="small" role="status"></p>
+      <div class="start-wrap">
+        <button id="duel-start" type="button" class="btn primary">Let's fight ›</button>
+        <small id="start-hint"></small>
       </div>
     </div>
-    <div class="actions">
-      <button id="duel-back" type="button" class="btn ghost">Back</button>
-      <button id="duel-start" type="button" class="btn primary">Let's fight ›</button>
-    </div>
-  </div>
-</section>
-
-<section id="online-screen" class="overlay" hidden>
-  <div class="card">
-    <header class="hero">
-      <svg class="mascot ghost" aria-hidden="true"><use href="#i-bat"/></svg>
-      <h2 class="logo">Online <span>Brawl!</span></h2>
-    </header>
-    <div id="online-home" class="stack">
-      <p class="lede">Make a room and share its code, or type a friend's code to join. One phone per player.</p>
-      <button id="room-create" type="button" class="btn yellow wide">Create room</button>
-      <form id="join-form" class="join">
-        <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
-        <button id="join-go" type="submit" class="btn violet">Join</button>
-      </form>
-    </div>
-    <div id="online-room" class="stack" hidden>
-      <p class="small">Room code</p>
-      <p id="room-code" class="code" aria-live="polite"></p>
-      <ul id="room-players" class="roster"></ul>
-      <div class="rows">
-      <div class="row" style="--c: var(--echo)" role="group" aria-label="CPU bats">
-        <svg class="row-icon"><use href="#i-robot"/></svg><span class="row-label">CPUs</span>
-        <div class="chips">
-          <button type="button" class="chip" data-room-cpus="0">0</button>
-          <button type="button" class="chip" data-room-cpus="1">1</button>
-          <button type="button" class="chip" data-room-cpus="2">2</button>
-          <button type="button" class="chip" data-room-cpus="3">3</button>
-        </div>
-      </div>
-      <div class="row" style="--c: var(--exit)" role="group" aria-label="CPU level">
-        <svg class="row-icon"><use href="#i-bars"/></svg><span class="row-label">Level</span>
-        <div class="chips">
-          <button type="button" class="chip" data-room-level="easy">Easy</button>
-          <button type="button" class="chip" data-room-level="normal">Normal</button>
-          <button type="button" class="chip" data-room-level="hard">Hard</button>
-        </div>
-      </div>
-      <div class="row" style="--c: #c06bff" role="group" aria-label="Arena">
-        <svg class="row-icon"><use href="#i-peaks"/></svg><span class="row-label">Arena</span>
-        <div class="chips">
-          <button type="button" class="chip" data-room-arena="shift">Shifting</button>
-          <button type="button" class="chip" data-room-arena="morph">Morphing</button>
-          <button type="button" class="chip" data-room-arena="chaos">Chaos</button>
-          <button type="button" class="chip" data-room-arena="sky">Open sky</button>
-        </div>
-      </div>
-      <div class="row" style="--c: var(--yellow)" role="group" aria-label="View">
-        <svg class="row-icon"><use href="#i-cube"/></svg><span class="row-label">View</span>
-        <div class="chips">
-          <button type="button" class="chip" data-view="3d">3D</button>
-          <button type="button" class="chip" data-view="2d">2D</button>
-        </div>
-      </div>
-      </div>
-      <div class="actions">
-        <button id="room-leave" type="button" class="btn ghost">Leave room</button>
-        <button id="room-start" type="button" class="btn primary">Let's fight ›</button>
-      </div>
-    </div>
-    <p id="online-status" class="small" role="status"></p>
-    <button id="online-back" type="button" class="btn ghost">Back</button>
   </div>
 </section>
 
