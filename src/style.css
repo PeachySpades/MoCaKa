@@ -498,7 +498,9 @@ button.chip.on:disabled { opacity: 0.85; }
 .tab:disabled { cursor: default; }
 .tab:disabled:not(.on) { opacity: 0.45; }
 
-.lobby .slots { grid-area: seats; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; min-height: 0; }
+.seats-wrap { grid-area: seats; display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: 8px; min-height: 0; }
+.customize-btn { justify-self: center; min-width: 12rem; }
+.lobby .slots { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; min-height: 0; }
 .lobby .slot {
   position: relative; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; justify-items: center; align-items: center; gap: 6px;
   min-height: 0; padding: 30px 8px 12px; border-radius: 22px;
@@ -528,6 +530,7 @@ button.chip.on:disabled { opacity: 0.85; }
 .slot .host-tag { position: absolute; top: 11px; right: 10px; font: 700 0.72rem/1 var(--heading); letter-spacing: 0.08em; text-transform: uppercase; color: var(--c); }
 
 .side { grid-area: side; display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 8px; min-height: 0; padding: 10px; border-radius: 24px; background: var(--glass); border: 2px solid rgba(150, 130, 255, 0.45); box-shadow: 0 0 22px rgba(120, 90, 255, 0.25); }
+.side-title { margin: 0; text-align: center; font: 700 0.95rem/1.1 var(--heading); letter-spacing: 0.08em; text-transform: uppercase; color: #b79bff; }
 .side-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 3px; border-radius: 999px; background: rgba(4, 6, 20, 0.55); }
 .side-tabs .chip { --chip: #b79bff; }
 .side-pane { min-height: 0; overflow: auto; scrollbar-width: none; }
@@ -624,6 +627,9 @@ button.chip.on:disabled { opacity: 0.85; }
   .slot .host-tag { top: 8px; right: 6px; font-size: 0.6rem; }
   .side { padding: 6px; gap: 5px; border-radius: 18px; }
   .side-tabs .chip { min-height: 26px; padding: 3px 8px; font-size: 0.82rem; }
+  .seats-wrap { gap: 5px; }
+  .customize-btn { min-height: 30px; padding: 4px 14px; font-size: 0.85rem; }
+  .side-title { font-size: 0.8rem; }
   .bat-pane { gap: 5px; }
   .swatches { gap: 5px; }
   .swatches button { width: 22px; height: 22px; }
@@ -746,3 +752,11 @@ button.chip.on:disabled { opacity: 0.85; }
   .card.lobby { grid-template-rows: auto minmax(0, 1fr) auto; }
   .tab { align-content: center; }
 }
+
+/* seat bats are drawn once; a compositor-only bob keeps them alive without redrawing */
+@keyframes seat-bob { 50% { transform: translateY(-5%); } }
+.slot .seat-art canvas { animation: seat-bob 2.6s ease-in-out infinite; }
+.slot:nth-child(2) .seat-art canvas { animation-delay: -0.6s; }
+.slot:nth-child(3) .seat-art canvas { animation-delay: -1.3s; }
+.slot:nth-child(4) .seat-art canvas { animation-delay: -1.9s; }
+@media (prefers-reduced-motion: reduce) { .slot .seat-art canvas { animation: none; } }

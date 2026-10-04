@@ -29,7 +29,9 @@
   const SHARD_BITS = 6, BIT_SPEED = [6, 8], BIT_LIFE = 1.2, BIT_R = 0.13;
   const SPIDER_KO = 3, SPIDER_FADE = 0.8, SPIDER_FOOT = 0.18;
   // attacks: a dash bites any monster it touches; the wing slash swats everything in an arc in front
-  const BITE_GRACE = 0.12, SLASH_R = 1.25, SLASH_ARC = Math.PI * 5 / 6, SLASH_TIME = 0.22, SLASH_COOLDOWN = 0.5, CHOMP_TIME = 0.4;
+  const BITE_GRACE = 0.12, SLASH_R = 1.25, SLASH_ARC = Math.PI * 5 / 6, SLASH_TIME = 0.22, SLASH_COOLDOWN = 0.5;
+  // both attacks show the battle's big chomp (src/chomp.js); a slash snaps a little faster
+  const BITE_PULL = 0.2, SLASH_PULL = 0.14, CHOMP_TAIL = 0.75;
 
   const COL = {
     bg: '#05060d',
@@ -468,6 +470,7 @@
     const a = Math.hypot(ix, iy) > 0.2 ? Math.atan2(iy, ix) : moka.face > 0 ? 0 : Math.PI;
     if (Math.abs(Math.cos(a)) > 0.2) moka.face = Math.sign(Math.cos(a));
     moka.slashA = a;
+    chomps.push({ ang: a, t: 0, pull: SLASH_PULL });
     moka.slashT = SLASH_TIME;
     moka.slashCd = SLASH_COOLDOWN;
     sfx.slash();
@@ -513,7 +516,7 @@
     shake = Math.max(shake, 0.15);
     burst(h.x, h.y, h.kind === 'owl' ? '200, 160, 110' : COL.danger, 14);
     if (how === 'bite') {
-      chomps.push({ x: h.x, y: h.y, t: 0, face: dx });
+      chomps.push({ ang: Math.atan2(h.y - moka.y, h.x - moka.x), t: 0, pull: BITE_PULL });
       pop(h.x, h.y - 0.7, 'CHOMP!', '255, 226, 120');
       sfx.bigChomp();
     } else {
@@ -717,7 +720,7 @@
     moka.slashT = Math.max(0, moka.slashT - dt);
     moka.slashCd = Math.max(0, moka.slashCd - dt);
     for (const c of chomps) c.t += dt;
-    chomps = chomps.filter((c) => c.t < CHOMP_TIME);
+    chomps = chomps.filter((c) => c.t < c.pull + CHOMP_TAIL);
     if (moka.dashT > 0) {
       // dashing: no steering, just the burst (and a trail of sparks)
       moka.dashT -= dt;
@@ -1200,8 +1203,16 @@
 
     for (const p of pops) drawPop(p, toX(p.x), toY(p.y - p.t * 0.7));
     if (!in3d) drawMoka(toX(moka.x), toY(moka.y));
-    if (moka.slashT > 0) drawSlash(toX(moka.x), toY(moka.y));
-    for (const c of chomps) drawChomp(c, toX(c.x), toY(c.y));
+    if (window.EchoChomp) {
+      // the mouth rides along in front of Moka, facing the way she bit or slashed
+      const look = mokaLook(), color = look?.body || '#8f6dff', rgb = hexRgb(color);
+      for (const c of chomps) {
+        const ux = Math.cos(c.ang), uy = Math.sin(c.ang);
+        const q = { x: toX(moka.x + ux * 0.45), y: toY(moka.y + uy * 0.45), s: PX * 0.85 };
+        const k = { x: toX(moka.x + ux * 0.9), y: toY(moka.y + uy * 0.9), s: PX * 0.85 };
+        EchoChomp.draw(ctx, q, k, c.ang, c.t, color, rgb, c.pull);
+      }
+    }
     if (mode === 'run') {
       // the creeping dark at the left edge
       const g = ctx.createLinearGradient(0, 0, PX * 1.6, 0);
@@ -1408,62 +1419,10 @@
     }
   }
 
-  // The wing slash: a bright crescent sweeping across the arc in front of Moka, with feathery streaks
-  function drawSlash(x, y) {
-    const k = 1 - moka.slashT / SLASH_TIME, a = moka.slashA, half = SLASH_ARC / 2;
-    const sweep = -half + (half * 2) * Math.min(1, k * 1.6);   // the leading edge
-    const fade = k < 0.6 ? 1 : (1 - k) / 0.4, R = SLASH_R * PX;
-    const dir = Math.cos(a) >= 0 ? 1 : -1;   // sweep top to bottom on the side Moka faces
-    const a0 = a - half * dir, a1 = a + sweep * dir;
-    ctx.save();
-    ctx.lineCap = 'round';
-    for (const [w, al, rr] of [[R * 0.42, 0.18, 0.74], [R * 0.22, 0.45, 0.8], [R * 0.08, 0.95, 0.86]]) {
-      ctx.strokeStyle = `rgba(230, 220, 255, ${al * fade})`;
-      ctx.lineWidth = w;
-      ctx.beginPath(); ctx.arc(x, y, R * rr, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
-    }
-    // three streaks trailing behind the leading edge
-    ctx.strokeStyle = `rgba(190, 160, 255, ${0.7 * fade})`;
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 3; i++) {
-      const ang = a1 - dir * (0.18 + i * 0.16), r0 = R * (0.55 + i * 0.12), r1 = R * (1.0 + i * 0.05);
-      ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
-    }
-    ctx.restore();
-  }
-
-  // The dive bite: a big toothy mouth snapping shut on the monster, with slash lines (like battle)
-  function drawChomp(c, x, y) {
-    const k = c.t / CHOMP_TIME, shut = Math.min(1, k / 0.35), fade = k < 0.6 ? 1 : (1 - k) / 0.4;
-    const r = PX * (0.62 + 0.12 * Math.sin(Math.min(1, k * 2) * Math.PI)), open = 0.85 * (1 - shut) + 0.04;
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(-c.face, 1);   // the mouth opens toward where Moka came from
-    ctx.globalAlpha = fade;
-    ctx.fillStyle = '#ffd34d';
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, open, Math.PI * 2 - open); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#7a3d00'; ctx.lineWidth = 2.5; ctx.stroke();
-    // teeth along both jaws
-    ctx.fillStyle = '#ffffff';
-    for (const j of [-1, 1]) {
-      for (let i = 0; i < 3; i++) {
-        const t = r * (0.35 + i * 0.22), ang = open * j, tx = Math.cos(ang) * t, ty = Math.sin(ang) * t, n = -j;
-        ctx.beginPath(); ctx.moveTo(tx - r * 0.07, ty); ctx.lineTo(tx + r * 0.07, ty); ctx.lineTo(tx, ty + n * r * 0.16); ctx.closePath(); ctx.fill();
-      }
-    }
-    ctx.fillStyle = '#2a1030';
-    ctx.beginPath(); ctx.arc(-r * 0.1, -r * 0.5, r * 0.11, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-    if (shut >= 1) {
-      // slash lines bursting out when the jaws close
-      ctx.strokeStyle = `rgba(255, 245, 210, ${fade})`;
-      ctx.lineWidth = 3;
-      for (let i = 0; i < 5; i++) {
-        const ang = i / 5 * Math.PI * 2 + 0.3, r0 = PX * 0.8, r1 = PX * (0.95 + k * 0.6);
-        ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
-      }
-    }
-  }
+  const hexRgb = (hex) => {
+    const n = parseInt(String(hex).replace('#', ''), 16);
+    return Number.isFinite(n) ? `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}` : '143, 109, 255';
+  };
 
   function drawOwl(h, x, y, a) {
     if (h.ko) { drawKnockedOwl(h, x, y, a); return; }
@@ -1884,8 +1843,7 @@
     $('end-screen').hidden = which !== 'end';
     $('battle-screen').hidden = which !== 'battle';
     $('powers-screen').hidden = true;
-    window.EchoBackdrop?.altar?.(which !== 'battle');
-    if (which !== 'battle') { myPreview?.dispose?.(); myPreview = null; }   // free the lobby's 3D bat   // the lobby's bottom bar sits where the altar is
+    window.EchoBackdrop?.altar?.(which !== 'battle');   // the lobby's bottom bar sits where the altar is
     $('pause-screen').hidden = which !== 'pause';
     endAlt.hidden = true;   // Explore's "Restart cave" shows again only on a lose screen after a checkpoint
     if (which !== 'pause') { pauseOpen = false; paused = false; window.EchoDuel?.setPaused?.(false); window.EchoCoop?.setPaused?.(false); }
@@ -2166,11 +2124,9 @@
     $('duel-start').disabled = total < need;
     $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend'
       : coop ? `${total} bat${total > 1 ? 's' : ''} · ${pick.variant === 'classic' ? 'co-op run' : pick.variant}` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
-    paintBats(0);
+    paintBats();
   }
-  // ---- the bats on the seats and in "My bat", drawn with EchoLooks and gently flapping
-  const KINDS = ['classic', 'fruit', 'longear', 'vampire', 'ghost', 'crystal'];
-  const KIND_NAMES = { classic: 'Classic bat', fruit: 'Fruit bat', longear: 'Long-eared bat', vampire: 'Vampire bat', ghost: 'Ghost bat', crystal: 'Crystal bat' };
+  // ---- the bats on the seat cards, drawn with EchoLooks
   function fitCanvas(c) {
     const r = c.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1);
     const w = Math.round(r.width * d), h = Math.round(r.height * d);
@@ -2195,81 +2151,29 @@
       g.beginPath(); g.arc(w / 2, y, r, 0, Math.PI * 2); g.fill();
     }
   }
-  let batT = 0, myPreview = null;
-  function paintBats(dt) {
-    batT += dt;
+  // Seat bats are drawn once per look and size (a CSS bob animates them), so the lobby stays light
+  const seatDrawn = new WeakMap();
+  function paintBats() {
     if ($('battle-screen').hidden) return;
     const looks = seatLooks();
-    document.querySelectorAll('[data-seat-bat]').forEach((c) => drawBatIn(c, looks[+c.dataset.seatBat], batT, +c.dataset.seatBat));
-    if (!$('side-bat').hidden) {
-      // a 3D bat you can drag to spin; the flat drawing only if 3D can't start
-      if (!myPreview && Looks()?.preview3D && window.THREE) myPreview = Looks().preview3D($('my-bat'), myLook);
-      if (!myPreview) drawBatIn($('my-bat'), myLook(), batT, 0);
-    }
-  }
-  // quick sliders under the preview; the full creator has every part
-  const QUICK = [['scheme', 'Colours'], ['hat', 'Hat']];
-  const optionsFor = (field) => window.EchoLooks?.OPTIONS?.[field] || [];
-  function renderMyBat() {
-    const look = myLook();
-    $('kind-name').textContent = optionsFor('kind').find((o) => o.id === look?.kind)?.name || KIND_NAMES[look?.kind] || 'Your bat';
-    $('quick-parts').innerHTML = QUICK.filter(([f]) => optionsFor(f).length).map(([f, label]) => {
-      const cur = optionsFor(f).find((o) => o.id === look?.[f]);
-      return `<div class="quick"><span>${label}</span><button type="button" class="round sm" data-part="${f}" data-d="-1" aria-label="Previous ${label}">‹</button>`
-        + `<b>${cur?.name || '—'}</b><button type="button" class="round sm" data-part="${f}" data-d="1" aria-label="Next ${label}">›</button></div>`;
-    }).join('');
-    paintBats(0);
+    document.querySelectorAll('[data-seat-bat]').forEach((c) => {
+      const look = looks[+c.dataset.seatBat], key = JSON.stringify(look) + '|' + c.clientWidth + 'x' + c.clientHeight;
+      if (seatDrawn.get(c) === key) return;
+      seatDrawn.set(c, key);
+      drawBatIn(c, look, 0.3, +c.dataset.seatBat);
+    });
   }
   function saveMyLook(look) {
     if (!look || !Looks()) return;
     const clean = Looks().clean(look);
     store.set('echo-look', clean);
-    renderMyBat();
-    myPreview?.refresh?.(); myPreview?.pop?.();
+    paintBats();
     lobby.onLook?.(clean);
   }
-  const stepPart = (f, d) => {
-    const look = myLook(), opts = optionsFor(f);
-    if (!look || !opts.length) return;
-    const i = Math.max(0, opts.findIndex((o) => o.id === look[f]));
-    saveMyLook({ ...look, [f]: opts[(i + d + opts.length) % opts.length].id });
-  };
-  $('quick-parts').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-part]');
-    if (b) stepPart(b.dataset.part, +b.dataset.d);
-  });
-  const stepKind = (dlt) => {
-    const look = myLook();
-    if (!look) return;
-    const kinds = optionsFor('kind').length ? optionsFor('kind').map((o) => o.id) : KINDS;
-    const i = Math.max(0, kinds.indexOf(look.kind));
-    const kind = kinds[(i + dlt + kinds.length) % kinds.length];
-    // a new kind brings its own ears and wings, but keeps your colours and hat
-    const base = Looks().clean({ kind });
-    saveMyLook({ ...look, kind, ears: base.ears, wings: base.wings });
-  };
-  $('kind-prev').addEventListener('click', () => stepKind(-1));
-  $('kind-next').addEventListener('click', () => stepKind(1));
   $('customize').addEventListener('click', () => Looks()?.openEditor?.((look) => saveMyLook(look || myLook())));
-  const showSide = (which) => {
-    $('side-bat').hidden = which !== 'bat';
-    $('side-rules').hidden = which !== 'rules';
-    document.querySelectorAll('[data-side]').forEach((b) => { b.classList.toggle('on', b.dataset.side === which); b.setAttribute('aria-pressed', String(b.dataset.side === which)); });
-    paintBats(0);
-  };
-  document.querySelectorAll('[data-side]').forEach((b) => b.addEventListener('click', () => showSide(b.dataset.side)));
-  showSide('bat');
-  (function batLoop() {
-    let last = performance.now();
-    const tick = (now) => {
-      requestAnimationFrame(tick);
-      if (now - last < 40) return;
-      paintBats(Math.min(0.1, (now - last) / 1000));
-      last = now;
-    };
-    requestAnimationFrame(tick);
-  })();
-  addEventListener('resize', () => paintBats(0));
+  // seat cards are rebuilt as players come and go: draw any new or resized ones a few times a second
+  setInterval(paintBats, 250);
+  addEventListener('resize', () => paintBats());
 
   // ---- power-up picker
   function renderPowers() {
@@ -2325,7 +2229,7 @@
     if (rule && canEdit()) { pick.rule = rule; store.set('echo-rule', rule); }
     showOverlay('battle');
     changed();
-    renderMyBat();
+    paintBats();
   };
   $('seats').addEventListener('click', (e) => {
     if (!canEdit()) return;
@@ -2372,7 +2276,6 @@
   $('arena-prev').addEventListener('click', () => stepArena(-1));
   $('arena-next').addEventListener('click', () => stepArena(1));
   renderPickers();
-  renderMyBat();
   // everything a match needs from the lobby, offline or as the host
   lobby.matchOpts = () => ({
     cpus: pick.cpus, level: pick.level, levels: levelsBySlot(), looks: seatLooks(),

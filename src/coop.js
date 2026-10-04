@@ -38,8 +38,11 @@
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6, BITE_GRACE = 0.12;
   // the wing slash: an arc SLASH_ARC radians wide (±75°), SLASH_R tiles out, in front of the bat
   const SLASH_R = 1.25, SLASH_ARC = Math.PI * 5 / 6, SLASH_TIME = 0.22, SLASH_COOLDOWN = 0.5;
-  const DAZE = 1, CHOMP_TIME = 0.4;   // Escape: a hit monster is knocked back and dazed this long
+  const DAZE = 1;
+  // both attacks show the battle's big chomp (src/chomp.js) in front of the bat; a slash snaps faster
+  const BITE_PULL = 0.2, SLASH_PULL = 0.14, CHOMP_TAIL = 0.75;   // Escape: a hit monster is knocked back and dazed this long
   const VIEW_W = 24;            // tiles of cave the whole team shares, on every device
+  const VIEW_H = 8;             // ...but each screen shows a close-up this many tiles tall, centred on your own bat
   const TRIES = 3;
   const SPEEDS = [2.3, 2.6, 2.9, 3.2];   // scroll speed per section, tiles per second
   const SNAPSHOT_EVERY = 0.05;
@@ -242,7 +245,7 @@
     }
     hunt = { left: HUNT_TIME, wave: 0, waveT: V.wave * 0.6, bonus: 0 };
     spawnT = V.wave * 0.8;
-    rings = []; particles = []; popups = []; outbox = []; bursts = []; chomps = [];
+    rings = []; particles = []; popups = []; outbox = []; bursts = []; chomps = []; camF = null;
     remoteInput.clear();
     cpIndex = -1; tries = TRIES; over = false; ended = false; result = null;
     clock = 0; playTime = 0; shake = 0; snapTimer = 0; gotDirty = true; shardDirty = true; snapCount = 0;
@@ -286,7 +289,7 @@
     else if (ev.k === 'popup') popups.push({ x: ev.x, y: ev.y, text: ev.text, rgb: ev.rgb, t: 0, life: ev.life || 0.9 });
     else if (ev.k === 'shake') { if (ev.s == null || ev.s < 0 || bats[ev.s]?.ctrl === 'local') shake = Math.max(shake, ev.v); }
     else if (ev.k === 'banner') banner = { text: ev.text, sub: ev.sub || '', rgb: ev.rgb, t: ev.t };
-    else if (ev.k === 'chomp') chomps.push({ x: ev.x, y: ev.y, face: ev.f || 1, t: 0 });
+    else if (ev.k === 'chomp') chomps.push({ bat: ev.b, ang: ev.a || 0, pull: ev.p || BITE_PULL, t: 0 });
     else if (ev.k === 'pop') {
       // a crystal burst: the host made its pieces already; a guest makes the same ones from the seed
       const sh = L && L.shards[ev.id];
@@ -477,6 +480,7 @@
     if (Math.abs(Math.cos(a)) > 0.2) b.face = Math.sign(Math.cos(a));
     b.slashA = a; b.slashT = SLASH_TIME; b.slashCd = SLASH_COOLDOWN;
     fx({ k: 'sfx', n: 'slash', alt: 'dash' });
+    fx({ k: 'chomp', b: b.i, a: r2(a), p: SLASH_PULL });
     slashHits(b);
   }
   function inArc(b, x, y, r = 0) {
@@ -965,7 +969,7 @@
     fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 14, sp: 3.5 });
     fx({ k: 'popup', x: m.x, y: m.y - 0.7, text, rgb: how === 'bite' ? '255, 226, 120' : b.rgb, life: 0.8 });
     fx({ k: 'shake', v: 0.15, s: b.i });
-    if (how === 'bite') { fx({ k: 'chomp', x: r2(m.x), y: r2(m.y), f: -dx }); fx({ k: 'sfx', n: 'bigChomp', alt: 'chomp' }); }
+    if (how === 'bite') { fx({ k: 'chomp', b: b.i, a: r2(Math.atan2(m.y - b.y, m.x - b.x)) }); fx({ k: 'sfx', n: 'bigChomp', alt: 'chomp' }); }
     else fx({ k: 'sfx', n: how === 'crystal' ? 'chomp' : 'swat', alt: 'chomp' });
   }
   // a cut spider drops (hurting a bat it lands on), bounces once, lies out, fades and is gone
@@ -1420,7 +1424,7 @@
     for (const p of popups) p.t += dt;
     popups = popups.filter((p) => p.t < p.life);
     for (const c of chomps) c.t += dt;
-    chomps = chomps.filter((c) => c.t < CHOMP_TIME);
+    chomps = chomps.filter((c) => c.t < c.pull + CHOMP_TAIL);
     for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; if (p.g) p.vy += p.g * dt; p.life -= dt; }
     particles = particles.filter((p) => p.life > 0);
   }
@@ -1572,7 +1576,7 @@
   }
 
   // ---- Render ------------------------------------------------------------
-  let ctx, PX = 32, ox = 0, oy = 0;
+  let ctx, PX = 32, ox = 0, oy = 0, camF = null, frameDt = 0;
   const FONT = '"Fredoka", "Nunito", system-ui, sans-serif';
   const CAVE_BG = '#06071a';
   const X = (x) => ox + x * PX, Y = (y) => oy + y * PX;
@@ -1620,8 +1624,23 @@
 
   function render() {
     const sx = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0, sy = shake > 0 ? (Math.random() - 0.5) * shake * 18 : 0;
-    PX = Math.min(H / L.h, W / VIEW_W);
-    const cam = { x: scroll.x + VIEW_W / 2, y: L.h / 2 };
+    // a close camera around this device's own bat(s), kept inside the team's shared stretch of cave
+    PX = Math.max(H / Math.min(VIEW_H, L.h), W / VIEW_W);
+    const mine = bats.filter((b) => (b.ctrl === 'local' || viewer === b.i) && !b.ko);
+    const focus = mine.length ? mine : bats.filter((b) => !b.ko).length ? bats.filter((b) => !b.ko) : bats;
+    const fx0 = focus.length ? focus.reduce((t, b) => t + b.x, 0) / focus.length : scroll.x + VIEW_W / 2;
+    const fy0 = focus.length ? focus.reduce((t, b) => t + b.y, 0) / focus.length : L.h / 2;
+    if (!camF || camF.x < scroll.x - 1 || camF.x > scroll.x + VIEW_W + 1) camF = { x: fx0, y: fy0 };
+    const ease = Math.min(1, frameDt * 6);
+    camF.x += (fx0 - camF.x) * ease; camF.y += (fy0 - camF.y) * ease;
+    const halfW = W / PX / 2, halfH = H / PX / 2;
+    const cam = {
+      // a little slack past the shared edges, so your bat isn't pinned to the side of the screen
+      x: Math.max(scroll.x + halfW - 2.5, Math.min(scroll.x + VIEW_W - halfW + 2.5, camF.x)),
+      y: Math.max(halfH, Math.min(L.h - halfH, camF.y)),
+    };
+    if (halfW * 2 >= VIEW_W) cam.x = scroll.x + VIEW_W / 2;
+    if (halfH * 2 >= L.h) cam.y = L.h / 2;
     ox = W / 2 - cam.x * PX + sx; oy = H / 2 - cam.y * PX + sy;
     let threeD = false;
     if (in3d()) {
@@ -1644,7 +1663,7 @@
     }
 
     const tx0 = Math.max(0, Math.floor(cam.x - W / PX / 2) - 1), tx1 = Math.min(L.w - 1, Math.ceil(cam.x + W / PX / 2) + 1);
-    const ty0 = 0, ty1 = L.h - 1;
+    const ty0 = Math.max(0, Math.floor(cam.y - H / PX / 2) - 1), ty1 = Math.min(L.h - 1, Math.ceil(cam.y + H / PX / 2) + 1);
     if (!threeD) {
       const pat = stonePattern();
       pat.setTransform?.(new DOMMatrix([PX / 64, 0, 0, PX / 64, ox, oy]));
@@ -1746,7 +1765,6 @@
     }
     drawBits();
     for (const c of chomps) drawChomp(c);
-    for (const b of bats) if (b.slashT > 0 && !b.ko) drawSlash(b);
     for (const b of bats) drawBat(b, threeD);
     for (const p of popups) {
       const k = p.t / p.life;
@@ -1765,6 +1783,7 @@
     const rx = X(scroll.x + VIEW_W);
     if (rx < W) { ctx.fillStyle = 'rgba(4, 3, 16, 0.6)'; ctx.fillRect(rx, 0, W - rx, H); }
     drawVignette();
+    drawOffscreenMates();
     drawHud();
     if (touchUsed && localCount === 1 && phase === 'play') { drawDashButton(); drawSlashButton(); }
     drawSticks();
@@ -1973,55 +1992,19 @@
       ctx.beginPath(); ctx.moveTo(sx, sy - r); ctx.lineTo(sx + r * 0.3, sy); ctx.lineTo(sx, sy + r); ctx.lineTo(sx - r * 0.3, sy); ctx.closePath(); ctx.fill();
     }
   }
-  // The wing slash: a bright crescent sweeping across the arc in front of the bat, with feathery streaks
-  function drawSlash(b) {
-    const x = X(b.x), y = Y(b.y), k = 1 - b.slashT / SLASH_TIME, a = b.slashA, half = SLASH_ARC / 2;
-    const sweep = -half + half * 2 * Math.min(1, k * 1.6);   // the leading edge
-    const fade = k < 0.6 ? 1 : (1 - k) / 0.4, RR = SLASH_R * PX;
-    const dir = Math.cos(a) >= 0 ? 1 : -1;   // top to bottom on the side the bat faces
-    const a0 = a - half * dir, a1 = a + sweep * dir;
-    ctx.save();
-    ctx.lineCap = 'round';
-    for (const [w, al, rr] of [[RR * 0.42, 0.18, 0.74], [RR * 0.22, 0.45, 0.8], [RR * 0.08, 0.95, 0.86]]) {
-      ctx.strokeStyle = `rgba(230, 220, 255, ${al * fade})`;
-      ctx.lineWidth = w;
-      ctx.beginPath(); ctx.arc(x, y, RR * rr, Math.min(a0, a1), Math.max(a0, a1)); ctx.stroke();
-    }
-    ctx.strokeStyle = `rgba(190, 160, 255, ${0.7 * fade})`;
-    ctx.lineWidth = 2;
-    for (let i = 0; i < 3; i++) {
-      const ang = a1 - dir * (0.18 + i * 0.16), r0 = RR * (0.55 + i * 0.12), r1 = RR * (1.0 + i * 0.05);
-      ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
-    }
-    ctx.restore();
-  }
-  // The dive bite: a big toothy mouth snapping shut on the monster
+  // A bite or a slash: the battle's big chomp, riding along in front of the bat
   function drawChomp(c) {
-    const x = X(c.x), y = Y(c.y), k = c.t / CHOMP_TIME, shut = Math.min(1, k / 0.35), fade = k < 0.6 ? 1 : (1 - k) / 0.4;
-    const r = PX * (0.62 + 0.12 * Math.sin(Math.min(1, k * 2) * Math.PI)), open = 0.85 * (1 - shut) + 0.04;
-    ctx.save();
-    ctx.translate(x, y); ctx.scale(-c.face, 1); ctx.globalAlpha = fade;
-    ctx.fillStyle = '#ffd34d';
-    ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, open, Math.PI * 2 - open); ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#7a3d00'; ctx.lineWidth = 2.5; ctx.stroke();
-    ctx.fillStyle = '#ffffff';
-    for (const j of [-1, 1]) {
-      for (let i = 0; i < 3; i++) {
-        const t = r * (0.35 + i * 0.22), ang = open * j, tx = Math.cos(ang) * t, ty = Math.sin(ang) * t, n = -j;
-        ctx.beginPath(); ctx.moveTo(tx - r * 0.07, ty); ctx.lineTo(tx + r * 0.07, ty); ctx.lineTo(tx, ty + n * r * 0.16); ctx.closePath(); ctx.fill();
-      }
-    }
-    ctx.fillStyle = '#2a1030';
-    ctx.beginPath(); ctx.arc(-r * 0.1, -r * 0.5, r * 0.11, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-    if (shut >= 1) {
-      ctx.strokeStyle = `rgba(255, 245, 210, ${fade})`; ctx.lineWidth = 3;
-      for (let i = 0; i < 5; i++) {
-        const ang = i / 5 * Math.PI * 2 + 0.3, r0 = PX * 0.8, r1 = PX * (0.95 + k * 0.6);
-        ctx.beginPath(); ctx.moveTo(x + Math.cos(ang) * r0, y + Math.sin(ang) * r0); ctx.lineTo(x + Math.cos(ang) * r1, y + Math.sin(ang) * r1); ctx.stroke();
-      }
-    }
+    const b = bats[c.bat];
+    if (!b || !window.EchoChomp) return;
+    const ux = Math.cos(c.ang), uy = Math.sin(c.ang);
+    const q = { x: X(b.x + ux * 0.45), y: Y(b.y + uy * 0.45), s: PX * 0.85 };
+    const k = { x: X(b.x + ux * 0.9), y: Y(b.y + uy * 0.9), s: PX * 0.85 };
+    EchoChomp.draw(ctx, q, k, c.ang, c.t, b.look?.body || b.color, b.look?.body ? hexRgb(b.look.body) : b.rgb, c.pull);
   }
+  const hexRgb = (hex) => {
+    const n = parseInt(String(hex).replace('#', ''), 16);
+    return Number.isFinite(n) ? `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}` : '143, 109, 255';
+  };
 
   function drawMonster(m) {
     const x = X(m.x), y = Y(m.y), stunned = m.stun > 0;
@@ -2178,6 +2161,23 @@
     ctx.fillStyle = `rgba(${b.rgb}, ${b.ko ? 0.55 : 0.9})`;
     const tag = b.ko ? `${b.name} · KO` : ((b.ctrl === 'cpu' && !b.was) || b.cpuFlag ? `${b.name} · CPU` : b.name) + (mine && bats.length > 1 && localCount === 1 ? ' (you)' : '');
     ctx.fillText(tag, x, y + r * 2.4);
+  }
+
+  // teammates out of the close-up show as little arrows of their colour at the screen's edge
+  function drawOffscreenMates() {
+    const m = 26;
+    for (const b of bats) {
+      const x = X(b.x), y = Y(b.y);
+      if (x > -PX * 0.3 && x < W + PX * 0.3 && y > -PX * 0.3 && y < H + PX * 0.3) continue;
+      const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 40, Math.min(H - m, y)), a = Math.atan2(y - cy, x - cx);
+      ctx.save();
+      ctx.translate(cx, cy); ctx.rotate(a);
+      ctx.globalAlpha = b.ko ? 0.45 : 0.9;
+      ctx.fillStyle = b.color;
+      ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+    }
   }
 
   let vignette = null, vigW = 0, vigH = 0;
@@ -2465,7 +2465,7 @@
   // ---- Main hooks ---------------------------------------------------------
   // Called by the main loop each frame while a co-op run is on (dt is 0 while paused)
   function frame(dt, context, width, height) {
-    ctx = context; W = width; H = height;
+    ctx = context; W = width; H = height; frameDt = dt;
     if (active && !paused) { if (mode === 'client') clientUpdate(dt); else update(dt); }
     if (L) render();
   }
@@ -2528,6 +2528,7 @@
     get bursts() { return bursts; },
     get result() { return result; },
     VIEW_W,
+    get view2screen() { return { PX, ox, oy }; },
     autopilot(i, on = true, skill = 'pro') {
       const b = bats[i];
       if (!b) return;

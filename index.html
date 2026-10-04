@@ -111,23 +111,13 @@
       <button type="button" class="tab" data-rule="survivor" style="--c: var(--ca)"><b>Last Bite</b><small>Last bat standing!</small></button>
       <button type="button" class="tab" data-rule="coop" style="--c: var(--ka)"><b>Co-op Run</b><small>Fly together!</small></button>
     </div>
-    <div id="seats" class="slots"></div>
+    <div class="seats-wrap">
+      <div id="seats" class="slots"></div>
+      <button id="customize" type="button" class="btn violet sm customize-btn">Customize your bat</button>
+    </div>
     <aside class="side">
-      <div class="side-tabs" role="group" aria-label="Panel">
-        <button type="button" class="chip" data-side="bat">My bat</button>
-        <button type="button" class="chip" data-side="rules">Rules</button>
-      </div>
-      <div id="side-bat" class="side-pane bat-pane">
-        <div class="bat-stage">
-          <canvas id="my-bat" aria-label="Your bat"></canvas>
-          <button id="kind-prev" type="button" class="round sm" aria-label="Previous bat">‹</button>
-          <button id="kind-next" type="button" class="round sm" aria-label="Next bat">›</button>
-          <span id="kind-name" class="kind-name"></span>
-        </div>
-        <div id="quick-parts" class="quick-parts"></div>
-        <button id="customize" type="button" class="btn violet sm">Customize bat</button>
-      </div>
-      <div id="side-rules" class="side-pane settings" hidden>
+      <h3 class="side-title">Rules</h3>
+      <div id="side-rules" class="side-pane settings">
         <div id="arena-pick" class="arena-pick">
           <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
           <div class="arena-text"><b id="arena-name">Morphing</b><small id="arena-desc">The walls slowly reshape</small></div>
@@ -253,6 +243,7 @@
 <script src="src/arenas.js"></script>
 <script src="src/music.js"></script>
 <script src="src/looks.js"></script>
+<script src="src/chomp.js"></script>
 <script src="src/game.js"></script>
 <script src="src/vendor/three.min.js"></script>
 <script src="src/view3d.js"></script>
