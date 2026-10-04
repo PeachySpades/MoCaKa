@@ -202,7 +202,9 @@ window.makeRunLevel = function makeRunLevel(seed, length = 1200) {
 // 'easy', 'normal' or 'hard' and sets how close together the monsters are.
 // `variant` ('classic', 'escape' or 'hunt'): Escape packs monsters tighter and
 // brings owls and ghost moths in a section earlier; Hunt has a few more to smash.
-window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', variant = 'classic') {
+// `map` 'explore' builds the big free-roaming Explore cave instead (makeCoopExplore below).
+window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', variant = 'classic', mapKind = 'scroll') {
+  if (mapKind === 'explore') return window.makeCoopExplore(seed, difficulty, variant);
   let s = seed >>> 0;
   const rand = () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -334,4 +336,198 @@ window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', varia
   const map = [];
   for (let y = 0; y < H; y++) map.push(cols.map((c) => c[y]).join(''));
   return { name: 'Co-op Run', coop: true, echoes: 8, seed: seed >>> 0, difficulty, variant, map };
+};
+
+// Co-op Explore: a big cave the team roams freely, no scrolling. Generated from the seed
+// (so host and guests build the same one), same tiles as the Co-op Run. A grid of
+// chambers joined by wide winding tunnels in every direction (a random spanning tree,
+// plus a few loops), so there are side branches and dead ends with moths in them.
+// The start is in the leftmost column of chambers; the green exit is in whichever chamber of
+// the three rightmost columns is the longest flight away, so the way winds; three lanterns sit along the way between them, in order. Monsters get denser, and
+// new kinds join in, the closer they are to the exit (the same four "sections").
+window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', variant = 'classic') {
+  let s = (seed ^ 0x5eed) >>> 0;
+  const rand = () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const pick = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
+  const spread = ({ easy: 1.4, normal: 1, hard: 0.78 }[difficulty] || 1) * ({ escape: 0.85, hunt: 0.88 }[variant] || 1);
+
+  const CW = 12, CH = 10, NX = 12, NY = 5;
+  const W = NX * CW + 2, H = NY * CH + 2;
+  const g = [];
+  for (let y = 0; y < H; y++) g.push(new Array(W).fill('#'));
+  const open = (x, y) => x > 0 && y > 0 && x < W - 1 && y < H - 1 && g[y][x] !== '#';
+  const carve = (x, y) => { if (x > 0 && y > 0 && x < W - 1 && y < H - 1) g[y][x] = '.'; };
+  const disk = (cx, cy, r) => {
+    for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+      for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 <= r * r) carve(x, y);
+    }
+  };
+
+  // chambers: one per cell, roomy or just a small junction
+  const sj = pick(1, NY - 2);
+  const cells = [];
+  for (let j = 0; j < NY; j++) {
+    for (let i = 0; i < NX; i++) {
+      const ends = i === 0 && j === sj;
+      const small = !ends && rand() < 0.28;
+      cells.push({
+        i, j, cx: 1 + i * CW + CW / 2 + pick(-2, 2), cy: 1 + j * CH + CH / 2 + pick(-1, 1),
+        rw: ends ? 4 : small ? pick(1, 2) : pick(2, 4), rh: ends ? 3 : small ? pick(1, 2) : pick(2, 3),
+      });
+    }
+  }
+  const cell = (i, j) => cells[j * NX + i];
+  // a random spanning tree over the grid (Kruskal), then a few extra links for loops
+  const parent = cells.map((_, k) => k);
+  const find = (k) => (parent[k] === k ? k : (parent[k] = find(parent[k])));
+  const edges = [];
+  for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+    if (i < NX - 1) edges.push([j * NX + i, j * NX + i + 1, rand()]);
+    if (j < NY - 1) edges.push([j * NX + i, (j + 1) * NX + i, rand() * 0.9]);
+  }
+  edges.sort((a, b) => a[2] - b[2]);
+  const links = [];
+  for (const e of edges) {
+    const a = find(e[0]), b = find(e[1]);
+    if (a !== b) { parent[a] = b; links.push(e); } else if (rand() < 0.12) links.push(e);
+  }
+  for (const c of cells) {
+    // an organic blob: a few overlapping disks
+    const n = 2 + Math.floor((c.rw + c.rh) / 2);
+    for (let k = 0; k < n; k++) {
+      const r = Math.min(c.rw, c.rh) + 0.4 + rand() * 0.8;
+      disk(c.cx + (rand() * 2 - 1) * (c.rw - r * 0.6 + 0.5), c.cy + (rand() * 2 - 1) * Math.max(0, c.rh - r * 0.6), r);
+    }
+    disk(c.cx, c.cy, 1.6);
+  }
+  // tunnels: wobbly, always at least 3 tiles wide so a whole team fits
+  for (const [a, b] of links) {
+    const A = cells[a], B = cells[b], len = Math.hypot(B.cx - A.cx, B.cy - A.cy);
+    const nx = -(B.cy - A.cy) / len, ny = (B.cx - A.cx) / len, amp = rand() * 2.2, ph = rand() * 6.28, r = 1.55 + rand() * 0.4;
+    for (let t = 0; t <= 1; t += 0.4 / len) {
+      const w = Math.sin(t * Math.PI) * Math.sin(t * Math.PI * 2 + ph) * amp;
+      disk(A.cx + (B.cx - A.cx) * t + nx * w, A.cy + (B.cy - A.cy) * t + ny * w, r);
+    }
+  }
+
+  // distance (in tiles flown) from one tile to every open tile
+  const flood = (fx, fy) => {
+    const d = new Int32Array(W * H).fill(-1), q = [fy * W + fx];
+    d[q[0]] = 0;
+    for (let h = 0; h < q.length; h++) {
+      const k = q[h], x = k % W, y = (k - x) / W;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nk = (y + dy) * W + x + dx;
+        if (d[nk] < 0 && open(x + dx, y + dy)) { d[nk] = d[k] + 1; q.push(nk); }
+      }
+    }
+    return d;
+  };
+  // start, and the exit: the farthest chamber (by flying) in the three rightmost columns
+  const S = cell(0, sj);
+  const sx = Math.floor(S.cx), sy = Math.floor(S.cy);
+  disk(sx + 0.5, sy + 0.5, 3.2);
+  const fromStart = flood(sx, sy);
+  let E = cell(NX - 1, 0);
+  for (const c of cells) if (c.i >= NX - 3 && fromStart[Math.floor(c.cy) * W + Math.floor(c.cx)] > fromStart[Math.floor(E.cy) * W + Math.floor(E.cx)]) E = c;
+  const ex = Math.floor(E.cx), ey = Math.floor(E.cy);
+  disk(ex + 0.5, ey + 0.5, 2.2);
+  const dist = flood(ex, ey);
+  const total = dist[sy * W + sx];
+  const D = (x, y) => (open(x, y) ? dist[y * W + x] : -1);
+  // the way from the start to the exit, for the lanterns
+  const route = [[sx, sy]];
+  for (let x = sx, y = sy; D(x, y) > 0;) {
+    const here = D(x, y);
+    const nxt = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => [x + dx, y + dy]).find(([a, b]) => D(a, b) === here - 1);
+    [x, y] = nxt; route.push([x, y]);
+  }
+  const lanterns = [];
+  for (const f of [0.27, 0.52, 0.76]) {
+    let [x, y] = route[Math.round(f * (route.length - 1))];
+    // a little way down toward the floor, but still on the way through
+    for (let k = 0; k < 2 && open(x, y + 1) && open(x, y + 2); k++) y++;
+    lanterns.push([x, y]);
+  }
+  // how far along a tile is: 0 at the start, 1 at the exit (by flying distance)
+  const along = (x, y) => Math.max(0, Math.min(1, 1 - D(x, y) / total));
+  const section = (x, y) => Math.min(3, Math.floor(along(x, y) * 4));
+  const near = (x, y, pts, r) => pts.some(([a, b]) => Math.hypot(a - x, b - y) < r);
+  const safe = (x, y) => Math.hypot(x - sx, y - sy) < 9 || Math.hypot(x - ex, y - ey) < 6 || near(x, y, lanterns, 5);
+  const free = (x, y) => open(x, y) && g[y][x] === '.';
+  const openBelow = (x, y) => { let n = 0; while (open(x, y + n + 1)) n++; return n; };
+  const roomy = (x, y, r) => { for (let b = y - r; b <= y + r; b++) for (let a = x - r; a <= x + r; a++) if (!open(a, b)) return false; return true; };
+
+  // pickups: extra moths tucked in dead-end chambers, the rest scattered
+  const deg = cells.map(() => 0);
+  for (const [a, b] of links) { deg[a]++; deg[b]++; }
+  cells.forEach((c, k) => {
+    if (deg[k] !== 1 || c === S || c === E) return;
+    for (let n = pick(2, 3), tries = 0; n > 0 && tries < 20; tries++) {
+      const x = Math.floor(c.cx) + pick(-2, 2), y = Math.floor(c.cy) + pick(-1, 1);
+      if (free(x, y)) { g[y][x] = 'm'; n--; }
+    }
+  });
+  const openTiles = [];
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if (open(x, y) && D(x, y) >= 0) openTiles.push([x, y]);
+  const any = () => openTiles[Math.floor(rand() * openTiles.length)];
+  for (let n = Math.round(openTiles.length / 110); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'm'; n--; } }
+  for (let n = Math.round(openTiles.length / 150); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'e'; n--; } }
+
+  // monsters, spaced out (closer together toward the exit and on harder levels)
+  const kindsFor = (sec) => (variant === 'escape'
+    ? [['s', 'c', 'o'], ['s', 'c', 'o', 'g'], ['s', 'c', 'o', 'g'], ['s', 'c', 'o', 'g']]
+    : [['s', 'c'], ['s', 'c', 'o'], ['s', 'c', 'o', 'g'], ['s', 'c', 'o', 'g']])[sec];
+  const fits = {
+    // a spider hangs from a ceiling with 4 to 8 tiles of air below to drop into
+    s: (x, y) => !open(x, y - 1) && free(x, y) && openBelow(x, y) >= 4 && openBelow(x, y) <= 8,
+    // a crawler paces a flat stretch of floor
+    c: (x, y) => free(x, y) && !open(x, y + 1) && !open(x - 1, y + 1) && !open(x + 1, y + 1) && open(x - 1, y) && open(x + 1, y) && open(x, y - 1) && open(x, y - 2),
+    // an owl perches in open air with room to swoop
+    o: (x, y) => free(x, y) && roomy(x, y, 1) && open(x - 2, y) && open(x + 2, y) && open(x, y - 2) && open(x, y + 2),
+    g: (x, y) => free(x, y) && roomy(x, y, 1),
+  };
+  const used = { s: 0, c: 0, o: 0, g: 0 }, placed = [];
+  const gap = [12, 10, 8.5, 7.5];
+  for (let tries = 0; tries < 5000; tries++) {
+    let [x, y] = any();
+    if (safe(x, y)) continue;
+    const sec = section(x, y), want = gap[sec] * spread;
+    if (near(x, y, placed, want)) continue;
+    const kinds = kindsFor(sec).map((k) => [k, used[k] + rand() * 1.5]).sort((a, b) => a[1] - b[1]).map((a) => a[0]);
+    for (const k of kinds) {
+      // spiders look up for a ceiling, crawlers down for a floor
+      let px = x, py = y;
+      if (k === 's') while (open(px, py - 1)) py--;
+      if (k === 'c') while (open(px, py + 1)) py++;
+      if (!fits[k](px, py) || safe(px, py) || near(px, py, placed, want)) continue;
+      g[py][px] = k; used[k]++; placed.push([px, py]);
+      break;
+    }
+  }
+
+  // loose ceiling crystals, never near the start, a lantern, the exit or right beside a spider
+  const shardGap = [20, 16, 13, 11], shardK = ({ easy: 1.4, normal: 1, hard: 0.78 }[difficulty] || 1) * ({ escape: 0.85, hunt: 0.95 }[variant] || 1);
+  const shards = [];
+  for (let tries = 0; tries < 4000; tries++) {
+    let [x, y] = any();
+    while (open(x, y - 1)) y--;
+    if (safe(x, y) || !free(x, y) || !free(x, y + 1) || openBelow(x, y) < 3) continue;
+    if (near(x, y, shards, shardGap[section(x, y)] * shardK) || [-1, 0, 1].some((k) => g[y][x + k] === 's')) continue;
+    g[y][x] = 'v'; shards.push([x, y]);
+  }
+
+  g[sy][sx] = 'S';
+  g[ey][ex] = 'E';
+  for (const [x, y] of lanterns) g[y][x] = 'K';
+  return {
+    name: 'Co-op Explore', coop: true, explore: true, map: g.map((r) => r.join('')), echoes: 8,
+    seed: seed >>> 0, difficulty, variant, mapKind: 'explore',
+  };
 };

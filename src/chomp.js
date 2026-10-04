@@ -55,23 +55,49 @@
       ctx.globalAlpha = 1;
     }
 
-    // three big slashes across the bite, drawn in fast and fading out
+    // three big claw slashes across the bite: ragged and uneven, never three neat parallel lines.
+    // Each mark gets its own length, tilt, spacing, start and bend (varied a little per bite).
     const st = t - EAT_PULL + 0.04;
     if (st > 0 && st < 0.75) {
       const L = c.s * 1.5, fade = st < 0.45 ? 1 : 1 - (st - 0.45) / 0.3;
-      const sl = ang + Math.PI / 2 + 0.6, ux = Math.cos(sl), uy = Math.sin(sl), px = -uy, py = ux;
+      const seed = Math.abs(Math.sin(ang * 12.9898 + c.x * 0.013) * 43758.5453) % 1;
+      const MARKS = [
+        { len: 1.0, tilt: -0.16, off: -0.55, shift: -0.12, bend: 0.18, w: 1.0 },
+        { len: 0.72, tilt: 0.07 + seed * 0.08, off: -0.02, shift: 0.22, bend: -0.12, w: 0.8 },
+        { len: 0.88, tilt: 0.2 - seed * 0.1, off: 0.46 + seed * 0.08, shift: -0.05, bend: 0.1, w: 0.9 },
+      ];
       for (let k = 0; k < 3; k++) {
-        const draw = Math.min(1, Math.max(0, (st - k * 0.035) / 0.09));
+        const m = MARKS[k], draw = Math.min(1, Math.max(0, (st - k * (0.03 + seed * 0.03)) / 0.09));
         if (draw <= 0) continue;
-        const off = (k - 1) * c.s * 0.42, x0 = c.x + px * off - ux * L, y0 = c.y + py * off - uy * L;
-        const x1 = x0 + ux * L * 2 * draw, y1 = y0 + uy * L * 2 * draw;
-        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
-        ctx.strokeStyle = `rgba(${rgb}, ${0.5 * fade})`; ctx.lineWidth = Math.max(6, c.s * 0.34); ctx.stroke();
-        ctx.strokeStyle = `rgba(255, 70, 90, ${0.75 * fade})`; ctx.lineWidth = Math.max(3.5, c.s * 0.17); ctx.stroke();
-        ctx.strokeStyle = `rgba(255, 255, 255, ${fade})`; ctx.lineWidth = Math.max(1.5, c.s * 0.065); ctx.stroke();
+        const sl = ang + Math.PI / 2 + 0.6 + m.tilt, ux = Math.cos(sl), uy = Math.sin(sl), px = -uy, py = ux;
+        const len = L * m.len, off = m.off * c.s, cx = c.x + px * off + ux * m.shift * L, cy = c.y + py * off + uy * m.shift * L;
+        const x0 = cx - ux * len, y0 = cy - uy * len;
+        const x1 = x0 + ux * len * 2 * draw, y1 = y0 + uy * len * 2 * draw;
+        const bx = (x0 + x1) / 2 + px * m.bend * c.s * draw, by = (y0 + y1) / 2 + py * m.bend * c.s * draw;
+        ctx.beginPath(); ctx.moveTo(x0, y0); ctx.quadraticCurveTo(bx, by, x1, y1);
+        ctx.strokeStyle = `rgba(${rgb}, ${0.5 * fade})`; ctx.lineWidth = Math.max(6, c.s * 0.34 * m.w); ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 70, 90, ${0.75 * fade})`; ctx.lineWidth = Math.max(3.5, c.s * 0.17 * m.w); ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${fade})`; ctx.lineWidth = Math.max(1.5, c.s * 0.065 * m.w); ctx.stroke();
       }
     }
     ctx.restore();
   }
-  window.EchoChomp = { draw, PULL, TIME };
+  // a little toothy mouth for BITE buttons: a Pac-Man with fangs, facing right
+  function icon(ctx, x, y, r, ready) {
+    ctx.save();
+    ctx.globalAlpha = ready ? 1 : 0.45;
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.arc(x, y, r, 0.6, Math.PI * 2 - 0.6); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#ff4660';
+    for (const side of [-1, 1]) {
+      for (let k = 0; k < 2; k++) {
+        const a = side * 0.6, f = 0.45 + k * 0.3, tx = x + Math.cos(a) * r * f, ty = y + Math.sin(a) * r * f;
+        ctx.beginPath(); ctx.moveTo(tx - r * 0.1, ty); ctx.lineTo(tx + r * 0.1, ty); ctx.lineTo(tx, ty - side * r * 0.22); ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.fillStyle = '#1a1030';
+    ctx.beginPath(); ctx.arc(x - r * 0.05, y - r * 0.5, r * 0.13, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+  window.EchoChomp = { draw, icon, PULL, TIME };
 })();

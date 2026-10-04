@@ -145,8 +145,9 @@
     checkpoint() { [784, 988, 1175, 1568].forEach((f, i) => { tone(f, f, 0.5, 'sine', 0.07, i * 0.09); tone(f * 2, f * 2, 0.25, 'triangle', 0.02, i * 0.09); }); },
     heartUp() { tone(330, 440, 0.12, 'triangle', 0.1); tone(440, 660, 0.14, 'triangle', 0.1, 0.13); [880, 1109, 1319].forEach((f, i) => tone(f, f * 1.01, 0.22, 'sine', 0.05, 0.28 + i * 0.07)); },
     chomp() { tone(420, 90, 0.16, 'square', 0.09); tone(300, 60, 0.18, 'square', 0.07, 0.12); hiss(0.08, 0.1, 2000); },
-    // the wing slash: an airy swish; a swatted monster: a hard little thwack
-    slash() { hiss(0.16, 0.11, 2600, undefined, sfxBus, 'bandpass'); tone(1500, 520, 0.12, 'triangle', 0.035); },
+    // a monster hit by the BITE button: a hard little thwack
+    // the BITE button: a quick lunge whoosh and a sharp snap of teeth (a lighter bigChomp)
+    slash() { hiss(0.1, 0.09, 1600, undefined, sfxBus, 'bandpass'); tone(1800, 300, 0.05, 'square', 0.1, 0.08); hiss(0.05, 0.14, 4000, ac && ac.currentTime + 0.08); },
     swat() { tone(520, 110, 0.12, 'square', 0.08); hiss(0.06, 0.12, 1500); },
     slurp() { tone(300, 1400, 0.3, 'sine', 0.08); },
     dash() { tone(900, 260, 0.14, 'sawtooth', 0.045); hiss(0.18, 0.09, 1800, undefined, sfxBus, 'bandpass'); },
@@ -520,7 +521,7 @@
       pop(h.x, h.y - 0.7, 'CHOMP!', '255, 226, 120');
       sfx.bigChomp();
     } else {
-      pop(h.x, h.y - 0.7, 'SWAT!', '235, 225, 255');
+      pop(h.x, h.y - 0.7, 'CHOMP!', '255, 226, 120');
       sfx.swat();
     }
   }
@@ -1766,15 +1767,8 @@
     ctx.font = `700 ${Math.round(b.r * 0.42)}px ${HUD_FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = ready ? '#f1fbff' : 'rgba(241, 251, 255, 0.45)';
-    ctx.fillText('SLASH', b.x, b.y + b.r * 0.3);
-    // a crescent swoosh above the word
-    ctx.strokeStyle = ready ? '#ffffff' : 'rgba(255, 255, 255, 0.45)';
-    ctx.lineCap = 'round';
-    ctx.lineWidth = b.r * 0.12;
-    ctx.beginPath(); ctx.arc(b.x - b.r * 0.15, b.y + b.r * 0.15, b.r * 0.5, -Math.PI * 0.75, -Math.PI * 0.2); ctx.stroke();
-    ctx.lineWidth = b.r * 0.06;
-    ctx.beginPath(); ctx.arc(b.x - b.r * 0.15, b.y + b.r * 0.15, b.r * 0.34, -Math.PI * 0.7, -Math.PI * 0.3); ctx.stroke();
-    ctx.lineCap = 'butt';
+    ctx.fillText('BITE', b.x, b.y + b.r * 0.32);
+    window.EchoChomp?.icon(ctx, b.x, b.y - b.r * 0.2, b.r * 0.34, ready);
   }
 
   function drawHint() {
@@ -1787,7 +1781,7 @@
       const k = Math.min(1, hintTimer);
       ctx.globalAlpha = k;
       ctx.font = `600 ${Math.round(size * 0.78)}px ${HUD_FONT}`;
-      const hint = touchUsed ? 'DRAG TO FLY  ·  TAP TO SQUEAK  ·  DASH BITES  ·  SLASH SWATS' : 'ARROWS TO FLY  ·  SPACE SQUEAK  ·  G DASH-BITE  ·  H WING SLASH';
+      const hint = touchUsed ? 'DRAG TO FLY  ·  TAP TO SQUEAK  ·  DASH  ·  BITE' : 'ARROWS TO FLY  ·  SPACE SQUEAK  ·  G DASH  ·  H BITE';
       const iw = ctx.measureText(hint).width + 40, ih = size * 1.55, iy = H - ih - 10, ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
       ctx.strokeStyle = 'rgba(150, 130, 255, 0.45)'; ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1980,10 +1974,20 @@
     coop: { hint: () => 'co-op run' },
   };
   const VARIANTS = {
-    classic: 'Fly to the end together. Squeak to see, dash-bite or wing-slash monsters, dodge bursting crystals.',
-    escape: 'Run away! Monsters can’t be beaten: a bite or slash only knocks them back. Reach the exit.',
-    hunt: 'Hunt them down! Bite or slash enough monsters to open the exit.',
+    classic: 'Fly to the end together. Squeak to see, bite monsters, dodge bursting crystals.',
+    escape: 'Run away! Monsters can’t be beaten: a bite only knocks them back. Reach the exit.',
+    hunt: 'Hunt them down! Bite enough monsters to open the exit.',
   };
+  const COOP_MAPS = {
+    scroll: 'The screen keeps moving: stay ahead of the dark.',
+    explore: 'Explore a big cave together at your own pace.',
+  };
+  // one-line versions for short phone screens
+  const SHORT_NOTES = {
+    classic: 'Fly to the end together.', escape: 'Run! Monsters can’t be beaten.', hunt: 'Bite monsters to open the exit.',
+    scroll: 'The screen keeps moving.', explore: 'Roam a big cave at your own pace.',
+  };
+  const note = (long, short) => `<span class="long">${long}</span><span class="short">${short}</span>`;
   const FREQS = ['off', 'low', 'normal', 'high'];
   const FREQ_NAMES = { off: 'Off', low: 'Low', normal: 'Normal', high: 'High' };
   const powerList = () => window.EchoDuel?.POWER_LIST || [];
@@ -2004,12 +2008,14 @@
       rule: store.get('echo-rule') || 'bites',
       firstTo: [3, 5, 7].includes(store.get('echo-first-to')) ? store.get('echo-first-to') : 3,
       variant: store.get('echo-coop-variant') || 'classic',
+      coopMap: store.get('echo-coop-map') || 'scroll',
       powers: store.get('echo-powers') || null,
     };
     if (!ARENA_CHOICES.some((a) => a.id === p.arenaId)) p.arenaId = 'morph';
     if (!RULES[p.rule]) p.rule = 'bites';
     if (!LEVEL_NAMES[p.level]) p.level = 'normal';
     if (!VARIANTS[p.variant]) p.variant = 'classic';
+    if (!COOP_MAPS[p.coopMap]) p.coopMap = 'scroll';
     p.powers = cleanPowers(p.powers);
     return p;
   };
@@ -2099,10 +2105,13 @@
     mark('[data-first]', 'first', pick.firstTo);
     mark('[data-rule]', 'rule', pick.rule);
     mark('[data-variant]', 'variant', pick.variant);
+    mark('[data-map]', 'map', pick.coopMap);
     $('first-label').textContent = pick.rule === 'survivor' ? 'Round wins' : 'First to';
     $('arena-pick').hidden = $('first-row').hidden = $('powers-row').hidden = coop;
-    $('variant-row').hidden = $('variant-desc').hidden = $('monster-row').hidden = !coop;
-    $('variant-desc').textContent = VARIANTS[pick.variant];
+    $('variant-row').hidden = $('variant-desc').hidden = $('monster-row').hidden = $('map-row').hidden = $('map-desc').hidden = !coop;
+    $('variant-desc').innerHTML = note(VARIANTS[pick.variant], SHORT_NOTES[pick.variant]);
+    $('map-desc').innerHTML = note(COOP_MAPS[pick.coopMap], SHORT_NOTES[pick.coopMap]);
+    $('side-rules').dataset.rule = pick.rule;
     $('arena-prev').disabled = $('arena-next').disabled = !edit;
     const a = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
     $('arena-name').textContent = a.name;
@@ -2123,7 +2132,7 @@
     $('start-text').textContent = coop ? "Let's Fly!" : "Let's Fight!";
     $('duel-start').disabled = total < need;
     $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend'
-      : coop ? `${total} bat${total > 1 ? 's' : ''} · ${pick.variant === 'classic' ? 'co-op run' : pick.variant}` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
+      : coop ? `${total} bat${total > 1 ? 's' : ''} · ${pick.variant === 'classic' ? 'co-op run' : pick.variant}${pick.coopMap === 'explore' ? ' · explore' : ''}` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
     paintBats();
   }
   // ---- the bats on the seat cards, drawn with EchoLooks
@@ -2216,8 +2225,9 @@
       renderPickers();
     },
     applyHost(s) {   // a guest mirrors the host's settings
-      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = s[k]));
+      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'coopMap', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = s[k]));
       if (Array.isArray(s.cpuLevels)) pick.cpuLevels = s.cpuLevels.map((l) => (LEVEL_NAMES[l] ? l : 'normal'));
+      if (!COOP_MAPS[pick.coopMap]) pick.coopMap = 'scroll';
       if (s.powers) pick.powers = cleanPowers(s.powers);
       renderPickers();
     },
@@ -2266,6 +2276,10 @@
     if (!canEdit()) return;
     pick.variant = b.dataset.variant; store.set('echo-coop-variant', pick.variant); changed();
   }));
+  document.querySelectorAll('[data-map]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.coopMap = b.dataset.map; store.set('echo-coop-map', pick.coopMap); changed();
+  }));
   const stepArena = (d) => {
     if (!canEdit()) return;
     const i = Math.max(0, ARENA_CHOICES.findIndex((x) => x.id === pick.arenaId));
@@ -2279,7 +2293,7 @@
   // everything a match needs from the lobby, offline or as the host
   lobby.matchOpts = () => ({
     cpus: pick.cpus, level: pick.level, levels: levelsBySlot(), looks: seatLooks(),
-    ...(pick.rule === 'coop' ? { variant: pick.variant } : { ...arenaOpts(pick), rule: pick.rule, firstTo: pick.firstTo, powerups: pick.powers }),
+    ...(pick.rule === 'coop' ? { variant: pick.variant, map: pick.coopMap } : { ...arenaOpts(pick), rule: pick.rule, firstTo: pick.firstTo, powerups: pick.powers }),
   });
   $('duel-start').addEventListener('click', () => {
     if (room?.role === 'host') window.EchoNet.startMatch();

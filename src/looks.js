@@ -2,13 +2,14 @@
 //
 // A look is a tiny plain object, saved on this device and sent online:
 //   { kind, scheme, body, wing, belly, ears, wings, eyes, hat, face, pattern, trail }
+// (pattern and trail are always 'none' now: kept so the format stays the same)
 // The kind (bat type) sets the body shape and a few touches of its own (a fruit
 // bat's snout, a vampire's collar and fangs, a ghost's wispy tail, a crystal's
 // facets); every other part can be swapped independently, and every kind can
 // wear every accessory. The scheme is a named colour set (body, wing, belly).
 //
 // EchoLooks.draw2D draws a bat on a 2D canvas (cached per look, wing beat and
-// size, so modes can call it every frame), drawTrail2D draws its trail,
+// size, so modes can call it every frame), drawTrail2D draws nothing (trails are gone),
 // rig3D builds the same bat from three.js primitives for view3d.js,
 // preview3D shows a spinnable 3D bat on any canvas, and openEditor opens the
 // full-screen "Customize Your Bat" creator, which builds its own DOM and CSS.
@@ -58,25 +59,23 @@
       ['bow', 'Bow'], ['headphones', 'Headphones'], ['flower', 'Flower'], ['horns', 'Horns'], ['halo', 'Halo'], ['viking', 'Viking helmet'], ['chef', 'Chef hat'], ['propeller', 'Propeller cap']]),
     face: opt([['none', 'Nothing'], ['glasses', 'Glasses'], ['shades', 'Shades'], ['goggles', 'Goggles'], ['monocle', 'Monocle'], ['mask', 'Hero mask'], ['bandana', 'Bandana'],
       ['mustache', 'Mustache'], ['blush', 'Rosy cheeks'], ['eyepatch', 'Eye patch']]),
-    pattern: opt([['none', 'Plain'], ['stripes', 'Stripes'], ['spots', 'Spots'], ['glow', 'Glow'], ['stars', 'Stars'], ['heart', 'Heart'], ['zigzag', 'Zigzag'], ['tips', 'Wing tips']]),
-    trail: opt([['none', 'No trail'], ['sparkles', 'Sparkles'], ['hearts', 'Hearts'], ['bubbles', 'Bubbles'], ['notes', 'Music'], ['stars', 'Stars'], ['flames', 'Flames'], ['rainbow', 'Rainbow']]),
   };
   // the creator's rows, in order
-  const CATEGORIES = [['kind', 'Bat'], ['scheme', 'Colours'], ['ears', 'Ears'], ['wings', 'Wings'], ['eyes', 'Eyes'], ['hat', 'Hat'], ['face', 'Face'], ['pattern', 'Pattern'], ['trail', 'Trail']]
+  const CATEGORIES = [['kind', 'Bat'], ['scheme', 'Colours'], ['ears', 'Ears'], ['wings', 'Wings'], ['eyes', 'Eyes'], ['hat', 'Hat'], ['face', 'Face']]
     .map(([field, name]) => ({ field, name }));
-  const PARTS = ['ears', 'wings', 'eyes', 'hat', 'face', 'pattern', 'trail'];
+  const PARTS = ['ears', 'wings', 'eyes', 'hat', 'face'];
   const IDS = {};
   for (const f in OPTIONS) IDS[f] = OPTIONS[f].map((o) => o.id);
   const SCHEME = Object.fromEntries(SCHEMES.map((s) => [s.id, s]));
 
-  // each kind's own parts and colours (hats, face extras and trails are yours to keep)
+  // each kind's own parts and colours (hats and face extras are yours to keep)
   const KIND_DEFAULTS = {
-    classic: { scheme: 'moonlight', ears: 'pointy', wings: 'classic', eyes: 'round', pattern: 'none' },
-    fruit: { scheme: 'caramel', ears: 'round', wings: 'scalloped', eyes: 'sparkly', pattern: 'none' },
-    longear: { scheme: 'sandstone', ears: 'long', wings: 'classic', eyes: 'sleepy', pattern: 'none' },
-    vampire: { scheme: 'midnight', ears: 'pointy', wings: 'tattered', eyes: 'fierce', pattern: 'none' },
-    ghost: { scheme: 'ghostly', ears: 'round', wings: 'feathery', eyes: 'round', pattern: 'glow' },
-    crystal: { scheme: 'frost', ears: 'pointy', wings: 'classic', eyes: 'sparkly', pattern: 'glow' },
+    classic: { scheme: 'moonlight', ears: 'pointy', wings: 'classic', eyes: 'round' },
+    fruit: { scheme: 'caramel', ears: 'round', wings: 'scalloped', eyes: 'sparkly' },
+    longear: { scheme: 'sandstone', ears: 'long', wings: 'classic', eyes: 'sleepy' },
+    vampire: { scheme: 'midnight', ears: 'pointy', wings: 'tattered', eyes: 'fierce' },
+    ghost: { scheme: 'ghostly', ears: 'round', wings: 'feathery', eyes: 'round' },
+    crystal: { scheme: 'frost', ears: 'pointy', wings: 'classic', eyes: 'sparkly' },
   };
   const KIND_HAT = { fruit: 'flower' };
   // the four seats: Mo violet, Ka pink, Ca green, Bo orange
@@ -86,11 +85,13 @@
     { kind: 'longear', scheme: 'limefizz' },
     { kind: 'crystal', scheme: 'sunset' },
   ];
+  // pattern and trail are no longer offered: every look keeps them as 'none' so
+  // older saved looks (and other players' looks) load without them
   const FIELDS = ['kind', 'scheme', 'body', 'wing', 'belly', 'ears', 'wings', 'eyes', 'hat', 'face', 'pattern', 'trail'];
 
   function defaults(kind) {
     const d = KIND_DEFAULTS[kind] || KIND_DEFAULTS.classic, s = SCHEME[d.scheme];
-    return { kind: KIND_DEFAULTS[kind] ? kind : 'classic', scheme: d.scheme, body: s.body, wing: s.wing, belly: s.belly, ears: d.ears, wings: d.wings, eyes: d.eyes, hat: KIND_HAT[kind] || 'none', face: 'none', pattern: d.pattern, trail: 'none' };
+    return { kind: KIND_DEFAULTS[kind] ? kind : 'classic', scheme: d.scheme, body: s.body, wing: s.wing, belly: s.belly, ears: d.ears, wings: d.wings, eyes: d.eyes, hat: KIND_HAT[kind] || 'none', face: 'none', pattern: 'none', trail: 'none' };
   }
   const HEX = /^#[0-9a-f]{6}$/i;
   // A valid copy of any look. A known scheme sets the colours; scheme 'custom'
@@ -128,11 +129,10 @@
     const r = rng(seed == null ? (Math.random() * 2 ** 31) | 0 : seed * 7919 + 13);
     const pick = (a) => a[Math.floor(r() * a.length)];
     const l = defaults(pick(IDS.kind));
-    for (const p of ['ears', 'wings', 'eyes', 'pattern']) if (r() < 0.6) l[p] = pick(IDS[p]);
+    for (const p of ['ears', 'wings', 'eyes']) if (r() < 0.6) l[p] = pick(IDS[p]);
     if (r() < 0.8) l.scheme = pick(IDS.scheme);
     l.hat = r() < 0.65 ? pick(IDS.hat.slice(1)) : 'none';
     l.face = r() < 0.35 ? pick(IDS.face.slice(1)) : 'none';
-    l.trail = r() < 0.35 ? pick(IDS.trail.slice(1)) : 'none';
     return clean(l);
   }
   const sig = (look) => FIELDS.map((f) => look[f]).join('|');
@@ -368,7 +368,7 @@
   // 1 closed, 2 stunned. The eyes look a little toward +x (the face direction).
   function drawBat(g, L, phase, eyesState, px) {
     const S = KIND_SHAPE[L.kind], lift = Math.sin(phase * Math.PI * 2);
-    const ghost = L.kind === 'ghost', crystal = L.kind === 'crystal', glow = L.pattern === 'glow';
+    const ghost = L.kind === 'ghost', crystal = L.kind === 'crystal', glow = ghost || crystal;
     const hair = Math.max(0.045, 1 / px), lx = 0.1;
     const glowCol = shade(L.wing, 0.35);
     g.lineJoin = 'round'; g.lineCap = 'round';
@@ -407,10 +407,9 @@
       if (glow) { g.shadowColor = glowCol; g.shadowBlur = 0.35 * px; }
       g.fill();
       g.shadowBlur = 0;
-      if (L.kind === 'vampire' || L.pattern === 'tips') {
+      if (L.kind === 'vampire') {
         g.save(); g.clip();
-        if (L.pattern === 'tips') { g.fillStyle = L.belly; g.fillRect(s > 0 ? 1.62 : -3, -2, 1.38, 4); }
-        if (L.kind === 'vampire') { wingPath(g, L.kind, L.wings, lift, s); g.strokeStyle = L.belly; g.lineWidth = 0.16; g.stroke(); }
+        wingPath(g, L.kind, L.wings, lift, s); g.strokeStyle = L.belly; g.lineWidth = 0.16; g.stroke();
         g.restore();
         wingPath(g, L.kind, L.wings, lift, s);
       }
@@ -419,18 +418,11 @@
       // bones (or feather lines) from the wrist out to the finger tips
       const wr = wingPoint(L.kind, W.wrist[0], W.wrist[1], lift);
       g.strokeStyle = crystal || glow ? shade(L.wing, 0.5, 0.75) : W.soft ? shade(L.wing, 0.22, 0.6) : shade(L.wing, -0.42, 0.7);
-      g.lineWidth = L.pattern === 'stripes' ? 0.1 : Math.max(hair, 0.05);
+      g.lineWidth = Math.max(hair, 0.05);
       g.beginPath();
       if (!W.soft) { const sh = wingPoint(L.kind, 0.5, -0.3, lift); g.moveTo(s * sh[0], sh[1]); g.lineTo(s * wr[0], wr[1]); }
       for (const t of W.tips) { const p = wingPoint(L.kind, t[0], t[1], lift); g.moveTo(s * wr[0], wr[1]); g.lineTo(s * (wr[0] + (p[0] - wr[0]) * 0.92), wr[1] + (p[1] - wr[1]) * 0.92); }
       g.stroke();
-      if (L.pattern === 'spots' || L.pattern === 'stars') {
-        g.fillStyle = L.pattern === 'stars' ? '#fff3a3' : contrast(L.wing, 0.38);
-        for (const [x, y, r] of [[1.15, -0.22, 0.12], [1.68, -0.28, 0.09], [0.9, 0.12, 0.08]]) {
-          const p = wingPoint(L.kind, x, y, lift);
-          if (L.pattern === 'stars') star(g, s * p[0], p[1], r * 1.2); else circle(g, s * p[0], p[1], r);
-        }
-      }
     }
     g.restore();
 
@@ -441,7 +433,6 @@
     for (const s of [-1, 1]) {
       earPath(g, L, s, false); g.fillStyle = L.body; g.fill();
       g.strokeStyle = earLine; g.lineWidth = 0.06; g.stroke();
-      if (L.pattern === 'tips') { g.save(); g.clip(); g.fillStyle = L.belly; g.fillRect(-2, -2.3, 4, 1.0); g.restore(); }
       earPath(g, L, s, true); g.fillStyle = inner; g.fill();
     }
     if (L.ears === 'tufted') {
@@ -475,43 +466,11 @@
     // belly
     g.fillStyle = L.belly;
     g.beginPath(); g.ellipse(0, ghost ? 0.62 : 0.5, 0.56 * S.bx, ghost ? 0.62 : 0.44, 0, 0, Math.PI * 2); g.fill();
-    const pc = contrast(L.body, 0.34);
-    switch (L.pattern) {
-      case 'stripes':
-        g.fillStyle = pc;
-        for (const i of [-1, 0, 1]) {
-          g.beginPath();
-          g.moveTo(i * 0.3 - 0.07, -1.1); g.lineTo(i * 0.3 + 0.07, -1.1); g.lineTo(i * 0.22, -0.62 + Math.abs(i) * 0.1); g.closePath(); g.fill();
-        }
-        for (const s of [-1, 1]) for (const y of [-0.05, 0.22]) {
-          g.beginPath(); g.moveTo(s * 1.1, y - 0.07); g.lineTo(s * 1.1, y + 0.07); g.lineTo(s * 0.68, y + 0.02); g.closePath(); g.fill();
-        }
-        break;
-      case 'spots':
-        g.fillStyle = pc;
-        for (const [x, y, r] of [[-0.6, -0.58, 0.15], [0.66, -0.46, 0.11], [-0.86, 0.28, 0.13], [0.84, 0.3, 0.16], [0.05, -0.82, 0.1], [-0.25, 0.86, 0.1], [0.42, 0.78, 0.09]]) circle(g, x, y, r);
-        break;
-      case 'stars':
-        g.fillStyle = lum(L.body) > 0.6 ? pc : '#fff3a3';
-        for (const [x, y, r, a] of [[-0.6, -0.6, 0.14, 0.2], [0.66, -0.5, 0.11, -0.3], [-0.86, 0.26, 0.1, 0.5], [0.84, 0.32, 0.13, 0.1], [0.02, -0.84, 0.09, 0]]) star(g, x, y, r, a);
-        break;
-      case 'heart':
-        g.fillStyle = pickApart(L.belly, '#ff5a8a', '#e8344e');
-        heart(g, 0, 0.6, 0.24);
-        break;
-      case 'zigzag': {
-        g.strokeStyle = pc; g.lineWidth = 0.13; g.lineJoin = 'miter';
-        g.beginPath();
-        for (let k = 0; k <= 8; k++) { const x = -1.1 + k * 0.275, y = -0.62 + (k % 2 ? -0.13 : 0.08); if (k) g.lineTo(x, y); else g.moveTo(x, y); }
-        g.stroke(); g.lineJoin = 'round';
-        break;
-      }
-      case 'glow': {
-        const ig = g.createRadialGradient(0, 0.15, 0.05, 0, 0.15, 1);
-        ig.addColorStop(0, 'rgba(255,255,255,0.4)'); ig.addColorStop(1, 'rgba(255,255,255,0)');
-        g.fillStyle = ig; g.fillRect(-1.2, -1.2, 2.4, 2.8);
-        break;
-      }
+    if (glow) {
+      // an inner light
+      const ig = g.createRadialGradient(0, 0.15, 0.05, 0, 0.15, 1);
+      ig.addColorStop(0, 'rgba(255,255,255,0.4)'); ig.addColorStop(1, 'rgba(255,255,255,0)');
+      g.fillStyle = ig; g.fillRect(-1.2, -1.2, 2.4, 2.8);
     }
     if (crystal) {
       // a cut gem: a flat table in the middle, eight facets around it, lit from the top left
@@ -955,54 +914,8 @@
   }
 
   // ---- Trails ------------------------------------------------------------------------
-  // one trail particle, centred at (x, y), size s, i = which particle
-  function trailGlyph(g, L, type, x, y, s, i) {
-    switch (type) {
-      case 'sparkles': g.fillStyle = i % 2 ? '#ffffff' : shade(L.wing, 0.55); sparkle(g, x, y, s); break;
-      case 'hearts': g.fillStyle = i % 2 ? '#ff5a8a' : '#ff9ad5'; heart(g, x, y, s * 0.8); break;
-      case 'bubbles':
-        g.strokeStyle = 'rgba(160,235,255,0.95)'; g.lineWidth = Math.max(1, s * 0.16);
-        g.beginPath(); g.arc(x, y, s * 0.7, 0, Math.PI * 2); g.stroke();
-        g.fillStyle = 'rgba(255,255,255,0.85)'; circle(g, x - s * 0.25, y - s * 0.25, s * 0.18); break;
-      case 'notes':
-        g.fillStyle = g.strokeStyle = i % 2 ? '#ffe278' : '#c9b6ff'; g.lineWidth = Math.max(1, s * 0.16);
-        g.beginPath(); g.ellipse(x - s * 0.2, y + s * 0.45, s * 0.32, s * 0.24, -0.4, 0, Math.PI * 2); g.fill();
-        g.beginPath(); g.moveTo(x + s * 0.1, y + s * 0.42); g.lineTo(x + s * 0.1, y - s * 0.6); g.lineTo(x + s * 0.5, y - s * 0.35); g.stroke(); break;
-      case 'stars': g.fillStyle = i % 2 ? '#ffe278' : '#fff6c8'; star(g, x, y, s, i); break;
-      case 'flames': {
-        const fg = g.createRadialGradient(x, y + s * 0.2, 0, x, y, s);
-        fg.addColorStop(0, '#fff3a3'); fg.addColorStop(0.5, '#ffb347'); fg.addColorStop(1, 'rgba(255,84,60,0)');
-        g.fillStyle = fg;
-        g.beginPath(); g.moveTo(x, y - s * 1.1); g.quadraticCurveTo(x + s * 0.8, y, x, y + s * 0.7); g.quadraticCurveTo(x - s * 0.8, y, x, y - s * 1.1); g.fill(); break;
-      }
-      case 'rainbow': g.fillStyle = `hsl(${(i * 52) % 360}, 95%, 65%)`; circle(g, x, y, s * 0.7); break;
-    }
-  }
-  // Draws look's trail behind a bat at (x, y), body radius r. o: { t (seconds),
-  // face (1|-1), vx, vy (any units, only the direction counts), alpha }.
-  // Call it before draw2D so the trail sits behind the bat.
-  function drawTrail2D(ctx, look, x, y, r, o = {}) {
-    if (!look || !(r > 0)) return;
-    const L = ready(look);
-    if (L.trail === 'none') return;
-    let dx = -(o.vx || 0), dy = -(o.vy || 0);
-    const d = Math.hypot(dx, dy);
-    if (d < 1e-3) { dx = -(o.face < 0 ? -1 : 1); dy = 0.15; } else { dx /= d; dy /= d; }
-    const t = o.t ?? performance.now() / 1000, N = L.trail === 'rainbow' ? 9 : 6;
-    ctx.save();
-    ctx.globalAlpha *= o.alpha ?? 1;
-    const a0 = ctx.globalAlpha;
-    for (let i = 0; i < N; i++) {
-      const age = (t * 1.1 + i / N) % 1;
-      const k = i + Math.floor(t * 1.1 + i / N) * N; // a stable id per particle
-      const wob = Math.sin(k * 2.3 + t * 4) * r * 0.45 * age;
-      const dist = r * (0.9 + age * 3.4);
-      const px = x + dx * dist - dy * wob, py = y + dy * dist + dx * wob + (L.trail === 'bubbles' || L.trail === 'flames' ? -age * r * 0.8 : 0);
-      ctx.globalAlpha = a0 * (1 - age) * 0.9;
-      trailGlyph(ctx, L, L.trail, px, py, r * (L.trail === 'rainbow' ? 0.5 : 0.36) * (1 - age * 0.45), k);
-    }
-    ctx.restore();
-  }
+  // Trails were removed from the creator; kept as a no-op so callers still work.
+  function drawTrail2D() {}
 
   // ---- The 3D bat ------------------------------------------------------------------
   // Same coordinates as the old view3d rig: body radius ~0.3 at the origin, facing
@@ -1054,63 +967,33 @@
     }
     return t;
   }
-  // the wing texture: colour, bones and wing-tip, spot or star patterns
+  // the wing texture: colour and bones
   function wingTex(T, L) {
-    return cachedTex(T, `w|${L.kind}|${L.wings}|${L.wing}|${L.belly}|${L.pattern}`, 256, 128, (g) => {
+    return cachedTex(T, `w|${L.kind}|${L.wings}|${L.wing}`, 256, 128, (g) => {
       // the 2D wing's x 0.4..2.6 and y -1.2..1.0 map onto the texture
       g.scale(256 / 2.2, 128 / 2.2); g.translate(-0.4, 1.2);
       const W = WINGS[L.wings];
       g.fillStyle = L.wing; g.fillRect(0, -2, 3, 4);
-      if (L.pattern === 'tips') { g.fillStyle = L.belly; g.fillRect(1.62, -2, 2, 4); }
-      g.strokeStyle = shade(L.wing, L.pattern === 'glow' || L.kind === 'crystal' ? 0.5 : -0.42, 0.8); g.lineWidth = 0.05; g.lineCap = 'round';
+      g.strokeStyle = shade(L.wing, L.kind === 'ghost' || L.kind === 'crystal' ? 0.5 : -0.42, 0.8); g.lineWidth = 0.05; g.lineCap = 'round';
       const wr = wingPoint(L.kind, W.wrist[0], W.wrist[1], 0);
       g.beginPath();
       if (!W.soft) { const sh = wingPoint(L.kind, 0.5, -0.3, 0); g.moveTo(sh[0], sh[1]); g.lineTo(wr[0], wr[1]); }
       for (const tp of W.tips) { const p = wingPoint(L.kind, tp[0], tp[1], 0); g.moveTo(wr[0], wr[1]); g.lineTo(wr[0] + (p[0] - wr[0]) * 0.92, wr[1] + (p[1] - wr[1]) * 0.92); }
       g.stroke();
-      if (L.pattern === 'spots' || L.pattern === 'stars') {
-        g.fillStyle = L.pattern === 'stars' ? '#fff3a3' : contrast(L.wing, 0.38);
-        for (const [x, y, r] of [[1.15, -0.22, 0.12], [1.68, -0.28, 0.09], [0.9, 0.12, 0.08]]) { const p = wingPoint(L.kind, x, y, 0); if (L.pattern === 'stars') star(g, p[0], p[1], r * 1.2); else circle(g, p[0], p[1], r); }
-      }
     });
   }
-  // body colour, belly patch and pattern, wrapped round the body sphere (u 0.25 faces front)
+  // body colour and belly patch, wrapped round the body sphere (u 0.25 faces front)
   function bodyTex(T, L) {
-    return cachedTex(T, `b|${L.body}|${L.belly}|${L.pattern}`, 256, 128, (g) => {
+    return cachedTex(T, `b|${L.body}|${L.belly}`, 256, 128, (g) => {
       g.fillStyle = L.body; g.fillRect(0, 0, 256, 128);
-      g.fillStyle = contrast(L.body, 0.34);
-      switch (L.pattern) {
-        case 'stripes':
-          for (const i of [-1, 0, 1]) { g.beginPath(); g.moveTo(64 + i * 16 - 6, 0); g.lineTo(64 + i * 16 + 6, 0); g.lineTo(64 + i * 12, 40 - Math.abs(i) * 6); g.closePath(); g.fill(); }
-          for (const y of [36, 60, 84]) { g.beginPath(); g.moveTo(96, y - 6); g.quadraticCurveTo(160, y - 12, 224, y - 6); g.lineTo(224, y + 6); g.quadraticCurveTo(160, y, 96, y + 6); g.closePath(); g.fill(); }
-          break;
-        case 'spots':
-          for (const [x, y, r] of [[120, 28, 12], [164, 52, 14], [208, 32, 10], [140, 80, 12], [192, 92, 10], [236, 68, 12], [16, 40, 10], [28, 84, 10], [88, 16, 8], [44, 16, 8]]) circle(g, x, y, r);
-          break;
-        case 'stars':
-          g.fillStyle = lum(L.body) > 0.6 ? contrast(L.body, 0.34) : '#fff3a3';
-          for (const [x, y, r] of [[120, 28, 12], [170, 56, 13], [212, 30, 10], [146, 84, 11], [236, 76, 11], [20, 40, 10], [30, 86, 9], [90, 14, 8]]) star(g, x, y, r);
-          break;
-        case 'zigzag':
-          g.strokeStyle = contrast(L.body, 0.34); g.lineWidth = 9; g.lineJoin = 'miter';
-          g.beginPath(); for (let k = 0; k <= 16; k++) { const x = k * 16, y = 34 + (k % 2 ? -8 : 6); if (k) g.lineTo(x, y); else g.moveTo(x, y); } g.stroke();
-          break;
-      }
       // belly patch, front and low
       g.fillStyle = L.belly;
       g.beginPath(); g.ellipse(64, 96, 38, 30, 0, 0, Math.PI * 2); g.fill();
-      if (L.pattern === 'heart') { g.fillStyle = pickApart(L.belly, '#ff5a8a', '#e8344e'); heart(g, 64, 92, 14); }
     });
   }
-  // a trail particle sprite, cached per trail type
-  function trailTex(T, L, i) {
-    const type = L.trail, k = i % (type === 'rainbow' ? 7 : 2);
-    return cachedTex(T, `t|${type}|${k}|${type === 'sparkles' ? L.wing : ''}`, 64, 64, (g) => trailGlyph(g, L, type, 32, 34, 22, k));
-  }
-
   function rig3D(T, look) {
     const L = ready(look), S = KIND_SHAPE[L.kind];
-    const ghost = L.kind === 'ghost', crystal = L.kind === 'crystal', glow = L.pattern === 'glow';
+    const ghost = L.kind === 'ghost', crystal = L.kind === 'crystal', glow = ghost || crystal;
     const mats = [];
     const lam = (color, o = {}) => {
       const m = new T.MeshLambertMaterial({ color, transparent: true, emissive: new T.Color(color), emissiveIntensity: o.ei ?? 0.35, side: o.side ?? T.FrontSide, flatShading: !!o.flat });
@@ -1181,7 +1064,7 @@
 
     // ears
     const innerMat = lam(mixHex(L.belly, L.body, 0.25), { ei: 0.3, base: bodyBase });
-    const earMat = L.pattern === 'tips' ? lam(L.belly, { ei: 0.35, base: bodyBase }) : plainMat;
+    const earMat = plainMat;
     const at = (gm, m, x, y, z, rz, sx, sy, sz) => { const o = mesh(gm, m, x, y, z); o.rotation.z = rz; o.scale.set(sx, sy, sz); return o; };
     for (const s of [-1, 1]) {
       switch (L.ears) {
@@ -1412,26 +1295,7 @@
       group.add(sp);
     }
 
-    // the trail streams out behind the bat (-z); tick(t, alpha) animates it
-    if (L.trail !== 'none') {
-      const N = L.trail === 'rainbow' ? 9 : 6, parts = [];
-      for (let i = 0; i < N; i++) {
-        const m = new T.SpriteMaterial({ map: trailTex(T, L, i), transparent: true, depthWrite: false });
-        m.userData.trail = true;
-        const sp = new T.Sprite(m);
-        group.add(sp); parts.push(sp); mats.push(m);
-      }
-      tickers.push((t, alpha) => {
-        parts.forEach((sp, i) => {
-          const age = (t * 1.1 + i / N) % 1, k = i + Math.floor(t * 1.1 + i / N) * N;
-          const wob = Math.sin(k * 2.3 + t * 4) * 0.14 * age;
-          sp.position.set(wob, 0.02 + (L.trail === 'bubbles' || L.trail === 'flames' ? age * 0.25 : wob * 0.5), -0.28 - age * 1.0);
-          sp.scale.setScalar((L.trail === 'rainbow' ? 0.3 : 0.22) * (1 - age * 0.45));
-          sp.material.opacity = alpha * (1 - age) * 0.9;
-        });
-      });
-    }
-    for (const m of mats) m.opacity = m.userData.trail ? 0 : m.userData.base;
+    for (const m of mats) m.opacity = m.userData.base;
     const tick = (t, alpha = 1) => { for (const f of tickers) f(t, alpha); };
     tick(0);
     return { group, wings, eyes, mats, tick };
@@ -1562,7 +1426,6 @@
         g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
         const look = curLook, r = Math.min(w / 6, h / 5) * pop * zoom, c = Math.cos(yaw);
         g.save(); g.translate(w / 2, h * 0.5 + Math.sin(t * 2.2) * r * 0.1); g.scale(Math.max(0.15, Math.abs(c)), 1);
-        drawTrail2D(g, look, 0, 0, r, { t, face: c < 0 ? -1 : 1 });
         draw2D(g, look, 0, 0, r, { face: c < 0 ? -1 : 1, flap: t * 1.4, eyesClosed: t % 3.7 < 0.12, angle: pitch * 0.3 });
         g.restore();
       }
@@ -1595,28 +1458,19 @@
 
   // ---- The bat creator ----------------------------------------------------------
   // A full-screen "Customize Your Bat" screen over the painted menu cave: category
-  // cards on the left, the live 3D bat on a stone pedestal in the middle (drag to
-  // tumble it, flick it or use the arrows to step through options) and a grid of
-  // thumbnail tiles on the right showing your bat wearing each option.
+  // cards on the left and the big live 3D bat on a stone pedestal in the middle.
+  // Tap the arrows, flick the bat sideways or press ← → to slide through the
+  // options; drag the bat slowly to tumble it.
   const GROUPS = [
-    { id: 'body', name: 'Body', short: 'Body', icon: 'body', fields: [['kind', 'Bat'], ['scheme', 'Colours'], ['pattern', 'Pattern']] },
+    { id: 'body', name: 'Body', short: 'Body', icon: 'body', fields: [['kind', 'Bat'], ['scheme', 'Colours']] },
     { id: 'wings', name: 'Wings', short: 'Wings', icon: 'wings', fields: [['wings', 'Wings']] },
     { id: 'face', name: 'Face', short: 'Face', icon: 'face', fields: [['eyes', 'Eyes'], ['face', 'Extras'], ['ears', 'Ears']] },
-    { id: 'acc', name: 'Accessories', short: 'Hats', icon: 'hat', fields: [['hat', 'Hats']] },
-    { id: 'fx', name: 'Effects', short: 'Effects', icon: 'fx', fields: [['trail', 'Trails']] },
+    { id: 'acc', name: 'Hats', short: 'Hats', icon: 'hat', fields: [['hat', 'Hats']] },
   ];
-  // what part of the bat each field's thumbnails frame, in body radii: x0, y0, x1, y1
-  const VIEWS = {
-    full: [-2.5, -2.25, 2.5, 1.6],
-    head: [-1.25, -1.2, 1.25, 0.8],
-    top: [-1.5, -2.4, 1.5, 0.55],
-    trail: [-3.9, -1.75, 1.9, 1.45],
-  };
-  const FIELD_VIEW = { eyes: 'head', face: 'head', hat: 'top', ears: 'top', trail: 'trail' };
 
   const CSS = `
 .lk-overlay{position:fixed;inset:0;z-index:1000;box-sizing:border-box;overflow:hidden;
-  --pad:10px;--gap:8px;--head:40px;--doneh:52px;--r:18px;--fs:1rem;
+  --pad:10px;--gap:8px;--head:40px;--doneh:52px;--r:18px;--fs:1rem;--arrow:54px;--side:clamp(96px,17%,230px);
   padding:max(var(--pad),env(safe-area-inset-top,0px)) max(calc(var(--pad) + 4px),env(safe-area-inset-right,0px)) max(var(--pad),env(safe-area-inset-bottom,0px)) max(calc(var(--pad) + 4px),env(safe-area-inset-left,0px));
   background:radial-gradient(ellipse 60% 70% at 50% 60%,rgba(70,40,170,.22),rgba(5,6,22,.5) 75%,rgba(5,6,22,.72));
   font-family:"Fredoka","Nunito","Arial Rounded MT Bold",system-ui,sans-serif;color:#f2f0ff;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
@@ -1627,100 +1481,80 @@
 .lk-overlay button{font-family:inherit;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 .lk-overlay svg{flex:none}
 .lk-shell{position:relative;width:100%;height:100%;max-width:1320px;margin:0 auto;display:grid;
-  grid-template-columns:clamp(70px,18%,250px) minmax(0,1fr) clamp(200px,38%,500px);
+  grid-template-columns:var(--side) minmax(0,1fr) var(--side);
   grid-template-rows:var(--head) minmax(0,1fr) var(--doneh);
-  grid-template-areas:"back stage dice" "cats stage panel" "cats stage done";gap:var(--gap) calc(var(--gap) + 4px)}
+  grid-template-areas:"back title dice" "cats stage ." "cats stage done";gap:var(--gap) calc(var(--gap) + 4px)}
 /* buttons */
 .lk-pill{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:100%;max-height:44px;padding:0 16px 0 10px;border-radius:999px;cursor:pointer;
-  border:2px solid rgba(160,150,255,.5);background:rgba(16,16,50,.62);color:#f2f0ff;font-size:calc(var(--fs)*1.02);font-weight:700;line-height:1;
+  border:2px solid rgba(160,150,255,.5);background:rgba(16,16,50,.62);color:#f2f0ff;font-size:calc(var(--fs)*1.02);font-weight:700;line-height:1;white-space:nowrap;
   box-shadow:0 0 14px rgba(120,100,255,.22);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:transform .1s,box-shadow .2s}
-.lk-pill:active,.lk-arrow:active,.lk-cat:active,.lk-tile:active,.lk-sub:active{transform:scale(.94)}
+.lk-pill:active,.lk-arrow:active,.lk-cat:active,.lk-sub:active{transform:scale(.94)}
 .lk-pill svg{width:1.15em;height:1.15em}
 .lk-overlay button:focus-visible{outline:2px solid #4adeff;outline-offset:2px}
 .lk-back{grid-area:back;justify-self:start;align-self:center}
 .lk-dice{grid-area:dice;justify-self:end;align-self:center;padding:0 14px 0 10px;color:#ffe9a8;border-color:rgba(255,210,63,.55);box-shadow:0 0 14px rgba(255,190,70,.25)}
 .lk-dice.spin svg{animation:lk-spin .45s ease-out}
 @keyframes lk-spin{to{transform:rotate(360deg) scale(1.1)}}
-.lk-done{grid-area:done;justify-self:end;align-self:stretch;width:min(100%,15rem);max-height:none;padding:0 18px;gap:10px;border-radius:999px;
+.lk-done{grid-area:done;justify-self:stretch;align-self:stretch;max-height:none;padding:0 14px;gap:8px;border-radius:999px;
   border:3px solid #7dff4a;background:linear-gradient(180deg,rgba(30,70,20,.88),rgba(10,30,10,.92));color:#f4ffe9;font-size:calc(var(--fs)*1.4);
   box-shadow:0 0 24px rgba(125,255,74,.5),inset 0 0 16px rgba(125,255,74,.25);text-shadow:0 0 10px rgba(125,255,74,.55)}
 .lk-done svg{width:1em;height:1em;color:#b8ff8a}
+/* top: the title */
+.lk-title{grid-area:title;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;pointer-events:none;line-height:1.1}
+.lk-title h2{max-width:100%;margin:0;font-size:calc(var(--fs)*1.7);font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 2px 0 rgba(20,10,60,.6),0 0 18px rgba(170,150,255,.55)}
+.lk-title p{display:none;margin:3px 0 0;max-width:100%;font-size:calc(var(--fs)*.9);font-weight:500;color:#d6d0ff;white-space:nowrap;text-shadow:0 1px 4px #000}
 /* left: category cards */
 .lk-cats{grid-area:cats;display:flex;flex-direction:column;gap:calc(var(--gap) * .8);min-height:0}
-.lk-cat{flex:1 1 0;min-height:0;max-height:66px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:calc(var(--r) * .8);cursor:pointer;text-align:left;
+.lk-cat{flex:1 1 0;min-height:0;max-height:72px;display:flex;align-items:center;gap:10px;padding:0 12px;border-radius:calc(var(--r) * .8);cursor:pointer;text-align:left;
   border:2px solid rgba(150,170,255,.24);background:linear-gradient(180deg,rgba(30,30,84,.7),rgba(12,12,40,.78));color:#e9e6ff;
   font-size:var(--fs);font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);transition:border-color .15s,box-shadow .15s,transform .1s}
 .lk-cat svg{width:1.7em;height:1.7em;color:var(--ic);filter:drop-shadow(0 0 5px color-mix(in srgb,var(--ic) 60%,transparent))}
 .lk-cat span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lk-cat .s{display:none}
 .lk-cat.on{border-color:#4adeff;color:#fff;background:linear-gradient(180deg,rgba(40,70,140,.72),rgba(14,24,64,.82));
   box-shadow:0 0 16px rgba(74,222,255,.55),inset 0 0 14px rgba(74,222,255,.22)}
-/* centre: the bat on its pedestal */
-.lk-stage{grid-area:stage;position:relative;min-height:0;min-width:0;container-type:size}
-.lk-stage canvas{position:absolute;left:0;width:100%;height:100%;top:0}
-@supports (height:1cqw){.lk-stage canvas{height:min(100%,80cqw);top:clamp(0px,calc(50% - 36cqw),calc(100% - 80cqw))}}
+/* centre: the part switcher, then the bat on its pedestal */
+.lk-stage{grid-area:stage;min-height:0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:calc(var(--gap) * .5)}
+.lk-subs{flex:none;display:flex;gap:4px;max-width:100%;padding:3px;border-radius:999px;background:rgba(6,8,30,.6);border:1px solid rgba(150,170,255,.22)}
+.lk-sub{flex:0 1 auto;min-width:0;height:calc(var(--fs)*1.85);padding:0 1em;border-radius:999px;border:0;background:transparent;color:#a9b0e0;font-size:calc(var(--fs)*.86);font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lk-sub.on{color:#06202a;background:linear-gradient(95deg,#4adeff,#7fb8ff);box-shadow:0 0 12px rgba(74,222,255,.5)}
+.lk-subs.one .lk-sub{cursor:default}
+.lk-view{position:relative;flex:1 1 auto;align-self:stretch;min-height:0;min-width:0;container-type:size}
+.lk-view canvas{position:absolute;left:0;width:100%;height:100%;top:0}
+@supports (height:1cqw){.lk-view canvas{height:min(100%,90cqw);top:clamp(0px,calc(50% - 45cqw),calc(100% - 90cqw))}}
 .lk-ped{pointer-events:none}
 .lk-big{z-index:1}
-.lk-title{position:absolute;z-index:2;left:0;right:0;top:0;text-align:center;pointer-events:none;line-height:1.1}
-.lk-title h2{display:inline-block;max-width:100%;margin:0;font-size:calc(var(--fs)*1.85);font-size:min(calc(var(--fs)*1.85),7.4cqw);font-weight:700;color:#fff;white-space:nowrap;text-shadow:0 2px 0 rgba(20,10,60,.6),0 0 18px rgba(170,150,255,.55)}
-.lk-title p{display:block;margin:2px auto 0;width:max-content;max-width:100%;font-size:calc(var(--fs)*.9);font-weight:500;color:#d6d0ff;text-shadow:0 1px 4px #000}
-.lk-arrow{position:absolute;z-index:3;top:50%;width:var(--arrow,42px);height:var(--arrow,42px);margin-top:calc(var(--arrow,42px) / -2);display:grid;place-items:center;padding:0;border-radius:50%;cursor:pointer;
-  border:2px solid rgba(190,200,255,.55);background:rgba(16,16,50,.72);color:#fff;box-shadow:0 0 14px rgba(120,100,255,.35);transition:transform .1s}
-.lk-arrow svg{width:50%;height:50%}
-.lk-prev{left:2%}.lk-next{right:2%}
+.lk-arrow{position:absolute;z-index:3;top:50%;width:var(--arrow);height:var(--arrow);margin-top:calc(var(--arrow) / -2);display:grid;place-items:center;padding:0;border-radius:50%;cursor:pointer;
+  border:2px solid rgba(190,200,255,.6);background:rgba(16,16,50,.74);color:#fff;box-shadow:0 0 16px rgba(120,100,255,.4);transition:transform .1s}
+.lk-arrow svg{width:52%;height:52%}
+.lk-prev{left:0}.lk-next{right:0}
 .lk-namebox{position:absolute;z-index:3;left:0;right:0;bottom:0;display:grid;justify-items:center;gap:5px;pointer-events:none}
-.lk-name{min-width:9.5em;max-width:100%;padding:.42em 1.2em;border-radius:999px;text-align:center;font-size:calc(var(--fs)*1.12);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+.lk-name{min-width:9.5em;max-width:calc(100% - 2 * var(--arrow) - 8px);padding:.42em 1.2em;border-radius:999px;text-align:center;font-size:calc(var(--fs)*1.12);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
   background:rgba(14,14,44,.86);border:2px solid rgba(150,170,255,.3);box-shadow:0 4px 14px rgba(0,0,0,.4),0 0 12px rgba(120,100,255,.2)}
 .lk-dots{display:flex;align-items:center;gap:6px;height:12px;padding:0 8px;border-radius:999px;background:rgba(10,10,34,.55)}
 .lk-dots i{width:6px;height:6px;border-radius:50%;background:rgba(200,200,255,.45)}
 .lk-dots i.on{width:9px;height:9px;background:#fff;box-shadow:0 0 6px #fff}
 .lk-dots b{font-size:.72rem;font-weight:600;color:#cfd0ff;letter-spacing:.04em}
-/* right: option tiles */
-.lk-panel{grid-area:panel;display:flex;flex-direction:column;gap:calc(var(--gap) * .8);min-height:0;padding:calc(var(--gap) + 2px);border-radius:var(--r);
-  background:linear-gradient(180deg,rgba(26,26,76,.62),rgba(10,10,36,.72));border:2px solid rgba(150,170,255,.26);
-  box-shadow:0 0 22px rgba(90,80,255,.18),inset 0 1px 0 rgba(255,255,255,.06);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
-.lk-subs{flex:none;display:flex;gap:5px;padding:3px;border-radius:999px;background:rgba(6,8,30,.55);border:1px solid rgba(150,170,255,.18)}
-.lk-sub{flex:1 1 0;min-width:0;height:calc(var(--fs)*1.9);padding:0 6px;border-radius:999px;border:0;background:transparent;color:#a9b0e0;font-size:calc(var(--fs)*.86);font-weight:600;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.lk-sub.on{color:#06202a;background:linear-gradient(95deg,#4adeff,#7fb8ff);box-shadow:0 0 12px rgba(74,222,255,.5)}
-.lk-subs.one .lk-sub{cursor:default}
-.lk-grid{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;display:grid;grid-template-columns:repeat(var(--cols,4),minmax(0,1fr));align-content:start;gap:calc(var(--gap) * .8);
-  padding:2px;margin:-2px;scrollbar-width:thin;scrollbar-color:rgba(150,170,255,.4) transparent;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
-.lk-tile{position:relative;aspect-ratio:1/.86;min-width:0;padding:0;border-radius:calc(var(--r) * .7);cursor:pointer;
-  border:2px solid rgba(150,170,255,.2);background:radial-gradient(ellipse at 50% 40%,rgba(70,60,150,.55),rgba(14,14,44,.9) 75%);
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.07);transition:border-color .15s,box-shadow .15s,transform .1s}
-.lk-tile canvas{position:absolute;inset:2px;width:calc(100% - 4px);height:calc(100% - 4px);pointer-events:none}
-.lk-tile.on{border-color:#4adeff;box-shadow:0 0 12px rgba(74,222,255,.65),inset 0 0 12px rgba(74,222,255,.25)}
-.lk-tile .ck{position:absolute;right:3px;top:3px;width:clamp(15px,24%,26px);aspect-ratio:1;border-radius:50%;display:none;place-items:center;
-  background:#2fb8ff;border:2px solid #fff;color:#fff;box-shadow:0 0 8px rgba(74,222,255,.8)}
-.lk-tile .ck svg{width:62%;height:62%}
-.lk-tile.on .ck{display:grid}
-/* tall screens: the cards and tiles stop growing */
-@media (min-height:560px){.lk-overlay{--pad:16px;--gap:12px;--head:46px;--doneh:62px;--r:20px;--fs:1.1rem}.lk-cat{max-height:72px}}
+/* tall screens: more room, the tag line shows */
+@media (min-height:560px){.lk-overlay{--pad:16px;--gap:12px;--head:62px;--doneh:62px;--r:20px;--fs:1.1rem;--arrow:64px}.lk-title p{display:block}}
 /* phones held sideways */
 @media (max-height:460px){
-  .lk-overlay{--pad:8px;--gap:7px;--head:36px;--doneh:44px;--r:16px;--fs:.92rem;--arrow:36px}
-  .lk-title p{font-size:calc(var(--fs)*.8)}
+  .lk-overlay{--pad:8px;--gap:7px;--head:36px;--doneh:44px;--r:16px;--fs:.92rem;--arrow:46px}
 }
 @media (max-height:400px){
-  .lk-overlay{--pad:6px;--gap:6px;--head:32px;--doneh:40px;--r:14px;--fs:.84rem;--arrow:32px}
-  .lk-shell{grid-template-columns:clamp(64px,15%,150px) minmax(0,1fr) clamp(190px,40%,330px)}
-  .lk-title p{display:none}
-  .lk-title h2{font-size:calc(var(--fs)*1.6);font-size:min(calc(var(--fs)*1.6),7.4cqw)}
-  .lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:2px 4px;text-align:center;font-size:calc(var(--fs)*.84)}
-  .lk-cat svg{width:1.75em;height:1.75em}
-  .lk-cat .l{display:none}.lk-cat .s{display:block}
+  .lk-overlay{--pad:6px;--gap:6px;--head:32px;--doneh:40px;--r:14px;--fs:.84rem;--arrow:42px}
+  .lk-title h2{font-size:calc(var(--fs)*1.55)}
+  .lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:2px 4px;text-align:center;font-size:calc(var(--fs)*.9)}
+  .lk-cat svg{width:1.9em;height:1.9em}
   .lk-pill{padding:0 12px 0 8px}
   .lk-dots{height:10px}
-  .lk-name{padding:.36em 1em}
+  .lk-name{padding:.36em 1em;min-width:8em}
 }
-@media (max-height:400px) and (min-width:760px){.lk-cat{flex-direction:row;justify-content:flex-start;gap:7px;padding:0 9px;text-align:left;font-size:var(--fs)}.lk-cat svg{width:1.6em;height:1.6em}}
-@media (max-height:400px) and (max-width:620px){.lk-shell{grid-template-columns:58px minmax(0,1fr) clamp(180px,42%,300px)}.lk-cat .s{font-size:.66rem}}
+@media (max-height:400px) and (min-width:760px){.lk-cat{flex-direction:row;justify-content:flex-start;gap:8px;padding:0 10px;text-align:left;font-size:var(--fs)}.lk-cat svg{width:1.6em;height:1.6em}}
+@media (max-width:620px){.lk-overlay{--side:92px}.lk-title h2{font-size:calc(var(--fs)*1.35)}.lk-done{font-size:calc(var(--fs)*1.2);padding:0 10px}}
 @media (max-aspect-ratio:1/1){
-  .lk-shell{grid-template-columns:1fr 1fr;grid-template-rows:var(--head) auto minmax(0,1fr) minmax(0,1.1fr) var(--doneh);
-    grid-template-areas:"back dice" "cats cats" "stage stage" "panel panel" "done done"}
-  .lk-cats{flex-direction:row}.lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:6px 2px;font-size:calc(var(--fs)*.78);text-align:center}
-  .lk-cat .l{display:none}.lk-cat .s{display:block}
-  .lk-done{justify-self:stretch;width:auto}
+  .lk-shell{grid-template-columns:1fr 1fr;grid-template-rows:var(--head) auto auto minmax(0,1fr) var(--doneh);
+    grid-template-areas:"back dice" "title title" "cats cats" "stage stage" "done done"}
+  .lk-cats{flex-direction:row}.lk-cat{flex-direction:column;justify-content:center;gap:2px;padding:6px 2px;font-size:calc(var(--fs)*.8);text-align:center}
 }
 `;
   const ICONS = {
@@ -1732,37 +1566,7 @@
     wings: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M2.5 19.5C4 11 10 4.5 21.5 3.5c-1.2 3.4-1.1 6.6.2 9.8-2.3-1.1-4.4-.9-5.6 1.1-1.1-1.6-3.2-2.1-4.9-1.1-.9 2.6-4.5 5-8.7 6.2z"/><path d="M21.5 3.5L9 14" stroke="rgba(10,10,40,.45)" stroke-width="1.3"/></svg>',
     face: '<svg viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M1.5 9.2C1.5 7.4 2.7 6.3 4.4 6.3c2.8 0 4.6 1.6 7.6 1.6s4.8-1.6 7.6-1.6c1.7 0 2.9 1.1 2.9 2.9 0 4.4-2.6 7.6-6 7.6-2.1 0-3.4-1.3-4.5-2.9-1.1 1.6-2.4 2.9-4.5 2.9-3.4 0-6-3.2-6-7.6zM7.3 8.6a2.4 2.1 0 1 0 0 4.2 2.4 2.1 0 1 0 0-4.2zm9.4 0a2.4 2.1 0 1 0 0 4.2 2.4 2.1 0 1 0 0-4.2z"/></svg>',
     hat: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M7.5 4.5c0-.8.7-1.5 1.5-1.5h6c.8 0 1.5.7 1.5 1.5v9h-9z"/><path fill="rgba(10,10,40,.5)" d="M7.5 10.5h9v2.2h-9z"/><path fill="currentColor" d="M2.5 16c0-1.1 1.6-2 3.5-2h12c1.9 0 3.5.9 3.5 2s-1.6 2.2-3.5 2.2H6c-1.9 0-3.5-1.1-3.5-2.2z"/></svg>',
-    fx: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M10 2l1.8 5.2L17 9l-5.2 1.8L10 16l-1.8-5.2L3 9l5.2-1.8z"/><path d="M18.5 13l.95 2.55L22 16.5l-2.55.95L18.5 20l-.95-2.55L15 16.5l2.55-.95z"/><circle cx="5" cy="19" r="1.6"/></svg>',
   };
-  const ICON_COL = { body: '#6fe7ff', wings: '#ff7ad9', face: '#d08bff', hat: '#ff8ae0', fx: '#b9a8ff' };
-
-  // a copy of look wearing option id of field f (a new kind brings its own parts and colours)
-  function withOpt(look, f, id) {
-    if (f === 'kind') {
-      const d = defaults(id);
-      return clean({ ...d, hat: look.hat === (KIND_HAT[look.kind] || 'none') ? d.hat : look.hat, face: look.face, trail: look.trail });
-    }
-    return clean({ ...look, [f]: id });
-  }
-
-  // thumbnails: drawn once per look, field and pixel size, kept for the visit
-  const thumbs = new Map();
-  function thumb(look, field, w, h) {
-    const id = `${key(look)}@${field}@${w}x${h}`;
-    let c = thumbs.get(id);
-    if (c) return c;
-    c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    const g = c.getContext('2d');
-    const [x0, y0, x1, y1] = VIEWS[FIELD_VIEW[field] || 'full'];
-    const r = Math.min(w / (x1 - x0), h / (y1 - y0));
-    const cx = w / 2 - ((x0 + x1) / 2) * r, cy = h / 2 - ((y0 + y1) / 2) * r;
-    if (field === 'trail') drawTrail2D(g, look, cx, cy, r * 1.25, { t: 0.42, face: 1, vx: 1, vy: -0.12 });
-    draw2D(g, look, cx, cy, r, { face: 1, flap: 0.12, noCache: true });
-    thumbs.set(id, c);
-    if (thumbs.size > 400) thumbs.delete(thumbs.keys().next().value);
-    return c;
-  }
 
   // the stone pedestal under the 3D bat, matched to preview3D's camera and glow ring
   function paintPedestal(cv, look, zoom) {
@@ -1830,6 +1634,17 @@
     return { cx, cy, rx, ry, bottom: cy + ry + depth };
   }
 
+  const ICON_COL = { body: '#6fe7ff', wings: '#ff7ad9', face: '#d08bff', hat: '#ff8ae0' };
+
+  // a copy of look wearing option id of field f (a new kind brings its own parts and colours)
+  function withOpt(look, f, id) {
+    if (f === 'kind') {
+      const d = defaults(id);
+      return clean({ ...d, hat: look.hat === (KIND_HAT[look.kind] || 'none') ? d.hat : look.hat, face: look.face });
+    }
+    return clean({ ...look, [f]: id });
+  }
+
   let ed = null; // the open editor, if any
   function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -1845,25 +1660,24 @@
     root.innerHTML = `
       <div class="lk-shell">
         <button class="lk-pill lk-back" aria-label="Back without saving">${ICONS.prev}<span>Back</span></button>
+        <div class="lk-title"><h2>Customize Your Bat</h2><p>Make it yours. Look fierce.</p></div>
         <button class="lk-pill lk-dice" aria-label="Random bat">${ICONS.dice}<span>Random</span></button>
-        <nav class="lk-cats" role="tablist" aria-label="Parts">${GROUPS.map((G, i) => `<button class="lk-cat" role="tab" data-i="${i}" style="--ic:${ICON_COL[G.icon]}" aria-label="${G.name}">${ICONS[G.icon]}<span class="l">${G.name}</span><span class="s">${G.short}</span></button>`).join('')}</nav>
+        <nav class="lk-cats" role="tablist" aria-label="Parts">${GROUPS.map((G, i) => `<button class="lk-cat" role="tab" data-i="${i}" style="--ic:${ICON_COL[G.icon]}" aria-label="${G.name}">${ICONS[G.icon]}<span>${G.short}</span></button>`).join('')}</nav>
         <section class="lk-stage">
-          <canvas class="lk-ped" aria-hidden="true"></canvas>
-          <canvas class="lk-big" aria-label="Your bat. Drag to spin it, flick it sideways to change."></canvas>
-          <div class="lk-title"><h2>Customize Your Bat</h2><p>Make it yours. Look fierce.</p></div>
-          <button class="lk-arrow lk-prev" aria-label="Previous option">${ICONS.prev}</button>
-          <button class="lk-arrow lk-next" aria-label="Next option">${ICONS.next}</button>
-          <div class="lk-namebox"><div class="lk-name" aria-live="polite"></div><div class="lk-dots" aria-hidden="true"></div></div>
-        </section>
-        <section class="lk-panel">
           <div class="lk-subs" role="tablist"></div>
-          <div class="lk-grid" role="listbox"></div>
+          <div class="lk-view">
+            <canvas class="lk-ped" aria-hidden="true"></canvas>
+            <canvas class="lk-big" aria-label="Your bat. Drag to spin it, flick it sideways to change."></canvas>
+            <button class="lk-arrow lk-prev" aria-label="Previous option">${ICONS.prev}</button>
+            <button class="lk-arrow lk-next" aria-label="Next option">${ICONS.next}</button>
+            <div class="lk-namebox"><div class="lk-name" aria-live="polite"></div><div class="lk-dots" aria-hidden="true"></div></div>
+          </div>
         </section>
         <button class="lk-pill lk-done" aria-label="Done, save my bat">${ICONS.check}<span>Done</span></button>
       </div>`;
     document.body.appendChild(root);
     const $ = (s) => root.querySelector(s);
-    const big = $('.lk-big'), ped = $('.lk-ped'), stage = $('.lk-stage'), grid = $('.lk-grid'), subsEl = $('.lk-subs');
+    const big = $('.lk-big'), ped = $('.lk-ped'), view = $('.lk-view'), subsEl = $('.lk-subs');
     const nameEl = $('.lk-name'), dotsEl = $('.lk-dots'), namebox = $('.lk-namebox');
     const cats = [...root.querySelectorAll('.lk-cat')];
 
@@ -1876,18 +1690,26 @@
     // keep the game from reacting to touches and keys while the creator is open
     const stop = (e) => e.stopPropagation();
     for (const ty of ['pointerdown', 'pointermove', 'pointerup', 'touchstart', 'touchmove', 'touchend', 'mousedown', 'mouseup', 'click', 'wheel']) root.addEventListener(ty, stop);
+    // ↑ ↓ walk every part in order (Body: Bat, Colours, then Wings, ...)
+    const stops = GROUPS.flatMap((G, g) => G.fields.map((_, k) => [g, k]));
     const onKey = (e) => {
       if (!ed) return;
       e.stopPropagation();
       if (e.type !== 'keydown') return;
       if (e.key === 'Escape') { e.preventDefault(); close(false); }
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); step(e.key === 'ArrowLeft' ? -1 : 1); }
-      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); pickGroup((state.group + (e.key === 'ArrowUp' ? -1 : 1) + GROUPS.length) % GROUPS.length); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
+        const at = stops.findIndex(([g, k]) => g === state.group && k === state.sub[g]);
+        const [g, k] = stops[(at + (e.key === 'ArrowUp' ? -1 : 1) + stops.length) % stops.length];
+        state.sub[g] = k;
+        pickGroup(g);
+      }
     };
     window.addEventListener('keydown', onKey, true);
     window.addEventListener('keyup', onKey, true);
 
-    const ZOOM = 0.8;
+    const ZOOM = 1;
     const preview = preview3D(big, () => state.look, { zoom: ZOOM });
     const field = () => GROUPS[state.group].fields[state.sub[state.group]][0];
     const list = () => OPTIONS[field()];
@@ -1902,64 +1724,18 @@
       let i = L.findIndex((o) => o.id === state.look[f]);
       i = i < 0 ? (d > 0 ? 0 : n - 1) : (((i + d) % n) + n) % n;
       setField(f, L[i].id);
-      const t = tiles[i];
-      if (t) t.el.scrollIntoView({ block: 'nearest' });
     }
 
-    // ---- tiles, drawn lazily: only the ones on screen, a few per frame
-    let tiles = [], queue = new Set();
-    const io = 'IntersectionObserver' in window ? new IntersectionObserver((ents) => {
-      for (const e of ents) { const t = e.target._lk; if (t) { t.seen = e.isIntersecting; if (t.seen && t.dirty) queue.add(t); } }
-    }, { root: grid, rootMargin: '60px' }) : null;
-    function paintTile(t) {
-      const c = t.cv, w = c.clientWidth, h = c.clientHeight;
-      if (!w || !h) return false;
-      const dpr = Math.min(window.devicePixelRatio || 1, 2), W = Math.round(w * dpr), H = Math.round(h * dpr);
-      const src = thumb(t.look, t.field, W, H);
-      if (c.width !== W || c.height !== H) { c.width = W; c.height = H; }
-      const g = c.getContext('2d');
-      g.clearRect(0, 0, W, H); g.drawImage(src, 0, 0);
-      t.dirty = false; t.el.dataset.drawn = '1';
-      return true;
-    }
-    function buildGrid() {
-      if (io) io.disconnect();
-      queue.clear();
-      const f = field();
-      grid.setAttribute('aria-label', fieldName(f));
-      grid.innerHTML = '';
-      tiles = list().map((o, i) => {
-        const b = el('button', 'lk-tile', `<canvas aria-hidden="true"></canvas><span class="ck" aria-hidden="true">${ICONS.check}</span>`);
-        b.setAttribute('role', 'option'); b.setAttribute('aria-label', o.name); b.title = o.name;
-        b.addEventListener('click', () => setField(f, o.id));
-        grid.appendChild(b);
-        const t = { el: b, cv: b.firstChild, field: f, id: o.id, i, look: null, k: '', dirty: true, seen: !io };
-        b._lk = t;
-        if (io) io.observe(b);
-        return t;
-      });
-      grid.scrollTop = 0;
-      syncGrid();
-      const on = tiles.find((t) => t.el.classList.contains('on'));
-      if (on) requestAnimationFrame(() => on.el.scrollIntoView({ block: 'nearest' }));
-    }
-    function syncGrid() {
-      const f = field();
-      for (const t of tiles) {
-        const on = state.look[f] === t.id;
-        t.el.classList.toggle('on', on); t.el.setAttribute('aria-selected', String(on));
-        const look = withOpt(state.look, f, t.id), k = key(look);
-        if (k !== t.k) { t.look = look; t.k = k; t.dirty = true; }
-        if (t.dirty && t.seen) queue.add(t);
-      }
+    function drawSubs() {
+      const G = GROUPS[state.group];
+      subsEl.classList.toggle('one', G.fields.length < 2);
+      subsEl.setAttribute('aria-label', G.name);
+      subsEl.innerHTML = G.fields.map(([f, n], k) => `<button class="lk-sub${k === state.sub[state.group] ? ' on' : ''}" role="tab" aria-selected="${k === state.sub[state.group]}" data-k="${k}">${esc(n)}</button>`).join('');
     }
     function pickGroup(i) {
       state.group = i;
       cats.forEach((c, k) => { c.classList.toggle('on', k === i); c.setAttribute('aria-selected', String(k === i)); });
-      const G = GROUPS[i];
-      subsEl.classList.toggle('one', G.fields.length < 2);
-      subsEl.innerHTML = G.fields.map(([f, n], k) => `<button class="lk-sub${k === state.sub[i] ? ' on' : ''}" role="tab" data-k="${k}">${esc(n)}</button>`).join('');
-      buildGrid();
+      drawSubs();
       update();
     }
     cats.forEach((c, i) => c.addEventListener('click', () => pickGroup(i)));
@@ -1969,8 +1745,7 @@
       const k = +b.dataset.k;
       if (k === state.sub[state.group]) return;
       state.sub[state.group] = k;
-      [...subsEl.children].forEach((s, j) => s.classList.toggle('on', j === k));
-      buildGrid();
+      drawSubs();
       update();
     });
 
@@ -1980,7 +1755,6 @@
       nameEl.textContent = i >= 0 ? L[i].name : f === 'scheme' ? 'Custom colours' : fieldName(f);
       if (L.length <= 7) dotsEl.innerHTML = L.map((o, k) => `<i${k === i ? ' class="on"' : ''}></i>`).join('');
       else dotsEl.innerHTML = `<b>${i >= 0 ? i + 1 : '–'} / ${L.length}</b>`;
-      syncGrid();
       const pk = state.look.body;
       if (pk !== pedKey) { pedKey = pk; pedSize = ''; }
     }
@@ -1994,7 +1768,7 @@
       if (!flick || e.pointerId !== flick.id) return;
       const dx = e.clientX - flick.x, dy = e.clientY - flick.y, dt = performance.now() - flick.t;
       flick = null;
-      if (dt < 380 && Math.abs(dx) > Math.max(40, big.clientWidth * 0.14) && Math.abs(dx) > Math.abs(dy) * 1.6) step(dx < 0 ? 1 : -1);
+      if (dt < 380 && Math.abs(dx) > Math.max(40, big.clientWidth * 0.12) && Math.abs(dx) > Math.abs(dy) * 1.6) step(dx < 0 ? 1 : -1);
     });
     big.addEventListener('pointercancel', () => { flick = null; });
 
@@ -2007,27 +1781,18 @@
     $('.lk-back').addEventListener('click', () => close(false));
     $('.lk-done').addEventListener('click', () => close(true));
 
-    // one loop: draws waiting thumbnails (a few ms a frame) and keeps the pedestal fitted
+    // keeps the pedestal painted to fit and the name tag on the front of the stone
     let raf = 0;
     function frame() {
       raf = requestAnimationFrame(frame);
       solid();
-      const sz = stage.clientWidth + 'x' + stage.clientHeight;
-      if (sz !== pedSize) {
-        pedSize = sz;
-        const p = paintPedestal(ped, state.look, ZOOM);
-        if (p) {
-          // the name sits on the front of the stone, but never off the bottom
-          const nb = namebox.offsetHeight, top = Math.min(stage.clientHeight - nb, ped.offsetTop + p.cy + p.ry * 0.55);
-          namebox.style.bottom = 'auto'; namebox.style.top = Math.max(0, top) + 'px';
-        }
-        for (const t of tiles) if (t.seen) { t.dirty = true; queue.add(t); }
-      }
-      const t0 = performance.now();
-      for (const t of queue) {
-        queue.delete(t);
-        if (t.el.isConnected && t.dirty) paintTile(t);
-        if (performance.now() - t0 > 6) break;
+      const sz = view.clientWidth + 'x' + view.clientHeight;
+      if (sz === pedSize) return;
+      pedSize = sz;
+      const p = paintPedestal(ped, state.look, ZOOM);
+      if (p) {
+        const nb = namebox.offsetHeight, top = Math.min(view.clientHeight - nb, ped.offsetTop + p.cy + p.ry * 0.55);
+        namebox.style.bottom = 'auto'; namebox.style.top = Math.max(0, top) + 'px';
       }
     }
     raf = requestAnimationFrame(frame);
@@ -2036,7 +1801,6 @@
       if (!ed) return;
       ed = null;
       cancelAnimationFrame(raf);
-      if (io) io.disconnect();
       preview.dispose();
       window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('keyup', onKey, true);

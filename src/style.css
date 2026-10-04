@@ -760,3 +760,89 @@ button.chip.on:disabled { opacity: 0.85; }
 .slot:nth-child(3) .seat-art canvas { animation-delay: -1.3s; }
 .slot:nth-child(4) .seat-art canvas { animation-delay: -1.9s; }
 @media (prefers-reduced-motion: reduce) { .slot .seat-art canvas { animation: none; } }
+
+/* ---- lobby rules panel: each setting is a centered block (label over its choices), spread down the panel ---- */
+.side { grid-template-rows: auto minmax(0, 1fr); background: radial-gradient(ellipse at 50% 0%, rgba(139, 108, 255, 0.18), transparent 60%), var(--glass); }
+.side-title { display: flex; align-items: center; justify-content: center; gap: 8px; text-shadow: 0 0 10px rgba(183, 155, 255, 0.65); }
+.side-title::before, .side-title::after { content: ''; width: 22px; height: 2px; border-radius: 2px; background: linear-gradient(90deg, transparent, #b79bff); box-shadow: 0 0 6px rgba(183, 155, 255, 0.6); }
+.side-title::after { transform: scaleX(-1); }
+.side #side-rules { display: flex; flex-direction: column; align-items: stretch; gap: 8px; }
+.side #side-rules > .set-row, .side #side-rules > .arena-pick { margin-top: 10px; }
+/* big screens: the settings sit as one evenly spaced group in the middle of the panel */
+.side #side-rules::before, .side #side-rules::after { content: ''; flex: 1 0 0; }
+.side .set-row { display: grid; grid-template-columns: minmax(0, 1fr); justify-content: stretch; justify-items: center; align-items: center; gap: 5px; }
+/* two short settings share a line when the panel is wide enough (Monsters + View in Co-op), else they stack like the rest */
+.side #side-rules { container: rules / inline-size; }
+.side .set-pair { display: contents; }
+.side .set-pair > .set-row { margin-top: 10px; }
+@container rules (min-width: 17rem) {
+  .side .set-pair { display: flex; justify-content: center; gap: 10px; margin-top: 10px; }
+  .side .set-pair > .set-row { flex: 1 1 auto; min-width: max-content; margin: 0; }
+  .side .set-pair .set-row .chips { grid-auto-columns: auto; justify-content: space-evenly; }
+}
+.side .set-note .short { display: none; }
+.side .set-row > span {
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+  font: 600 0.8rem/1 var(--heading); letter-spacing: 0.12em; text-transform: uppercase; text-align: center;
+  color: color-mix(in srgb, var(--c) 45%, white); text-shadow: 0 0 8px color-mix(in srgb, var(--c) 55%, transparent);
+}
+.side .set-row > span::before, .side .set-row > span::after { content: ''; width: 16px; height: 1.5px; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--c)); opacity: 0.8; }
+.side .set-row > span::after { transform: scaleX(-1); }
+.side .set-row .chips {
+  display: grid; grid-auto-flow: column; grid-auto-columns: auto; justify-content: stretch; gap: 3px;
+  width: 100%; max-width: 16rem; box-sizing: border-box; padding: 3px; border-radius: 999px;
+  background: rgba(4, 6, 20, 0.6); border: 1.5px solid color-mix(in srgb, var(--c) 30%, transparent);
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.45), 0 0 10px color-mix(in srgb, var(--c) 10%, transparent);
+}
+.side .set-row .chip { min-width: 0; padding: 5px 6px; overflow: hidden; text-overflow: ellipsis; }
+.side .set-row > .chip { justify-self: center; width: 100%; max-width: 16rem; }
+.side #side-rules > .set-note { margin: -4px auto 0; max-width: 17rem; text-align: center; text-wrap: balance; }
+.side .arena-pick {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "pv pv pv" "prev text next";
+  justify-items: center; align-items: center; gap: 6px 8px; padding: 8px; border-radius: 18px; text-align: center;
+  background: rgba(4, 6, 20, 0.55); border: 1.5px solid rgba(74, 222, 255, 0.35); box-shadow: 0 0 14px rgba(74, 222, 255, 0.14), inset 0 0 12px rgba(0, 0, 0, 0.4);
+}
+.side .arena-pick .arrows { display: contents; }
+.side #arena-preview { grid-area: pv; display: block; width: 100%; max-width: 15rem; height: auto; aspect-ratio: 170 / 76; border-radius: 12px; box-shadow: 0 0 12px rgba(74, 222, 255, 0.3); }
+.side #arena-prev { grid-area: prev; }
+.side #arena-next { grid-area: next; }
+.side .arena-pick .arena-text { grid-area: text; justify-items: center; text-align: center; width: 100%; overflow: hidden; }
+.side .arena-pick .arena-text b { max-width: 100%; color: #bff3ff; text-shadow: 0 0 10px rgba(74, 222, 255, 0.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side .arena-pick .arena-text small { line-height: 1.2; }
+@media (max-height: 460px) {
+  /* phones: the settings spread down the whole panel */
+  .side #side-rules::before, .side #side-rules::after { content: none; }
+  .side #side-rules > .set-row, .side #side-rules > .arena-pick, .side .set-pair > .set-row, .side .set-pair { margin-top: auto; }
+  .side .set-pair > :last-child, .side .set-pair { margin-bottom: auto; }
+  .side .set-note .long { display: none; }
+  .side .set-note .short { display: inline; }
+  .side #side-rules { gap: 5px; }
+  .side .set-row { gap: 3px; }
+  .side .set-row > span { font-size: 0.66rem; letter-spacing: 0.08em; gap: 5px; }
+  .side .set-row > span::before, .side .set-row > span::after { width: 10px; }
+  .side .set-row .chip { min-height: 24px; padding: 2px 4px; font-size: 0.78rem; }
+  .side #side-rules > .set-note { margin-top: -3px; font-size: 0.64rem; line-height: 1.2; }
+  /* arena: arrows either side of a small map with its name under it */
+  .side .arena-pick { grid-template-areas: "prev pv next" "prev text next"; gap: 2px 6px; padding: 4px 6px; border-radius: 14px; }
+  .lobby .side #arena-preview { display: block; width: auto; height: 30px; max-width: 100%; border-radius: 8px; }
+  .side .arena-pick .arena-text { gap: 2px; }
+  .side .arena-pick .arena-text small { display: block; font-size: 0.62rem; }
+  .side-title::before, .side-title::after { width: 14px; }
+}
+@media (max-height: 360px) {
+  .side-title { display: none; }
+  .lobby .side { grid-template-rows: minmax(0, 1fr); }
+  .side #side-rules { gap: 4px; }
+  .side .set-pair { gap: 4px 8px; }
+  .side .set-row { gap: 2px; }
+  .side .set-row .chip { min-height: 22px; }
+  .lobby .side #arena-preview { height: 26px; }
+  .side .arena-pick .arena-text small { display: none; }
+  .side .arena-pick .arena-text b { font-size: 0.82rem; }
+}
+@media (max-height: 360px) and (max-width: 620px) {
+  .side .set-row .chip { font-size: 0.7rem; padding: 2px 3px; }
+  .side .set-row .chips { gap: 1px; padding: 2px; }
+}
+/* the rules panel takes the height the seats leave it and never stretches the lobby */
+.lobby .side { contain: size; }

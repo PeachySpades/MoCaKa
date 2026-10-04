@@ -59,6 +59,9 @@
     hunt: { scroll: 0.85, stun: 1, ghost: 1, owl: 1, sense: 1.1, swoops: 3, wave: 8 },
   };
   const HUNT_TIME = 150, COMBO_TIME = 2.5, MAX_COMBO = 5;
+  // Explore: the Hunt clock runs this much longer (the cave is big); monsters farther than WAKE_X / WAKE_Y
+  // tiles from every bat sleep; a lantern lights when a living bat comes within LANTERN_R
+  const HUNT_EXPLORE = 1.6, WAKE_X = 15, WAKE_Y = 10, LANTERN_R = 2.4;
   const POINTS = { ghost: 5, crawler: 10, spider: 15, owl: 25 };
   // Bursting crystals: some ceiling crystals are loose. An echo cracks one; it shakes for
   // SHARD_SHAKE s, then bursts into SHARD_BITS sharp pieces (BIT_SPEED tiles/s, falling at
@@ -107,7 +110,11 @@
 
   // ---- State -------------------------------------------------------------
   let active = false, mode = 'local', viewer = -1, net = null, onEnd = null, paused = false, localCount = 1;
+  let exitNag = null, huntOpened = false;
   let L = null, D = DIFF.normal, difficulty = 'normal', seed = 1, variant = 'classic', V = VAR.classic;
+  // the map (start option `map`): 'scroll' (the side-scrolling run) or 'explore' (a big cave to roam, no scrolling)
+  const MAPS = ['scroll', 'explore'];
+  let mapKind = 'scroll', explore = false, huntGoal = 0;
   let hunt = { left: HUNT_TIME, wave: 0, waveT: 0, bonus: 0 }, spawnT = 0;
   let bats = [], rings = [], particles = [], popups = [], outbox = [];
   // crystal bursts in flight: { id (the shard's), seed, by (whose echo), age, dead (bitmask), bits }
@@ -115,7 +122,7 @@
   let chomps = [];   // dive-bite mouths snapping shut (cosmetic)
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
-  let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0;
+  let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '';
   const remoteInput = new Map();
 
   // ---- Level -------------------------------------------------------------
@@ -137,7 +144,7 @@
         else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: (x * 3 + y) % 6 });
         else if (c === 'v') lv.shards.push(resetShard({ id: lv.shards.length, x: cx, y, seed: (x * 7 + y * 13) % 10 }));
         else if (c === 'K') lv.checkpoints.push({ x: cx, y: cy, floor: floorBelow(ch, x, y) });
-        else if (c === 's') specs.push({ kind: 'spider', x: cx, y: y + 0.42, bot: floorBelow(ch, x, y) - 0.45 });
+        else if (c === 's') specs.push({ kind: 'spider', x: cx, y: y + 0.42, bot: Math.min(floorBelow(ch, x, y), def.explore ? y + 8 : 1e9) - 0.45 });
         else if (c === 'c') specs.push({ kind: 'crawler', x: cx, y: y + 1 - 0.3 });
         else if (c === 'o') specs.push({ kind: 'owl', x: cx, y: cy });
         else if (c === 'g') for (let k = 0; k < 3; k++) specs.push({ kind: 'ghost', x: cx + (k - 1) * 0.7, y: cy + (k === 1 ? -0.5 : 0.3) });
@@ -146,7 +153,40 @@
     lv.checkpoints.sort((a, b) => a.x - b.x);
     lv.monsters = specs.map((sp, id) => resetMonster({ id, ...sp, hx: sp.x, hy: sp.y }));
     lv.base = lv.monsters.length;   // monsters past this index arrived in a wave during play
+    if (def.explore) {
+      // Explore: how far (in tiles flown) every open tile is from the exit; lanterns in order along the way
+      lv.gd = distanceField(lv, Math.floor(lv.goal.x), Math.floor(lv.goal.y));
+      lv.total = Math.max(1, gdAt(lv, lv.start.x, lv.start.y));
+      lv.checkpoints.sort((a, b) => gdAt(lv, b.x, b.y) - gdAt(lv, a.x, a.y));
+    }
     return lv;
+  }
+  function distanceField(lv, gx, gy) {
+    const { w, h, grid } = lv, d = new Int32Array(w * h).fill(-1), q = new Int32Array(w * h);
+    let qh = 0, qt = 0;
+    d[gy * w + gx] = 0; q[qt++] = gy * w + gx;
+    while (qh < qt) {
+      const k = q[qh++], x = k % w;
+      for (const nk of [k + 1, k - 1, k + w, k - w]) {
+        if (nk < 0 || nk >= w * h || d[nk] >= 0 || grid[nk] === 1 || Math.abs((nk % w) - x) > 1) continue;
+        d[nk] = d[k] + 1; q[qt++] = nk;
+      }
+    }
+    return d;
+  }
+  // Explore: tiles to fly from here to the exit (a bat inside rock, a ghost, uses the nearest open tile)
+  function gdAt(lv, x, y) {
+    const tx = Math.floor(x), ty = Math.floor(y);
+    for (let r = 0; r <= 4; r++) {
+      let best = -1;
+      for (let b = ty - r; b <= ty + r; b++) for (let a = tx - r; a <= tx + r; a++) {
+        if (Math.max(Math.abs(a - tx), Math.abs(b - ty)) !== r || a < 0 || b < 0 || a >= lv.w || b >= lv.h) continue;
+        const v = lv.gd[b * lv.w + a];
+        if (v >= 0 && (best < 0 || v < best)) best = v;
+      }
+      if (best >= 0) return best + r;
+    }
+    return lv.total || 999;
   }
   // the level option sets the monsters; the variant adjusts them
   function setRules(level, v) {
@@ -156,14 +196,15 @@
     const d = DIFF[difficulty];
     D = { ...d, speed: d.speed * V.scroll, stun: d.stun * V.stun, ghost: d.ghost * V.ghost, owl: d.owl * V.owl, sense: d.sense * V.sense };
   }
-  const buildLevel = () => loadLevel(window.makeCoopLevel(seed, difficulty, variant));
+  const buildLevel = () => loadLevel(window.makeCoopLevel(seed, difficulty, variant, mapKind));
+  function setMap(m) { mapKind = MAPS.includes(m) ? m : 'scroll'; explore = mapKind === 'explore'; }
   function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#') b++; return b + 1; }
   // a loose ceiling crystal: y is the ceiling line it hangs from (its tip is at y + SHARD_LEN)
   function resetShard(s) { return Object.assign(s, { st: 'hang', t: 0, by: -1, lit: 0 }); }
   function resetMonster(m) {
     Object.assign(m, {
       x: m.hx, y: m.hy, vx: 0, vy: 0, t: 0, cd: 0, stun: 0, lit: 0, dead: false, face: -1, ax: 0, ay: 0, swoops: 0, target: -1,
-      bounced: false, cutY: null, lowLen: 0, by: -1, drop: false,
+      bounced: false, cutY: null, lowLen: 0, by: -1, drop: false, deadSent: 0,
       st: { spider: 'hang', crawler: 'walk', owl: 'perch', ghost: 'drift' }[m.kind],
       r: { spider: 0.3, crawler: 0.3, owl: 0.36, ghost: 0.2 }[m.kind],
     });
@@ -209,8 +250,11 @@
 
   // ---- Start / stop --------------------------------------------------------
   // o: { mode, humans, cpus, remotes, mySlot, total, level, seed, net, onEnd,
-  //      variant ('classic' | 'escape' | 'hunt'), looks (a look per seat, null = default), levels (CPU skill per seat) }
+  //      variant ('classic' | 'escape' | 'hunt'), map ('scroll' | 'explore', default 'scroll'),
+  //      looks (a look per seat, null = default), levels (CPU skill per seat) }
   // level sets the monsters; each CPU buddy plays at levels[seat] if given, else at level too.
+  // map 'scroll' is the side-scrolling run; 'explore' is a big cave the team roams freely (no
+  // scrolling, no creeping dark). Online, guests get map with the seed (and every snapshot carries it).
   let view = '3d';
   const in3d = () => view === '3d' && window.EchoCave3D && window.EchoCave3D.supported;
 
@@ -220,6 +264,7 @@
     net = o.net || null;
     onEnd = o.onEnd || null;
     setRules(o.level, o.variant);
+    setMap(o.map);
     buddyLevels = Array.isArray(o.levels) ? o.levels.slice(0, 4) : [];
     seed = o.seed != null ? (o.seed >>> 0) : Math.floor(Math.random() * 1e9);
     L = buildLevel();
@@ -243,14 +288,16 @@
       // a guest learns which seats are CPUs (and everyone's look) from the host's snapshots
       for (let i = 0; i < Math.max(1, o.total || 2); i++) bats.push(makeBat(i, i === viewer ? 'local' : 'remote', 0, lk));
     }
-    hunt = { left: HUNT_TIME, wave: 0, waveT: V.wave * 0.6, bonus: 0 };
+    hunt = { left: HUNT_TIME * (explore ? HUNT_EXPLORE : 1), wave: 0, waveT: V.wave * 0.6, bonus: 0 };
+    // Explore Hunt: the exit stays shut until the team has knocked out this many monsters
+    huntGoal = explore && variant === 'hunt' ? Math.min(Math.round(L.base * 0.6), { easy: 10, normal: 14, hard: 18 }[difficulty]) : 0;
     spawnT = V.wave * 0.8;
     rings = []; particles = []; popups = []; outbox = []; bursts = []; chomps = []; camF = null;
     remoteInput.clear();
-    cpIndex = -1; tries = TRIES; over = false; ended = false; result = null;
-    clock = 0; playTime = 0; shake = 0; snapTimer = 0; gotDirty = true; shardDirty = true; snapCount = 0;
+    cpIndex = -1; tries = TRIES; over = false; ended = false; result = null; exitNag = null; huntOpened = false;
+    clock = 0; playTime = 0; shake = 0; snapTimer = 0; gotDirty = true; shardDirty = true; snapCount = 0; lastDead = '';
     placeTeam(L.start.x, L.start.y);
-    scroll = { x: 0, speed: SPEEDS[0] * D.speed };
+    scroll = { x: 0, speed: explore ? 0 : SPEEDS[0] * D.speed };
     setPhase('count', 3);
     banner = { text: TITLES[variant], rgb: COL.exit, t: 0 };
     keys.clear(); sticks.clear();
@@ -539,21 +586,26 @@
   }
   function restartFromCheckpoint() {
     const cp = cpIndex >= 0 ? L.checkpoints[cpIndex] : null;
-    const at = cp ? { x: cp.x - 1, y: cp.y } : L.start;
-    scroll.x = Math.max(0, Math.min(L.w - VIEW_W, at.x - 6));
-    scroll.speed = sectionSpeed();
+    let at = cp ? { x: cp.x - 1, y: cp.y } : L.start;
+    if (explore && cp) at = !hitsWall(cp.x, cp.y - 1, R + 0.05) ? { x: cp.x, y: cp.y - 1 } : { x: cp.x, y: cp.y };
+    if (!explore) {
+      scroll.x = Math.max(0, Math.min(L.w - VIEW_W, at.x - 6));
+      scroll.speed = sectionSpeed();
+    }
     for (const b of bats) {
       Object.assign(b, { ko: false, hearts: MAX_HEARTS, echoes: Math.max(b.echoes, START_ECHOES), safe: 1.5, cooldown: 0, dashCd: 0, loud: 0 });
       if (b.ai) b.ai.path = [];
     }
     placeTeam(at.x, at.y);
+    // Explore: everything comes back (there's no "behind" in a cave you roam)
+    const back = (x) => explore || x >= scroll.x - 2;
     for (const m of L.monsters) {
       if (m.id >= L.base) { m.dead = true; m.gone = true; }   // wave monsters go away; the cave's own come back
-      else if (m.hx >= scroll.x - 2) resetMonster(m);
+      else if (back(m.hx)) resetMonster(m);
     }
     hunt.waveT = Math.max(hunt.waveT, 4); spawnT = Math.max(spawnT, 4);
-    for (const c of L.crystals) if (c.x >= scroll.x) c.got = false;
-    for (const s of L.shards) if (s.x >= scroll.x - 2) resetShard(s);   // loose crystals grow back too
+    for (const c of L.crystals) if (explore || c.x >= scroll.x) c.got = false;
+    for (const s of L.shards) if (back(s.x)) resetShard(s);   // loose crystals grow back too
     gotDirty = true; shardDirty = true;
     rings = []; bursts = [];
     for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;
@@ -577,7 +629,7 @@
     const players = bats.map((b) => ({ slot: b.i, name: b.name, color: b.color, cpu: (b.ctrl === 'cpu' && !b.was) || !!b.cpuFlag, alive: !b.ko, ...b.st }));
     const top = [...players].sort((a, b) => b.points - a.points || b.kills - a.kills)[0];
     result = {
-      won, how, variant, difficulty, seed, time: Math.round(playTime), triesUsed: TRIES - tries + (won ? 1 : 0), triesTotal: TRIES,
+      won, how, variant, difficulty, seed, map: mapKind, time: Math.round(playTime), triesUsed: TRIES - tries + (won ? 1 : 0), triesTotal: TRIES,
       checkpoint: cpIndex + 1, checkpoints: L.checkpoints.length, progress: Math.round(progress() * 100) / 100,
       mothsTotal: L.moths.length, team, players,
     };
@@ -599,11 +651,31 @@
   }
 
   // ---- Simulation ------------------------------------------------------------
+  // how far along a spot is, 0 at the start and 1 at the exit (Explore: by flying distance to the exit)
+  const along = (x, y) => (explore ? Math.max(0, Math.min(1, 1 - gdAt(L, x, y) / L.total)) : Math.max(0, Math.min(1, (x - L.start.x) / (L.goal.x - L.start.x))));
   const progress = () => {
+    if (explore) {
+      let best = 0;
+      for (const b of bats) if (!b.ko) best = Math.max(best, along(b.x, b.y));
+      const cp = L.checkpoints[cpIndex];
+      return Math.max(best, cp ? along(cp.x, cp.y) : 0);
+    }
     let lead = scroll.x + 1;
     for (const b of bats) if (!b.ko) lead = Math.max(lead, b.x);
     return Math.max(0, Math.min(1, (lead - L.start.x) / (L.goal.x - L.start.x)));
   };
+  // Explore: the cave section (0-3) around a point, by how far along it is; Side-scroll: by the screen
+  const sectionAt = (x, y) => Math.min(3, Math.floor(along(x, y) * 4));
+  const teamSection = () => {
+    if (!explore) return Math.min(3, Math.floor((scroll.x + VIEW_W / 2) / (L.w / 4)));
+    let sec = 0;
+    for (const b of bats) if (!b.ko) sec = Math.max(sec, sectionAt(b.x, b.y));
+    return sec;
+  };
+  // Explore Hunt: the exit opens once the team has knocked out huntGoal monsters
+  const teamKills = () => bats.reduce((t, b) => t + b.st.kills, 0);
+  const huntKills = () => (mode === 'client' ? hunt.kills | 0 : teamKills());
+  const exitOpen = () => !huntGoal || huntKills() >= huntGoal;
   const sectionSpeed = () => SPEEDS[Math.max(0, Math.min(3, Math.floor((scroll.x + VIEW_W / 2) / (L.w / 4))))] * D.speed;
 
   function update(dt) {
@@ -642,16 +714,18 @@
     if (phase !== 'play') { updateBursts(dt, false); broadcast(dt); return; }
     playTime += dt;
 
-    // the shared screen creeps right, a little faster in each section
-    const want = sectionSpeed();
-    scroll.speed += Math.sign(want - scroll.speed) * Math.min(Math.abs(want - scroll.speed), 0.4 * dt);
-    scroll.x = Math.min(L.w - VIEW_W, scroll.x + scroll.speed * dt);
+    // the shared screen creeps right, a little faster in each section (Explore: no scrolling at all)
+    if (!explore) {
+      const want = sectionSpeed();
+      scroll.speed += Math.sign(want - scroll.speed) * Math.min(Math.abs(want - scroll.speed), 0.4 * dt);
+      scroll.x = Math.min(L.w - VIEW_W, scroll.x + scroll.speed * dt);
+    }
     if (variant === 'hunt') {
       // in Hunt the team sets the pace too: push toward the right edge and the screen follows
       let lead = 0;
       for (const b of bats) if (!b.ko) lead = Math.max(lead, b.x);
       const push = lead - (scroll.x + VIEW_W * 0.74);
-      if (push > 0) scroll.x = Math.min(L.w - VIEW_W, scroll.x + Math.min(push, 2) * dt);
+      if (push > 0 && !explore) scroll.x = Math.min(L.w - VIEW_W, scroll.x + Math.min(push, 2) * dt);
       const before = Math.ceil(hunt.left);
       hunt.left -= dt;
       if (hunt.left <= 10 && Math.ceil(hunt.left) !== before) fx({ k: 'sfx', n: 'beep' });
@@ -702,12 +776,23 @@
       }
     }
 
-    // checkpoint lanterns: a living bat reaching one revives everyone who is down
-    const next = L.checkpoints[cpIndex + 1];
+    // checkpoint lanterns: a living bat reaching one revives everyone who is down.
+    // Explore: flying up to any lantern further along lights it (and skips the ones before)
+    let reachK = -1, reacher = null;
+    if (explore) {
+      for (let k = L.checkpoints.length - 1; k > cpIndex && !reacher; k--) {
+        const cp = L.checkpoints[k];
+        reacher = bats.find((b) => !b.ko && Math.hypot(b.x - cp.x, b.y - cp.y) < LANTERN_R) || null;
+        if (reacher) reachK = k;
+      }
+    } else if (L.checkpoints[cpIndex + 1]) {
+      reacher = bats.find((b) => !b.ko && b.x >= L.checkpoints[cpIndex + 1].x - 0.2) || null;
+      reachK = cpIndex + 1;
+    }
+    const next = L.checkpoints[reachK];
     if (next) {
-      const reacher = bats.find((b) => !b.ko && b.x >= next.x - 0.2);
       if (reacher) {
-        cpIndex++;
+        cpIndex = reachK;
         const down = bats.filter((b) => b.ko);
         for (const b of down) {
           Object.assign(b, { ko: false, hearts: 1, safe: REVIVE_SAFE, vx: 0, vy: 0 });
@@ -721,8 +806,18 @@
       }
     }
 
-    // the green light at the end
-    if (bats.some((b) => !b.ko && Math.hypot(L.goal.x - b.x, L.goal.y - b.y) < 0.95)) finish(true);
+    // the green light at the end (Explore Hunt: shut until enough monsters are knocked out)
+    const atExit = bats.some((b) => !b.ko && Math.hypot(L.goal.x - b.x, L.goal.y - b.y) < 0.95);
+    if (atExit && exitOpen()) finish(true);
+    else if (atExit && clock - (exitNag || -9) > 2.5) {
+      exitNag = clock;
+      fx({ k: 'banner', text: 'The exit is shut', sub: `Knock out ${huntGoal - teamKills()} more monster${huntGoal - teamKills() === 1 ? '' : 's'} to open it`, rgb: COL.owl, t: 1.6 });
+    }
+    if (huntGoal && !huntOpened && exitOpen()) {
+      huntOpened = true;
+      fx({ k: 'banner', text: 'The exit is open!', sub: 'Get to the green light for a bonus', rgb: COL.exit, t: 2 });
+      fx({ k: 'sfx', n: 'power' });
+    }
     broadcast(dt);
   }
 
@@ -745,7 +840,8 @@
       if (!hitsWall(b.x, ny, R)) b.y = ny; else { b.vy *= -0.25; b.dashT = 0; }
       if (b.dashT > 0) cutThreads(b);
     }
-    // the shared screen: the right edge holds you back, the left edge pushes you on
+    // the shared screen: the right edge holds you back, the left edge pushes you on (not in Explore)
+    if (explore) return;
     const left = scroll.x + R + 0.05, right = scroll.x + VIEW_W - R - 0.3;
     if (b.x > right) { b.x = right; b.vx = Math.min(b.vx, 0); }
     if (b.x < left) {
@@ -760,7 +856,8 @@
     const tvx = ix * GHOST_SPEED + (phase === 'play' ? scroll.speed * 0.6 : 0), tvy = iy * GHOST_SPEED;
     const k = 1 - Math.exp(-dt * 5);
     b.vx += (tvx - b.vx) * k; b.vy += (tvy - b.vy) * k;
-    b.x = Math.max(scroll.x + 0.6, Math.min(scroll.x + VIEW_W - 0.6, b.x + b.vx * dt));
+    const lo = explore ? 0.8 : scroll.x + 0.6, hi = explore ? L.w - 0.8 : scroll.x + VIEW_W - 0.6;
+    b.x = Math.max(lo, Math.min(hi, b.x + b.vx * dt));
     b.y = Math.max(0.8, Math.min(L.h - 0.8, b.y + b.vy * dt));
     if (Math.abs(b.vx) > 0.3) b.face = Math.sign(b.vx);
   }
@@ -953,7 +1050,7 @@
       if (m.kind === 'owl' && (m.st === 'swoop' || m.st === 'tell')) { m.st = 'recover'; m.t = 0.6; }
       b.st.stuns++;
       fx({ k: 'burst', x: m.x, y: m.y, rgb: COL.stun, n: 8 });
-      fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: how === 'bite' ? 'BONK!' : 'SWAT!', rgb: b.rgb, life: 0.7 });
+      fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: 'BONK!', rgb: b.rgb, life: 0.7 });
       fx({ k: 'sfx', n: how === 'bite' ? 'block' : 'swat', alt: 'stun' });
       return;
     }
@@ -965,7 +1062,7 @@
     m.st = 'fall'; m.vy = -3; m.vx = dx * 2.5; m.stun = 0; m.t = 0; m.bounced = false; m.by = b.i; m.drop = false;
     if (m.kind === 'spider') fx({ k: 'cut', id: m.id, y: r2(m.y) });   // its thread springs back up
     b.st.kills++;
-    const text = score(m, b) || (how === 'bite' ? 'CHOMP!' : how === 'crystal' ? 'CRUNCH!' : 'SWAT!');
+    const text = score(m, b) || (how === 'bite' ? 'CHOMP!' : how === 'crystal' ? 'CRUNCH!' : 'CHOMP!');
     fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 14, sp: 3.5 });
     fx({ k: 'popup', x: m.x, y: m.y - 0.7, text, rgb: how === 'bite' ? '255, 226, 120' : b.rgb, life: 0.8 });
     fx({ k: 'shake', v: 0.15, s: b.i });
@@ -1014,10 +1111,19 @@
     }
     return best;
   }
+  // any bat (a ghost too) within dx, dy tiles of a point
+  const batNear = (x, y, dx, dy) => bats.some((b) => Math.abs(b.x - x) < dx && Math.abs(b.y - y) < dy);
+  // on the shared screen (Explore: near enough to a bat to be on someone's screen)
+  const onScreen = (x, y) => (explore ? batNear(x, y, 12, 7) : x < scroll.x + VIEW_W - 0.5);
   function updateMonster(m, dt) {
     if (m.dead) return;
+    // Explore: asleep unless a bat is somewhere near (a wave monster left far behind is gone)
+    if (explore && !batNear(m.x, m.y, WAKE_X, WAKE_Y)) {
+      if (m.id >= L.base && !batNear(m.x, m.y, WAKE_X * 2, WAKE_Y * 2)) { m.dead = true; m.gone = true; }
+      return;
+    }
     // far behind the screen, or not reached yet: asleep
-    if (m.x < scroll.x - 4 || m.hx > scroll.x + VIEW_W + 2) {
+    if (!explore && (m.x < scroll.x - 4 || m.hx > scroll.x + VIEW_W + 2)) {
       if (m.id >= L.base && m.x < scroll.x - 4) { m.dead = true; m.gone = true; }   // a wave monster left far behind is gone
       return;
     }
@@ -1057,7 +1163,7 @@
         const loud = nearestBat(m, 6.5 * sense, (o) => o.loud > 0);
         const close = nearestBat(m, 3.2 * sense);
         const b = loud || close;
-        if (b && m.x < scroll.x + VIEW_W - 0.5) startOwlTell(m, b);
+        if (b && onScreen(m.x, m.y)) startOwlTell(m, b);
       } else if (m.st === 'tell') {
         m.t -= dt;
         const b = bats[m.target];
@@ -1081,7 +1187,7 @@
         }
       } else if (m.st === 'leave') {
         m.x += m.vx * dt; m.y += m.vy * dt;
-        if (m.y < -1 || m.x > scroll.x + VIEW_W + 3) m.dead = true;
+        if (m.y < -1 || (explore ? !batNear(m.x, m.y, 16, 10) : m.x > scroll.x + VIEW_W + 3)) m.dead = true;
       }
     } else if (m.kind === 'crawler') {
       if (m.st === 'walk') {
@@ -1103,7 +1209,7 @@
     } else if (m.kind === 'ghost') {
       if (m.st === 'drift') {
         m.y = m.hy + Math.sin(clock * 1.6 + m.id) * 0.25;
-        if (nearestBat(m, 7 * sense) && m.x < scroll.x + VIEW_W) { m.st = 'chase'; fx({ k: 'sfx', n: 'wake' }); }
+        if (nearestBat(m, 7 * sense) && onScreen(m.x, m.y)) { m.st = 'chase'; fx({ k: 'sfx', n: 'wake' }); }
       } else {
         const b = nearestBat(m, 30);
         if (b) {
@@ -1205,7 +1311,7 @@
 
   // ---- Waves (Escape and Hunt) ------------------------------------------------
   function spawnWave() {
-    const sec = Math.min(3, Math.floor((scroll.x + VIEW_W / 2) / (L.w / 4)));
+    const sec = teamSection();
     const live = L.monsters.filter((m) => !m.dead && m.id >= L.base).length;
     if (variant === 'escape') {
       // the dark sends chasers after the team: ghost moths from behind and ahead, later owls too
@@ -1225,30 +1331,41 @@
     let made = 0;
     for (let k = 0; k < n; k++) if (spawn(kinds[(k + hunt.wave) % kinds.length])) made++;
     if (made) {
-      fx({ k: 'popup', x: scroll.x + VIEW_W * 0.72, y: L.h * 0.32, text: `WAVE ${hunt.wave}`, rgb: COL.owl, life: 1.6 });
+      const at = explore ? livingBats()[0] || bats[0] : null;
+      fx({ k: 'popup', x: at ? at.x : scroll.x + VIEW_W * 0.72, y: at ? at.y - 1.6 : L.h * 0.32, text: `WAVE ${hunt.wave}`, rgb: COL.owl, life: 1.6 });
       fx({ k: 'sfx', n: 'warn' });
     }
   }
   // a new monster somewhere fair: on the right part of the screen, not on top of a bat
   function spawn(kind, where = 'ahead') {
     const clear = (x, y) => bats.every((b) => b.ko || Math.hypot(b.x - x, b.y - y) > 3.2);
+    // Explore: around a living bat, just off its screen for a ghost moth, a few tiles away for anything else
+    const team = livingBats();
     for (let attempt = 0; attempt < 30; attempt++) {
       let x, y;
       const extra = {};
+      const near = explore && team.length ? team[Math.floor(Math.random() * team.length)] : null;
+      if (explore && !near) return null;
       if (kind === 'ghost') {
-        x = where === 'behind' ? scroll.x - 0.5 : scroll.x + VIEW_W + 0.5;
-        y = 1.5 + Math.random() * (L.h - 3);
+        if (near) {
+          const a = Math.random() * Math.PI * 2;
+          x = Math.max(1, Math.min(L.w - 1, near.x + Math.cos(a) * 9)); y = Math.max(1.5, Math.min(L.h - 1.5, near.y + Math.sin(a) * 5.5));
+        } else {
+          x = where === 'behind' ? scroll.x - 0.5 : scroll.x + VIEW_W + 0.5;
+          y = 1.5 + Math.random() * (L.h - 3);
+        }
       } else {
-        const tx = Math.floor(scroll.x + VIEW_W * (0.5 + Math.random() * 0.42));
+        const tx = near ? Math.floor(near.x + (Math.random() < 0.5 ? -1 : 1) * (4 + Math.random() * 6)) : Math.floor(scroll.x + VIEW_W * (0.5 + Math.random() * 0.42));
         const spots = [];
-        for (let ty = 1; ty < L.h - 1; ty++) {
+        const ty0 = near ? Math.max(1, Math.floor(near.y) - 6) : 1, ty1 = near ? Math.min(L.h - 1, Math.floor(near.y) + 7) : L.h - 1;
+        for (let ty = ty0; ty < ty1; ty++) {
           if (solid(tx, ty)) continue;
           if (kind === 'owl') { if (!hitsWall(tx + 0.5, ty + 0.5, 0.6)) spots.push([ty + 0.5]); }
           else if (kind === 'crawler') {
             if (solid(tx, ty + 1) && solid(tx - 1, ty + 1) && solid(tx + 1, ty + 1) && !solid(tx - 1, ty) && !solid(tx + 1, ty) && !solid(tx, ty - 1)) spots.push([ty + 0.7]);
           } else if (solid(tx, ty - 1) && !solid(tx, ty + 1) && !solid(tx, ty + 2)) {
             let fl = ty;
-            while (!solid(tx, fl + 1)) fl++;
+            while (!solid(tx, fl + 1) && (!explore || fl < ty + 8)) fl++;
             spots.push([ty + 0.42, fl + 1 - 0.45]);
           }
         }
@@ -1274,6 +1391,7 @@
   // (BUDDY) makes it notice monsters late, fumble some squeaks and dashes, drift
   // off its line, daydream now and then, and stay near the people it's helping.
   function plan(b) {
+    if (explore) return planExplore(b);
     const S = BUDDY[b.ai?.skill] || BUDDY.pro;
     const x0 = Math.max(0, Math.floor(scroll.x)), x1 = Math.min(L.w - 1, Math.ceil(scroll.x + VIEW_W));
     const sx = Math.floor(b.x), sy = Math.floor(b.y);
@@ -1314,6 +1432,57 @@
     for (let k = best; k >= 0 && prev[k] !== -1; k = prev[k]) path.push({ x: (k % wN) + x0 + 0.5, y: Math.floor(k / wN) + 0.5 });
     return path.reverse();
   }
+  // Explore: a breadth-first search over the whole cave from the buddy. A buddy stays with the
+  // people it helps: if the nearest one is a way off it flies to them; close by, it heads for
+  // the exit (down the distance-to-exit field) but never more than a few tiles ahead of them.
+  // With no people about (or as the test bot) it just makes for the exit.
+  function planExplore(b) {
+    const S = BUDDY[b.ai?.skill] || BUDDY.pro, w = L.w;
+    const sx = Math.floor(b.x), sy = Math.floor(b.y);
+    if (solid(sx, sy)) return [];
+    const n = w * L.h, prev = plan.prev && plan.prev.length === n ? plan.prev : (plan.prev = new Int32Array(n));
+    const dist = plan.dist && plan.dist.length === n ? plan.dist : (plan.dist = new Int32Array(n));
+    const q = plan.q && plan.q.length === n ? plan.q : (plan.q = new Int32Array(n));
+    prev.fill(-2); dist.fill(-1);
+    let qh = 0, qt = 0;
+    const s0 = sy * w + sx;
+    q[qt++] = s0; prev[s0] = -1; dist[s0] = 0;
+    let lead = null, ld = 1e9;
+    if (S !== BUDDY.pro) {
+      for (const o of bats) {
+        if (o.ko || o.ctrl === 'cpu' || o.cpuFlag) continue;
+        const d = Math.hypot(o.x - b.x, o.y - b.y);
+        if (d < ld) { ld = d; lead = o; }
+      }
+    }
+    const leadK = lead ? Math.floor(lead.y) * w + Math.floor(lead.x) : -1;
+    const follow = lead && ld > 4.5 + (b.i % 4) * 0.6;
+    // how far from the exit it's happy to be: a few tiles behind its person (each buddy a little more)
+    const target = lead ? gdAt(L, lead.x, lead.y) - 2.5 + (b.i % 4) * 1.2 + S.lag * 10 : 0;
+    const wantCrystal = b.echoes < 3;
+    let best = s0, bestCost = 1e9, crystal = -1;
+    while (qh < qt) {
+      const k = q[qh++], x = k % w, y = (k - x) / w;
+      if (follow) { if (k === leadK) { best = k; break; } }
+      else {
+        // as close to its spot on the way as it can get (being ahead of it costs more), not too far to fly
+        const gd = L.gd[k], T = Math.max(0, target);
+        const cost = (gd >= T ? gd - T : (T - gd) * 2.5) + dist[k] * 0.3 + (!solid(x, y - 1) && !solid(x, y + 1) ? 0 : 0.4);
+        if (cost < bestCost) { bestCost = cost; best = k; }
+      }
+      if (wantCrystal && crystal < 0 && dist[k] < 14 && L.crystals.some((c) => !c.got && Math.floor(c.x) === x && Math.floor(c.y) === y)) crystal = k;
+      if (dist[k] > 90 && !follow) continue;
+      for (const nk of [k + 1, k - 1, k + w, k - w]) {
+        if (nk < 0 || nk >= n || prev[nk] !== -2 || L.grid[nk] === 1) continue;
+        prev[nk] = k; dist[nk] = dist[k] + 1;
+        q[qt++] = nk;
+      }
+    }
+    if (crystal >= 0) best = crystal;
+    const path = [];
+    for (let k = best; k >= 0 && prev[k] !== -1; k = prev[k]) path.push({ x: (k % w) + 0.5, y: Math.floor(k / w) + 0.5 });
+    return path.reverse();
+  }
   function cpuInput(b, dt) {
     const ai = b.ai || (b.ai = newAi(buddyLevel(b.i)));
     const S = BUDDY[ai.skill] || BUDDY.normal;
@@ -1321,7 +1490,7 @@
     if (b.ko) {
       // a ghost tags along with the team
       const team = livingBats();
-      const tx = team.length ? team.reduce((s, o) => s + o.x, 0) / team.length - 1 : scroll.x + VIEW_W / 2;
+      const tx = team.length ? team.reduce((s, o) => s + o.x, 0) / team.length - 1 : explore ? b.x : scroll.x + VIEW_W / 2;
       const ty = team.length ? team.reduce((s, o) => s + o.y, 0) / team.length : L.h / 2;
       const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
       return d > 0.8 ? { ix: dx / d, iy: dy / d } : { ix: 0, iy: 0 };
@@ -1335,7 +1504,7 @@
     const wp = ai.path[Math.min(1, ai.path.length - 1)];
     if (wp) { const dx = wp.x - b.x, dy = wp.y - b.y, d = Math.hypot(dx, dy) || 1; ix = dx / d; iy = dy / d; }
     if (S.wobble) { iy += Math.sin(clock * 2.1 + b.i * 2.3) * S.wobble * 0.8; ix += Math.sin(clock * 1.3 + b.i) * S.wobble * 0.4; }
-    if (b.x < scroll.x + 1.2) ix = Math.max(ix, 0.6);
+    if (!explore && b.x < scroll.x + 1.2) ix = Math.max(ix, 0.6);
     for (const o of bats) {
       if (o === b || o.ko) continue;
       const d = Math.hypot(o.x - b.x, o.y - b.y);
@@ -1441,13 +1610,18 @@
   function snapshot() {
     snapCount++;
     const x0 = scroll.x - 4, x1 = scroll.x + VIEW_W + 3;
+    // which monsters to send: on the shared screen, or (Explore) anywhere near a bat; Explore sends a
+    // dead one only for a little while, and the whole list of the cave's own dead ones now and then
+    const sendM = explore
+      ? (m) => (batNear(m.x, m.y, 22, 15) || batNear(m.hx, m.hy, 22, 15)) && (!m.dead || (m.deadSent = (m.deadSent || 0) + 1) <= 12)
+      : (m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6 && !(m.gone && (m.goneSent = (m.goneSent || 0) + 1) > 30);
     const s = {
-      t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
+      t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), mp: MAPS.indexOf(mapKind), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
       sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime),
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
         r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd)]),
       // wave monsters also carry their kind, home row and floor so a guest can make them
-      m: L.monsters.filter((m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6 && !(m.gone && (m.goneSent = (m.goneSent || 0) + 1) > 30))
+      m: L.monsters.filter(sendM)
         .map((m) => {
           const v = [m.id, r2(m.x), r2(m.y), MSTATES.indexOf(m.st), r2(m.t), r2(m.stun), r2(m.ax), r2(m.ay), m.dead ? 1 : 0, m.face];
           if (m.id >= L.base) v.push(KINDS.indexOf(m.kind), r2(m.hy), r2(m.bot ?? m.hy));
@@ -1456,7 +1630,11 @@
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner]),
       fx: outbox,
     };
-    if (variant === 'hunt') { s.hl = r2(hunt.left); s.hw = hunt.wave; }
+    if (variant === 'hunt') { s.hl = r2(hunt.left); s.hw = hunt.wave; if (huntGoal) { s.hk = teamKills(); s.hg = huntGoal; } }
+    if (explore) {
+      const dd = L.monsters.slice(0, L.base).map((m) => (m.dead ? 1 : 0)).join('');
+      if (dd !== lastDead || snapCount % 20 === 0) { s.dd = dd; lastDead = dd; }
+    }
     // everyone's look, now and then (they never change during a run)
     if (snapCount <= 5 || snapCount % 100 === 0) s.lk = bats.map((b) => b.look);
     // which moths and crystals are gone: when it changes, and once a second anyway
@@ -1473,14 +1651,24 @@
   function applySnapshot(s) {
     if (mode !== 'client' || !active || !s) return;
     // the cave comes from the host's seed; rebuild it if ours doesn't match
-    const vr = VARIANTS[s.vr] || variant;
-    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty) || vr !== variant)) {
+    const vr = VARIANTS[s.vr] || variant, mp = MAPS[s.mp] || 'scroll';
+    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty) || vr !== variant || mp !== mapKind)) {
       seed = s.sd >>> 0;
       setRules(DIFF[s.lv] ? s.lv : difficulty, vr);
+      setMap(mp);
       L = buildLevel();
-      bursts = [];
+      bursts = []; camF = null;
     }
     if (s.hl != null) { hunt.left = s.hl; hunt.wave = s.hw | 0; }
+    if (s.hg != null) { huntGoal = s.hg; hunt.kills = s.hk | 0; }
+    if (s.dd) {
+      // Explore: the cave's own monsters that are knocked out (or back again after a wipe)
+      for (let k = 0; k < s.dd.length && k < L.base; k++) {
+        const m = L.monsters[k], dead = s.dd[k] === '1';
+        if (dead) m.dead = true;
+        else if (m.dead) { resetMonster(m); m.tx = undefined; }
+      }
+    }
     phase = PHASES[s.ph] || 'play'; phaseT = s.pt; countdown = s.cd;
     if (s.sx < scroll.x - 2) for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;   // the team went back to a lantern
     scroll.tx = s.sx; scroll.speed = s.sp;
@@ -1630,16 +1818,19 @@
     const focus = mine.length ? mine : bats.filter((b) => !b.ko).length ? bats.filter((b) => !b.ko) : bats;
     const fx0 = focus.length ? focus.reduce((t, b) => t + b.x, 0) / focus.length : scroll.x + VIEW_W / 2;
     const fy0 = focus.length ? focus.reduce((t, b) => t + b.y, 0) / focus.length : L.h / 2;
-    if (!camF || camF.x < scroll.x - 1 || camF.x > scroll.x + VIEW_W + 1) camF = { x: fx0, y: fy0 };
+    if (!camF || (explore ? Math.hypot(camF.x - fx0, camF.y - fy0) > 12 : camF.x < scroll.x - 1 || camF.x > scroll.x + VIEW_W + 1)) camF = { x: fx0, y: fy0 };
     const ease = Math.min(1, frameDt * 6);
     camF.x += (fx0 - camF.x) * ease; camF.y += (fy0 - camF.y) * ease;
     const halfW = W / PX / 2, halfH = H / PX / 2;
-    const cam = {
-      // a little slack past the shared edges, so your bat isn't pinned to the side of the screen
-      x: Math.max(scroll.x + halfW - 2.5, Math.min(scroll.x + VIEW_W - halfW + 2.5, camF.x)),
-      y: Math.max(halfH, Math.min(L.h - halfH, camF.y)),
-    };
-    if (halfW * 2 >= VIEW_W) cam.x = scroll.x + VIEW_W / 2;
+    const cam = explore
+      // Explore: the camera follows your bat anywhere in the cave
+      ? { x: Math.max(halfW, Math.min(L.w - halfW, camF.x)), y: Math.max(halfH, Math.min(L.h - halfH, camF.y)) }
+      : {
+        // a little slack past the shared edges, so your bat isn't pinned to the side of the screen
+        x: Math.max(scroll.x + halfW - 2.5, Math.min(scroll.x + VIEW_W - halfW + 2.5, camF.x)),
+        y: Math.max(halfH, Math.min(L.h - halfH, camF.y)),
+      };
+    if (!explore && halfW * 2 >= VIEW_W) cam.x = scroll.x + VIEW_W / 2;
     if (halfH * 2 >= L.h) cam.y = L.h / 2;
     ox = W / 2 - cam.x * PX + sx; oy = H / 2 - cam.y * PX + sy;
     let threeD = false;
@@ -1697,15 +1888,19 @@
       }
     }
 
-    const visX = (x) => x > tx0 - 1 && x < tx1 + 2;
+    // only what's on (or right next to) the screen gets drawn
+    const visX = (x, y) => x > tx0 - 1 && x < tx1 + 2 && (y === undefined || (y > ty0 - 2 && y < ty1 + 3));
     // checkpoint lanterns: always faintly visible, bright green once reached
     L.checkpoints.forEach((cp, k) => {
-      if (!visX(cp.x)) return;
+      if (!visX(cp.x, cp.y)) return;
       const on = k <= cpIndex, pulse = 0.6 + 0.3 * Math.sin(clock * 3 + k);
       const x = X(cp.x), top = Y(cp.y - 0.2), bot = Y(cp.floor);
       const rgb = on ? COL.exit : COL.crystal;
-      ctx.strokeStyle = `rgba(${rgb}, ${on ? 0.7 : 0.35})`; ctx.lineWidth = Math.max(2, PX * 0.08);
-      ctx.beginPath(); ctx.moveTo(x, bot); ctx.lineTo(x, top); ctx.stroke();
+      // (Explore: a lantern high above the floor just floats, with no pole)
+      if (!explore || cp.floor - cp.y < 2.5) {
+        ctx.strokeStyle = `rgba(${rgb}, ${on ? 0.7 : 0.35})`; ctx.lineWidth = Math.max(2, PX * 0.08);
+        ctx.beginPath(); ctx.moveTo(x, bot); ctx.lineTo(x, top); ctx.stroke();
+      }
       glow(x, top, PX * (on ? 1.8 : 1.1), rgb, (on ? 0.55 : 0.3) * pulse);
       ctx.fillStyle = `rgba(${rgb}, ${on ? 0.95 : 0.6})`;
       ctx.beginPath(); ctx.moveTo(x, top - PX * 0.3); ctx.lineTo(x + PX * 0.18, top); ctx.lineTo(x, top + PX * 0.3); ctx.lineTo(x - PX * 0.18, top); ctx.closePath(); ctx.fill();
@@ -1714,14 +1909,20 @@
       ctx.fillText(on ? '✓' : `${k + 1}`, x, top - PX * 0.6);
     });
     // the green light at the end
-    if (visX(L.goal.x)) {
-      const pulse = 0.55 + 0.25 * Math.sin(clock * 2.4);
-      glow(X(L.goal.x), Y(L.goal.y), PX * 2.2, COL.exit, pulse * 0.8);
-      ctx.strokeStyle = `rgba(${COL.exit}, ${pulse})`; ctx.lineWidth = 3;
+    if (visX(L.goal.x, L.goal.y)) {
+      // (Explore Hunt: dim and amber with the count left until enough monsters are knocked out)
+      const pulse = 0.55 + 0.25 * Math.sin(clock * 2.4), shut = !exitOpen(), rgb = shut ? COL.owl : COL.exit;
+      glow(X(L.goal.x), Y(L.goal.y), PX * 2.2, rgb, pulse * (shut ? 0.35 : 0.8));
+      ctx.strokeStyle = `rgba(${rgb}, ${pulse})`; ctx.lineWidth = 3;
       ctx.beginPath(); ctx.arc(X(L.goal.x), Y(L.goal.y), PX * 0.45, 0, Math.PI * 2); ctx.stroke();
+      if (shut) {
+        ctx.font = `700 ${Math.max(10, PX * 0.32)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = `rgba(${COL.owl}, 0.95)`;
+        ctx.fillText(`${Math.max(0, huntGoal - huntKills())}`, X(L.goal.x), Y(L.goal.y));
+      }
     }
     for (const m of L.moths) {
-      if (m.got || !visX(m.x)) continue;
+      if (m.got || !visX(m.x, m.y)) continue;
       const mx = X(m.x + Math.cos(clock * 1.3 + m.phase) * 0.12), my = Y(m.y + Math.sin(clock * 2.1 + m.phase) * 0.15);
       glow(mx, my, PX * 0.9, COL.moth, 0.5);
       const flap = Math.abs(Math.sin(clock * 14 + m.phase));
@@ -1732,15 +1933,15 @@
       ctx.fill();
     }
     for (const c of L.crystals) {
-      if (c.got || !visX(c.x)) continue;
+      if (c.got || !visX(c.x, c.y)) continue;
       const cx = X(c.x), cy = Y(c.y + Math.sin(clock * 2 + c.phase) * 0.1);
       glow(cx, cy, PX * 0.8, COL.crystal, 0.45);
       ctx.fillStyle = `rgba(${COL.crystal}, 0.95)`;
       ctx.beginPath(); ctx.moveTo(cx, cy - PX * 0.24); ctx.lineTo(cx + PX * 0.14, cy); ctx.lineTo(cx, cy + PX * 0.24); ctx.lineTo(cx - PX * 0.14, cy); ctx.closePath(); ctx.fill();
     }
 
-    for (const sh of L.shards) if (sh.st !== 'gone' && visX(sh.x)) drawShard(sh, threeD);
-    for (const m of L.monsters) if (!m.dead && visX(m.x)) drawMonster(m);
+    for (const sh of L.shards) if (sh.st !== 'gone' && visX(sh.x, sh.y)) drawShard(sh, threeD);
+    for (const m of L.monsters) if (!m.dead && visX(m.x, m.y)) drawMonster(m);
 
     for (const ring of rings) {
       const f = 1 - ring.r / RING_MAX, rgb = BATS[ring.owner]?.rgb || COL.wall;
@@ -1774,15 +1975,18 @@
       ctx.fillText(p.text, X(p.x), Y(p.y - k * 0.6));
     }
 
-    // the creeping dark at the left edge, and the dark beyond the shared screen
-    const lx = X(scroll.x);
-    const g = ctx.createLinearGradient(lx, 0, lx + PX * 1.6, 0);
-    g.addColorStop(0, 'rgba(255, 84, 104, 0.3)'); g.addColorStop(1, 'rgba(255, 84, 104, 0)');
-    ctx.fillStyle = g; ctx.fillRect(lx, 0, PX * 1.6, H);
-    if (lx > 0) { ctx.fillStyle = 'rgba(4, 3, 16, 0.75)'; ctx.fillRect(0, 0, lx, H); }
-    const rx = X(scroll.x + VIEW_W);
-    if (rx < W) { ctx.fillStyle = 'rgba(4, 3, 16, 0.6)'; ctx.fillRect(rx, 0, W - rx, H); }
+    // the creeping dark at the left edge, and the dark beyond the shared screen (not in Explore)
+    if (!explore) {
+      const lx = X(scroll.x);
+      const g = ctx.createLinearGradient(lx, 0, lx + PX * 1.6, 0);
+      g.addColorStop(0, 'rgba(255, 84, 104, 0.3)'); g.addColorStop(1, 'rgba(255, 84, 104, 0)');
+      ctx.fillStyle = g; ctx.fillRect(lx, 0, PX * 1.6, H);
+      if (lx > 0) { ctx.fillStyle = 'rgba(4, 3, 16, 0.75)'; ctx.fillRect(0, 0, lx, H); }
+      const rx = X(scroll.x + VIEW_W);
+      if (rx < W) { ctx.fillStyle = 'rgba(4, 3, 16, 0.6)'; ctx.fillRect(rx, 0, W - rx, H); }
+    }
     drawVignette();
+    if (explore) drawWayMarker();
     drawOffscreenMates();
     drawHud();
     if (touchUsed && localCount === 1 && phase === 'play') { drawDashButton(); drawSlashButton(); }
@@ -2101,7 +2305,6 @@
 
   function drawBat(b, threeD) {
     const x = X(b.x), y = Y(b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0)), r = PX * R;
-    const mine = b.ctrl === 'local' || viewer === b.i;
     if (!threeD) {
       const blink = !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0));
       if (!blink && b.look && window.EchoLooks?.draw2D) {
@@ -2151,16 +2354,30 @@
         ctx.restore();
       }
     } else if (!b.ko) glow(x, y, r * 3, b.rgb, b.dashT > 0 ? 0.4 : 0.18);
+    // a knocked-out bat: a faded ghost in a dashed ring of its colour (no name tags over bats:
+    // who's who is in the pills at the top)
     if (b.ko) {
       ctx.strokeStyle = `rgba(${b.rgb}, ${0.35 + 0.2 * Math.sin(clock * 4)})`; ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]);
       ctx.beginPath(); ctx.arc(x, y, r * 2.4, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
     }
-    // name tag (and "you" on your own bat)
-    ctx.font = `700 ${Math.max(9, PX * 0.32)}px ${FONT}`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = `rgba(${b.rgb}, ${b.ko ? 0.55 : 0.9})`;
-    const tag = b.ko ? `${b.name} · KO` : ((b.ctrl === 'cpu' && !b.was) || b.cpuFlag ? `${b.name} · CPU` : b.name) + (mine && bats.length > 1 && localCount === 1 ? ' (you)' : '');
-    ctx.fillText(tag, x, y + r * 2.4);
+  }
+
+  // Explore: where to go next. When the next unlit lantern (or, after the last one, the exit) is off
+  // the screen, a small green marker at the edge points the way (as the crow flies)
+  function drawWayMarker() {
+    const t = L.checkpoints[cpIndex + 1] || L.goal;
+    const x = X(t.x), y = Y(t.y), m = 30;
+    if (x > m && x < W - m && y > m + 40 && y < H - m) return;
+    const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 44, Math.min(H - m - 30, y)), a = Math.atan2(y - cy, x - cx);
+    const rgb = t === L.goal && !exitOpen() ? COL.owl : COL.exit, pulse = 0.65 + 0.25 * Math.sin(clock * 3);
+    glow(cx, cy, 18, rgb, 0.35 * pulse);
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.fillStyle = `rgba(${rgb}, ${0.85 * pulse})`;
+    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 0); ctx.lineTo(0, 7); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    ctx.rotate(a);
+    ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(9, -5); ctx.lineTo(9, 5); ctx.closePath(); ctx.fill();
+    ctx.restore();
   }
 
   // teammates out of the close-up show as little arrows of their colour at the screen's edge
@@ -2251,7 +2468,8 @@
     let score = 0, combo = 0;
     for (const b of bats) { score += b.st.points; if (b.comboT > 0 || mode === 'client') combo = Math.max(combo, b.combo); }
     const t = Math.max(0, Math.ceil(hunt.left)), low = t <= 10 && phase === 'play';
-    const text = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}   ·   SCORE ${score}   ·   WAVE ${hunt.wave}` + (combo > 1 ? `   ·   COMBO ×${combo}` : '');
+    const goal = huntGoal && !exitOpen() ? `   ·   EXIT ${huntKills()}/${huntGoal}` : '';
+    const text = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}   ·   SCORE ${score}   ·   WAVE ${hunt.wave}` + goal + (combo > 1 ? `   ·   COMBO ×${combo}` : '');
     ctx.font = `700 ${Math.round(size * 0.66)}px ${FONT}`;
     const bw = ctx.measureText(text).width + bh * 1.2, bx = W / 2 - bw / 2;
     pill(bx, by, bw, bh, low ? `rgb(${COL.danger})` : `rgba(${COL.owl}, 0.8)`, low ? 12 : 8);
@@ -2326,19 +2544,21 @@
       ctx.fillStyle = k < tries ? `rgb(${COL.exit})` : 'rgba(214, 208, 255, 0.18)'; ctx.fill();
     }
     const t0 = bx + bh * 0.5 + lw + 8 + TRIES * size * 0.62 + 6, t1 = bx + bw - bh * 0.7, tw = t1 - t0;
-    const at = (x) => t0 + tw * Math.max(0, Math.min(1, (x - L.start.x) / (L.goal.x - L.start.x)));
+    // Explore: how far along by flying distance to the exit (the bar fills to the team's best so far)
+    const at = explore ? (x, y) => t0 + tw * along(x, y) : (x) => t0 + tw * Math.max(0, Math.min(1, (x - L.start.x) / (L.goal.x - L.start.x)));
     ctx.fillStyle = 'rgba(214, 208, 255, 0.16)'; roundRect(t0, cy - 2, tw, 4, 2); ctx.fill();
-    ctx.fillStyle = `rgba(${COL.exit}, 0.7)`; roundRect(t0, cy - 2, Math.max(4, at(scroll.x + VIEW_W / 2) - t0), 4, 2); ctx.fill();
+    ctx.fillStyle = `rgba(${COL.exit}, 0.7)`; roundRect(t0, cy - 2, Math.max(4, (explore ? t0 + tw * progress() : at(scroll.x + VIEW_W / 2)) - t0), 4, 2); ctx.fill();
     L.checkpoints.forEach((cp, k) => {
-      const x = at(cp.x);
+      const x = at(cp.x, cp.y);
       ctx.fillStyle = k <= cpIndex ? `rgb(${COL.exit})` : 'rgba(150, 240, 255, 0.6)';
       ctx.beginPath(); ctx.moveTo(x, cy - size * 0.38); ctx.lineTo(x + size * 0.2, cy); ctx.lineTo(x, cy + size * 0.38); ctx.lineTo(x - size * 0.2, cy); ctx.closePath(); ctx.fill();
     });
-    glow(t1, cy, size * 0.7, COL.exit, 0.6);
-    ctx.fillStyle = `rgb(${COL.exit})`; ctx.beginPath(); ctx.arc(t1, cy, size * 0.18, 0, Math.PI * 2); ctx.fill();
+    const shut = !exitOpen();
+    glow(t1, cy, size * 0.7, shut ? COL.owl : COL.exit, 0.6);
+    ctx.fillStyle = `rgb(${shut ? COL.owl : COL.exit})`; ctx.beginPath(); ctx.arc(t1, cy, size * 0.18, 0, Math.PI * 2); ctx.fill();
     for (const b of bats) {
       ctx.fillStyle = b.ko ? `rgba(${b.rgb}, 0.35)` : b.color;
-      ctx.beginPath(); ctx.arc(at(b.x), cy - size * 0.02 - (b.i % 2 ? 1 : -1) * size * 0.05, size * 0.2, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(at(b.x, b.y), cy - size * 0.02 - (b.i % 2 ? 1 : -1) * size * 0.05, size * 0.2, 0, Math.PI * 2); ctx.fill();
     }
   }
 
@@ -2352,10 +2572,15 @@
       ctx.font = `700 ${size * 4}px ${FONT}`;
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6 + 5);
       ctx.fillStyle = '#f4f1ff'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6);
-      const intro = {
+      const ht = Math.round(HUNT_TIME * (explore ? HUNT_EXPLORE : 1)), clockText = `${Math.floor(ht / 60)}:${String(ht % 60).padStart(2, '0')}`;
+      const intro = explore ? {
+        classic: ['Explore the cave and find the green light!', 'Squeak to see. Bite (dash) or slash monsters to knock them out.'],
+        escape: ['ESCAPE: find the way out of the cave!', 'Monsters can\'t be beaten. Bite or slash to knock them back.'],
+        hunt: [`HUNT: knock out ${huntGoal} monsters to open the exit! ${clockText} on the clock`, 'Quick kills in a row multiply. Get out early for a bonus.'],
+      }[variant] : {
         classic: ['Fly together to the green light!', 'Squeak to see. Bite (dash) or slash monsters to knock them out.'],
         escape: ['ESCAPE: run for the green light!', 'Monsters can\'t be beaten. Bite or slash to knock them back.'],
-        hunt: [`HUNT: smash monsters for points! ${Math.floor(HUNT_TIME / 60)}:${String(HUNT_TIME % 60).padStart(2, '0')} on the clock`, 'Quick kills in a row multiply. Reach the light early for a bonus.'],
+        hunt: [`HUNT: smash monsters for points! ${clockText} on the clock`, 'Quick kills in a row multiply. Reach the light early for a bonus.'],
       }[variant];
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
@@ -2433,16 +2658,8 @@
     ctx.font = `700 ${Math.round(b.r * 0.42)}px ${FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = ready ? '#f1fbff' : 'rgba(241, 251, 255, 0.45)';
-    ctx.fillText('SLASH', b.x, b.y + b.r * 0.3);
-    // a crescent swoosh above the word
-    ctx.strokeStyle = ready ? '#ffffff' : 'rgba(255, 255, 255, 0.45)'; ctx.lineCap = 'round';
-    ctx.lineWidth = Math.max(2, b.r * 0.1);
-    ctx.beginPath(); ctx.arc(b.x - b.r * 0.1, b.y + b.r * 0.15, b.r * 0.55, -Math.PI * 0.85, -Math.PI * 0.25); ctx.stroke();
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 3; i++) {
-      const ang = -Math.PI * (0.8 - i * 0.12), r0 = b.r * 0.3, r1 = b.r * 0.45;
-      ctx.beginPath(); ctx.moveTo(b.x - b.r * 0.1 + Math.cos(ang) * r0, b.y + b.r * 0.15 + Math.sin(ang) * r0); ctx.lineTo(b.x - b.r * 0.1 + Math.cos(ang) * r1, b.y + b.r * 0.15 + Math.sin(ang) * r1); ctx.stroke();
-    }
+    ctx.fillText('BITE', b.x, b.y + b.r * 0.32);
+    window.EchoChomp?.icon(ctx, b.x, b.y - b.r * 0.2, b.r * 0.34, ready);
   }
 
   function drawSticks() {
@@ -2474,6 +2691,7 @@
   function describe(r, mySlot = 0) {
     if (!r) return null;
     const v = VAR[r.variant] ? r.variant : 'classic';
+    const where = r.map === 'explore' ? 'Explore cave' : 'Side-scroll';
     const who = (p) => `${p.name}${p.cpu ? ' (CPU)' : ''}${p.slot === mySlot && r.players.length > 1 ? ' (you)' : ''}`;
     const s = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
     if (v === 'hunt') {
@@ -2484,7 +2702,7 @@
         got: p.slot === r.best, color: p.color,
       }));
       if (best && r.players.length > 1) lines.unshift({ text: `Best hunter: ${who(best)}`, got: true, color: best.color });
-      lines.push({ text: `Team: ${r.team.kills} smashed in ${r.waves} waves${r.bonus ? ` · light bonus +${r.bonus}` : ''} · ${r.time}s`, got: r.won });
+      lines.push({ text: `${where} · Team: ${r.team.kills} smashed in ${r.waves} waves${r.bonus ? ` · light bonus +${r.bonus}` : ''} · ${r.time}s`, got: r.won });
       return {
         title: r.how === 'time' ? 'Time\'s up!' : r.won ? 'Out with the loot!' : 'Out of tries',
         big: `Score ${r.score}`,
@@ -2495,7 +2713,7 @@
       text: `${who(p)}: ${s(p.moths, 'moth')} · ${v === 'classic' ? `${p.kills} knocked out` : `${p.stuns} knocked back`}${p.kos ? ` · down ${p.kos}×` : ''}`,
       got: p.alive && r.won, color: p.color,
     }));
-    lines.push({ text: `Team: ${r.team.moths} of ${r.mothsTotal} moths · ${v === 'classic' ? `${r.team.kills} knocked out` : `${r.team.stuns} knocked back`} · ${r.time}s`, got: r.won });
+    lines.push({ text: `${where} · Team: ${r.team.moths} of ${r.mothsTotal} moths · ${v === 'classic' ? `${r.team.kills} knocked out` : `${r.team.stuns} knocked back`} · ${r.time}s`, got: r.won });
     return {
       title: v === 'escape' ? (r.won ? 'You escaped!' : 'Caught in the dark') : (r.won ? 'Out of the dark together!' : 'The monsters won'),
       big: r.won ? `Try ${r.triesUsed} of ${r.triesTotal}` : `${Math.round(r.progress * 100)}% of the way · ${r.checkpoint}/${r.checkpoints} lanterns`,
@@ -2511,7 +2729,8 @@
     get seed() { return seed; },
     get level() { return difficulty; },
     get variant() { return variant; },
-    VARIANTS,
+    get map() { return mapKind; },
+    VARIANTS, MAPS,
     get hunt() { return hunt; },
     get view() { return view; },
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide?.(); },

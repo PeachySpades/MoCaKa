@@ -265,9 +265,9 @@
   }
 
   function lobbyMessage() {
-    const { cpus, level, cpuLevels, arenaId, rule, firstTo, variant, powers } = settings();
+    const { cpus, level, cpuLevels, arenaId, rule, firstTo, variant, coopMap, powers } = settings();
     const looks = [lobby.myLook(), ...guests.map((g) => g.look || null)];
-    return { t: 'lobby', code, cpus, level, cpuLevels, arenaId, rule, firstTo, variant, powers, cpuSeed: lobby.cpuSeed, looks, players: [0, ...guests.map((g, k) => k + 1)] };
+    return { t: 'lobby', code, cpus, level, cpuLevels, arenaId, rule, firstTo, variant, coopMap, powers, cpuSeed: lobby.cpuSeed, looks, players: [0, ...guests.map((g, k) => k + 1)] };
   }
   function sendLobby() {
     if (role !== 'host' || !link) return;
@@ -350,7 +350,7 @@
       coopOn = true;
       playing = true;
       const seed = Math.floor(Math.random() * 1e9);
-      guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed, variant: opts.variant, looks }); });
+      guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed, variant: opts.variant, map: opts.map, looks }); });
       window.EchoGame.startCoop({
         ...opts, mode: 'host', remotes: guests.length, seed, online: true,
         net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
@@ -435,7 +435,7 @@
         coopOn = msg.mode === 'coop';
         if (coopOn) {
           window.EchoGame.startCoop({
-            mode: 'client', mySlot: msg.slot, total: msg.total, level: msg.level, seed: msg.seed, variant: msg.variant, looks: msg.looks, online: true,
+            mode: 'client', mySlot: msg.slot, total: msg.total, level: msg.level, seed: msg.seed, variant: msg.variant, map: msg.map, looks: msg.looks, online: true,
             net: { send: (m) => link?.send(m) },
             lobby: backToLobby,
             leave: () => leave(),

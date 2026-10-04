@@ -359,15 +359,10 @@
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
 
-  // The POWER button, left of DASH: shows the special power you hold
-  const specialButton = () => { const d = dashButton(); return { x: d.x - d.r - 52, y: d.y + 30, r: 34 }; };
-  // it appears only while you hold a special, on phones and computers alike
+  // The BITE button turns into your special power while you hold one (on
+  // computers it only shows up then, since G bites)
   const specialShown = () => localCount === 1 && countdown <= 0 && !spectating() && !!localBat(0)?.held;
-  const inSpecialButton = (cx, cy) => {
-    if (!specialShown()) return false;
-    const rect = canvas.getBoundingClientRect(), b = specialButton();
-    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
-  };
+  const actionShown = () => localCount === 1 && countdown <= 0 && !spectating() && (touchUsed || !!localBat(0)?.held);
 
   // Touch zones: one player owns the screen, 2–3 split it into columns, 4 into quarters
   function zoneAt(clientX, clientY) {
@@ -383,8 +378,7 @@
     e.preventDefault();
     window.EchoAudio?.unlock();
     if (e.pointerType === 'touch') touchUsed = true;
-    if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
-    if (inSpecialButton(e.clientX, e.clientY)) { act(0, 'special'); return; }
+    if (actionShown() && inDashButton(e.clientX, e.clientY)) { act(0, specialShown() ? 'special' : 'dash'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
     if ([...sticks.values()].some((s) => s.owner === owner)) { chargers.set(e.pointerId, owner); act(owner, 'charge'); return; }
     sticks.set(e.pointerId, { owner, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
@@ -2040,11 +2034,8 @@
         ctx.fillStyle = '#ffe278';
         ctx.fillText('STUNNED', q.x, q.y - s * 0.95);
       }
-      // name tag under the bat, in a light tint of its colour
-      ctx.font = `600 ${Math.max(11, s * 0.32)}px ${FONT}`;
-      ctx.fillStyle = `rgba(${b.rgb.split(',').map((x) => Math.round(+x + (255 - x) * 0.45)).join(',')}, 0.95)`;
-      const you = viewer === b.i ? ' (you)' : '';
-      ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, q.x, q.y + s * 0.78);
+      // no name tags: just a small arrow under your own bat
+      if (isMine(b)) youMarker(q.x, q.y + s * 0.62, Math.max(5, s * 0.13), b.rgb);
       ctx.globalAlpha = 1;
     }
     drawChomps(P);
@@ -2367,17 +2358,18 @@
     ctx.restore();
   }
 
-  // The POWER button: shows the special power you hold, glowing when it's ready
-  let specialSeen = null, specialPopAt = 0;
-  function drawSpecialButton() {
-    const bt = specialButton(), me = localBat(0);
+  // The big action button: BITE, or the special power you hold (glowing when
+  // it's ready). It pops with a little bounce whenever it changes face.
+  let specialSeen = null, specialPopAt = -1;
+  function drawActionButton() {
+    const bt = dashButton(), me = localBat(0);
     if (!me) return;
-    // pop in with a little bounce when a new special arrives
     if (me.held !== specialSeen) { specialSeen = me.held; specialPopAt = clock; }
     const u = Math.min(1, (clock - specialPopAt) / 0.35), pop = u < 1 ? 1 + Math.sin(u * Math.PI) * 0.35 - (1 - u) * 0.6 : 1;
     ctx.save();
     ctx.translate(bt.x, bt.y); ctx.scale(pop, pop); ctx.translate(-bt.x, -bt.y);
-    drawSpecialFace(bt, me);
+    if (me.held) drawSpecialFace(bt, me);
+    else drawBiteButton(bt, me);
     ctx.restore();
   }
   function drawSpecialFace(bt, me) {
@@ -2587,8 +2579,7 @@
 
     drawHud();
     drawSticks();
-    if (localCount === 1 && countdown <= 0 && touchUsed && !spectating()) drawDashButton();
-    if (specialShown()) drawSpecialButton();
+    if (actionShown()) drawActionButton();
   }
 
   function drawPowerup(p) {
@@ -2799,20 +2790,24 @@
       if (!(b.ice > 0)) ctx.fillText('STUNNED', x, y - r * 2.6);
       ctx.globalAlpha = 1;
     }
-    if (o.tag !== false) {
+    // no name tags: just a small arrow under your own bat
+    if (o.tag !== false && isMine(b)) {
       ctx.globalAlpha = alpha;
-      ctx.font = `700 ${Math.max(9, PX * 0.34)}px ${FONT}`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = `rgba(${b.rgb}, 0.9)`;
-      const you = viewer === b.i ? ' (you)' : '';
-      ctx.fillText((b.ctrl === 'cpu' || b.cpuFlag ? `${b.name} · CPU` : b.name) + you, x, y + r * 2.1);
+      youMarker(x, y + r * 1.7, Math.max(5, r * 0.42), b.rgb);
       ctx.globalAlpha = 1;
     }
   }
+  // your bat: the one you watch online, or the only human's bat on this device
+  const isMine = (b) => viewer === b.i || (viewer < 0 && localCount === 1 && b === localBat(0));
+  // a little upward arrow in the bat's colour, marking which bat is yours
+  function youMarker(x, y, s, rgb) {
+    ctx.beginPath();
+    ctx.moveTo(x, y); ctx.lineTo(x + s, y + s * 0.9); ctx.lineTo(x - s, y + s * 0.9); ctx.closePath();
+    ctx.fillStyle = `rgba(${rgb}, 0.85)`; ctx.fill();
+    ctx.strokeStyle = 'rgba(10, 8, 30, 0.6)'; ctx.lineWidth = 1; ctx.stroke();
+  }
 
-  function drawDashButton() {
-    const b = dashButton(), me = localBat(0);
-    if (!me) return;
+  function drawBiteButton(b, me) {
     const ready = me.dashCd <= 0, k = ready ? 1 : 0.55;
     // glassy purple disc
     const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
@@ -2825,11 +2820,12 @@
     glowStroke('rgba(80, 60, 160, 0.7)', 3.5, ready ? 'rgba(160, 120, 255, 1)' : null);
     ctx.strokeStyle = '#a68bff'; ctx.lineWidth = 3.5;
     ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - me.dashCd / DASH_COOLDOWN)); ctx.stroke();
-    ctx.font = `700 ${Math.round(b.r * 0.4)}px ${FONT}`;
+    ctx.font = `700 ${Math.round(b.r * 0.3)}px ${FONT}`;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.45)';
-    ctx.fillText('DASH', b.x, b.y - b.r * 0.12);
-    batGlyph(b.x, b.y + b.r * 0.38, b.r * 0.62, ready ? '#8f6dff' : 'rgba(143, 109, 255, 0.45)');
+    // the same toothy Pac-Man as the BITE buttons in Explore and Co-op, label under it
+    window.EchoChomp?.icon(ctx, b.x, b.y - b.r * 0.14, b.r * 0.4, ready);
+    ctx.fillText('BITE', b.x, b.y + b.r * 0.5);
   }
   function drawIceBlock(r, k) {
     const s = r * 2.5 * (0.9 + 0.1 * k);
@@ -2845,26 +2841,6 @@
     ctx.moveTo(s * 0.2, s * 0.36); ctx.lineTo(s * 0.36, s * 0.2);
     ctx.stroke();
     ctx.restore();
-  }
-  // a little flying-bat silhouette, w wide, centred on x, y
-  function batGlyph(x, y, w, color) {
-    const s = w / 2;
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(x, y - s * 0.22);
-    ctx.lineTo(x - s * 0.14, y - s * 0.42); ctx.lineTo(x - s * 0.2, y - s * 0.2);
-    ctx.quadraticCurveTo(x - s * 0.6, y - s * 0.5, x - s, y - s * 0.38);
-    ctx.quadraticCurveTo(x - s * 0.8, y - s * 0.1, x - s * 0.82, y + s * 0.12);
-    ctx.quadraticCurveTo(x - s * 0.62, y - s * 0.02, x - s * 0.5, y + s * 0.16);
-    ctx.quadraticCurveTo(x - s * 0.36, y + s * 0.02, x - s * 0.2, y + s * 0.3);
-    ctx.lineTo(x, y + s * 0.42);
-    ctx.lineTo(x + s * 0.2, y + s * 0.3);
-    ctx.quadraticCurveTo(x + s * 0.36, y + s * 0.02, x + s * 0.5, y + s * 0.16);
-    ctx.quadraticCurveTo(x + s * 0.62, y - s * 0.02, x + s * 0.82, y + s * 0.12);
-    ctx.quadraticCurveTo(x + s * 0.8, y - s * 0.1, x + s, y - s * 0.38);
-    ctx.quadraticCurveTo(x + s * 0.6, y - s * 0.5, x + s * 0.2, y - s * 0.2);
-    ctx.lineTo(x + s * 0.14, y - s * 0.42);
-    ctx.closePath(); ctx.fill();
   }
 
   function roundRect(x, y, w, h, r) {
@@ -3049,16 +3025,16 @@
       ctx.fillStyle = 'rgba(232, 236, 255, 0.9)';
       ctx.fillText(rule === 'survivor'
         ? `Last Bat Standing: get chomped and you're out for the round. First to ${winScore} round win${winScore === 1 ? '' : 's'}.`
-        : `Dash into a rival to chomp it (stun it with a squeak first). First to ${winScore} bites wins.`, W / 2, mid + size * 1.4);
+        : `Bite a rival to chomp it (stun it with a squeak first). First to ${winScore} bites wins.`, W / 2, mid + size * 1.4);
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
-        ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or DASH to dash'
-          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to dash · E to use a power · Esc to pause')
+        ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or BITE to bite'
+          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to bite · E to use a power · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
       ctx.fillText(powerFreq && powerOn.some((t) => POWERS[t].special)
-        ? 'Squeak just before a rival\'s echo hits you to PARRY it · grab power-ups, special ones go on the POWER button'
+        ? 'Squeak just before a rival\'s echo hits you to PARRY it · grab power-ups, special ones turn BITE into the power'
         : 'Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
     } else if (banner) {
       ctx.font = `700 ${size * 2}px ${HEAD}`;

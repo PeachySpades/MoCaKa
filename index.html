@@ -147,19 +147,29 @@
           </div>
         </div>
         <p id="variant-desc" class="set-note"></p>
-        <div id="monster-row" class="set-row" style="--c: var(--exit)" role="group" aria-label="Monsters">
-          <span>Monsters</span>
+        <div id="map-row" class="set-row" style="--c: #b79bff" role="group" aria-label="Map">
+          <span>Map</span>
           <div class="chips">
-            <button type="button" class="chip" data-level="easy">Easy</button>
-            <button type="button" class="chip" data-level="normal">Normal</button>
-            <button type="button" class="chip" data-level="hard">Hard</button>
+            <button type="button" class="chip" data-map="scroll">Side-scroll</button>
+            <button type="button" class="chip" data-map="explore">Explore</button>
           </div>
         </div>
-        <div class="set-row" style="--c: var(--echo)" role="group" aria-label="View">
-          <span>View</span>
-          <div class="chips">
-            <button type="button" class="chip" data-view="3d">3D</button>
-            <button type="button" class="chip" data-view="2d">2D</button>
+        <p id="map-desc" class="set-note"></p>
+        <div class="set-pair">
+          <div id="monster-row" class="set-row" style="--c: var(--exit)" role="group" aria-label="Monsters">
+            <span>Monsters</span>
+            <div class="chips">
+              <button type="button" class="chip" data-level="easy">Easy</button>
+              <button type="button" class="chip" data-level="normal">Normal</button>
+              <button type="button" class="chip" data-level="hard">Hard</button>
+            </div>
+          </div>
+          <div id="view-row" class="set-row" style="--c: var(--echo)" role="group" aria-label="View">
+            <span>View</span>
+            <div class="chips">
+              <button type="button" class="chip" data-view="3d">3D</button>
+              <button type="button" class="chip" data-view="2d">2D</button>
+            </div>
           </div>
         </div>
       </div>
