@@ -82,17 +82,21 @@
     off: null,
     low: { first: [10, 14], every: [14, 20], max: 1 },
     normal: { first: [6, 9], every: [8, 13], max: 2 },
-    high: { first: [3, 5], every: [4, 7], max: 3 },
+    high: { first: [0, 0], every: [2, 3.5], max: 5, start: 2 },   // two show up the moment play starts
   };
   let powerOn = POWER_TYPES.slice(), powerFreq = POWER_FREQ.normal;
   const powerWait = (k) => (powerFreq ? powerFreq[k][0] + Math.random() * (powerFreq[k][1] - powerFreq[k][0]) : 1e9);
   // special power numbers
   const SPECIAL_CD = 0.35;
   // Timed specials: the first use starts a TIMED_LIFE-second clock, and until
-  // it runs out you can use the power again and again (each use has its own
-  // short cooldown, below). Stone Wall and Ghost stay one use each.
+  // it runs out you can use the power again and again. Shots (fireball,
+  // tornado) fire as fast as you tap; the area blasts (freeze, thunder) keep a
+  // short gap. CPUs use slower gaps so they don't spray. Stone Wall and Ghost
+  // stay one use each.
   const TIMED_LIFE = 8;
-  const TIMED_CD = { fire: 0.45, tornado: 1.6, thunder: 2.6, freeze: 3 };
+  const TIMED_CD = { fire: 0.08, tornado: 0.12, thunder: 0.6, freeze: 0.6 };
+  const CPU_TIMED_CD = { fire: 0.3, tornado: 0.8, thunder: 1.6, freeze: 1.6 };
+  const MAX_SHOTS_EACH = 10, MAX_TWISTERS_EACH = 4;   // oldest goes when a bat has more out
   const FIRE_SPEED = 10, FIRE_LIFE = 1.6, FIRE_R = 0.28, FIRE_STUN = 2, FIRE_KNOCK = 6, FIRE_SPLASH = 1.15, SPLASH_STUN = 1.3;
   const THUNDER_RANGE = 7, THUNDER_FAR = 11, THUNDER_DELAY = 0.45, THUNDER_STUN = 2.2, THUNDER_REVEAL = 3, BOLT_FX = 0.9;
   const WALL_LEN = 4, WALL_LIFE = 6, WALL_RISE = 0.3, WALL_CRUMBLE = 0.7, WALL_BACK = 1.6;
@@ -241,7 +245,7 @@
   let shots = [], twisters = [], blocks = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0;
   let lit, litBy;
   let clock = 0, countdown = 0, over = false, banner = null, morph = null, tileGlow = null;
-  let slowmo = 0, shake = 0, powerTimer = 6, snapTimer = 0, outbox = [], ringId = 0, ended = false;
+  let slowmo = 0, shake = 0, powerTimer = 6, firstPower = true, snapTimer = 0, outbox = [], ringId = 0, ended = false;
   const remoteInput = new Map();         // slot -> { ix, iy }
 
   function makeBat(i, ctrl, localSlot) {
@@ -315,7 +319,7 @@
     remoteInput.clear();
     clock = 0; countdown = 3; over = false; ended = false; slowmo = 0; shake = 0;
     round = 1; roundClock = 0; roundEnd = null; storm = false; stormWarned = false; matchWinner = null; watchI = -1;
-    powerTimer = powerWait('first'); snapTimer = 0;
+    powerTimer = powerWait('first'); firstPower = true; snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     keys.clear();
     sticks.clear();
@@ -968,7 +972,7 @@
     if (TIMED_CD[type]) {
       // a timed power: the first use starts its clock, then it keeps working until that runs out
       if (!(b.heldLeft > 0)) b.heldLeft = TIMED_LIFE;
-      b.specialCd = TIMED_CD[type];
+      b.specialCd = (b.ctrl === 'cpu' ? CPU_TIMED_CD : TIMED_CD)[type];
     } else { b.held = null; b.heldLeft = 0; b.specialCd = SPECIAL_CD; }
     b.charging = false; b.charge = 0;
     specialCount++;
@@ -990,8 +994,10 @@
   // first wall or bat it meets. A hit stuns and knocks back (bite them next!);
   // the burst singes anyone close. A parry knocks it back at whoever threw it.
   function shootFire(b, ux, uy) {
+    const mine = shots.filter((m) => m.owner === b.i);
+    if (mine.length >= MAX_SHOTS_EACH) shots.splice(shots.indexOf(mine[0]), 1);
     shots.push({ id: ++fxId, x: b.x + ux * 0.35, y: b.y + uy * 0.35, vx: ux * FIRE_SPEED, vy: uy * FIRE_SPEED, owner: b.i, t: 0 });
-    b.vx -= ux * 2; b.vy -= uy * 2;
+    b.vx -= ux * 0.8; b.vy -= uy * 0.8;
     b.seen = 1;
     fx({ k: 'sfx', n: 'fire', alt: 'beam' });
     fx({ k: 'shake', v: 0.08 });
@@ -1097,6 +1103,8 @@
   function spawnTwister(b, ux, uy) {
     let x = b.x + ux * 1.2, y = b.y + uy * 1.2;
     if (hitsWall(x, y, 0.35)) { x = b.x; y = b.y; }
+    const mine = twisters.filter((m) => m.owner === b.i);
+    if (mine.length >= MAX_TWISTERS_EACH) twisters.splice(twisters.indexOf(mine[0]), 1);
     twisters.push({ id: ++fxId, x, y, ux, uy, t: 0, owner: b.i, hit: new Set() });
     b.seen = Math.max(b.seen, 0.6);
     fx({ k: 'sfx', n: 'vortex', alt: 'warn' });
@@ -1287,7 +1295,7 @@
     rings = []; beams = []; eats = []; powerups = []; parries = [];
     for (const bk of blocks) clearBlock(bk);
     shots = []; twisters = []; blocks = []; thunders = []; bolts = []; novas = [];
-    powerTimer = powerWait('first');
+    powerTimer = powerWait('first'); firstPower = true;
     for (const c of crystals) { c.on = false; c.timer = 0.5 + Math.random() * 2.5; }
     // a fresh corner each for everyone (the corner spots dodge any walls the morphing cave grew)
     const starts = cornerStarts();
@@ -1573,7 +1581,11 @@
     }
 
     powerTimer -= dt;
-    if (powerTimer <= 0) { if (powerFreq && powerups.length < powerFreq.max) spawnPowerup(); powerTimer = powerWait('every'); }
+    if (powerTimer <= 0) {
+      const n = firstPower && powerFreq ? powerFreq.start || 1 : 1;
+      for (let k = 0; k < n; k++) if (powerFreq && powerups.length < powerFreq.max) spawnPowerup();
+      firstPower = false; powerTimer = powerWait('every');
+    }
     powerups = powerups.filter((p) => {
       const b = bats.find((o) => !o.dead && dist(o, p) < 0.6);
       if (b) { grabPowerup(b, p); return false; }
@@ -2560,7 +2572,7 @@
     rimMesh.instanceColor = new T.InstancedBufferAttribute(new Float32Array(MAXB * 3), 3);
     for (const m of [blockMesh, rimMesh]) { m.frustumCulled = false; m.count = 0; }
     const ball = new T.SphereGeometry(1, 16, 12);
-    const fires = [0, 1, 2].map(() => {
+    const fires = Array.from({ length: 12 }, () => {
       const g = new T.Group();
       const core = new T.Mesh(ball, new T.MeshBasicMaterial({ color: 0xfff0c0 }));
       const mid = new T.Mesh(ball, glowMat(0xff9a30, 0.8));
@@ -2573,7 +2585,7 @@
     const fireLights = [0, 1].map(() => { const l = add(new T.PointLight(0xff7a30, 0, 7, 1.6)); return l; });
     const flashLight = add(new T.PointLight(0xdde8ff, 0, 10, 1.2));
     const ringGeo = new T.TorusGeometry(1, 0.035, 6, 40); ringGeo.rotateX(Math.PI / 2);
-    const twists = [0, 1, 2].map(() => {
+    const twists = Array.from({ length: 8 }, () => {
       const g = new T.Group();
       const rings = Array.from({ length: 8 }, (_, k) => { const m = new T.Mesh(ringGeo, glowMat(0xbefff0, 0.55)); g.add(m); return m; });
       const bits = Array.from({ length: 8 }, () => { const m = new T.Mesh(new T.TetrahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0x8a7fb0 })); g.add(m); return m; });
