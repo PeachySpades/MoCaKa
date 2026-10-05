@@ -2445,18 +2445,18 @@
   const maxSeats = (rule = pick.rule) => (rule === 'coop' ? MAX_COOP : MAX_BATTLE);
   const LEVELS = ['easy', 'normal', 'hard'];
   const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
-  // arenas: one that slowly reshapes, Morphing Xtreme (the cave turns lava, ice, moss and crystal in
-  // turn, each with its own rules), one of the four caves kept still, or open sky
+  // arenas: one that slowly reshapes, Morphing Xtreme (the cave turns icy crystal, lava and moss in
+  // turn, each with its own rules), one of the three caves kept still, or open sky
   const ARENA_CHOICES = [
     { id: 'morph', name: 'Morphing', desc: 'The blocks slowly reshape', mode: 'morph' },
-    { id: 'xtreme', name: 'Morphing Xtreme', desc: 'Crystal, lava, ice and moss in turn', mode: 'xtreme' },
-    ...[['Crystal Grotto', 'Mirrored crystal halls'], ['Lava Hollow', 'Hop the blocks, the floor is lava'],
-      ['Mossy Den', 'Chomp through the bushes'], ['Frozen Cavern', 'Slippery ice, lots of room']]
+    { id: 'xtreme', name: 'Morphing Xtreme', desc: 'Icy crystals, lava and moss in turn', mode: 'xtreme' },
+    ...[['Frozen Grotto', 'Mirrored crystals on slippery ice'], ['Lava Hollow', 'Hop the islands, the floor is lava'],
+      ['Mossy Den', 'Chomp through the bushes']]
       .map(([name, desc], i) => ({ id: `still-${i}`, name, desc, mode: 'still', arena: i })),
     { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night', mode: 'sky' },
   ];
   // Morphing Xtreme's preview flips through its caves in the order EchoDuel plays them
-  const XTREME_NAMES = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
+  const XTREME_NAMES = ['Frozen Grotto', 'Lava Hollow', 'Mossy Den'];
   const xtremeOrder = () => XTREME_NAMES.map((n) => (window.ECHO_ARENAS || []).findIndex((a) => a.name === n)).filter((i) => i >= 0);
   const xtremeNow = () => { const o = xtremeOrder(); return o.length ? o[Math.floor(performance.now() / 1100) % o.length] : -1; };
   // the Battle tab's two modes (Free-for-all = 'bites', Rounds = 'survivor') and Co-op Run;
@@ -2503,6 +2503,8 @@
       coopMap: store.get('echo-coop-map') || 'scroll',
       powers: store.get('echo-powers') || null,
     };
+    // (Frozen Cavern, 'still-3', became part of Frozen Grotto)
+    if (p.arenaId === 'still-3') p.arenaId = 'still-0';
     if (!ARENA_CHOICES.some((a) => a.id === p.arenaId)) p.arenaId = 'morph';
     if (!RULES[p.rule]) p.rule = 'bites';
     // the last Battle mode, so the Battle tab comes back to it after a co-op run
@@ -2556,6 +2558,12 @@
     // Lava Hollow's floor is lava: a hot glow under the blocks
     const lava = def.theme.style === 'lava';
     if (lava) { g.fillStyle = 'rgba(255, 110, 30, 0.75)'; g.fillRect(x0, y0, w * s, h * s); }
+    // Frozen Grotto's floor is ice: pale blue with a few streaks
+    if (def.icy) {
+      g.fillStyle = 'rgba(120, 170, 240, 0.35)'; g.fillRect(x0, y0, w * s, h * s);
+      g.strokeStyle = 'rgba(230, 245, 255, 0.25)'; g.lineWidth = Math.max(1, s * 0.6);
+      g.beginPath(); for (let k = 0; k < w + h; k += 6) { g.moveTo(x0 + k * s, y0); g.lineTo(x0 + (k - h * 0.6) * s, y0 + h * s); } g.stroke();
+    }
     def.map.forEach((row, y) => [...row].forEach((ch, x) => {
       if (ch === '#' || ch === 'E') { g.fillStyle = lava ? 'rgb(60, 22, 12)' : `rgba(${def.theme.wall}, 0.85)`; g.fillRect(x0 + x * s, y0 + y * s, s + 0.3, s + 0.3); }
       if (ch === 'E' || ch === 'e') { g.fillStyle = '#e9f6ff'; g.fillRect(x0 + (x + 0.3) * s, y0 + (y + 0.3) * s, s * 0.4, s * 0.4); }
@@ -2819,7 +2827,7 @@
     },
     applyHost(s) {   // a guest mirrors the host's settings
       if (s.rule) s = { ...s, rule: oldRule(s.rule) };
-      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'coopMap', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = s[k]));
+      for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'coopMap', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = k === 'arenaId' && s[k] === 'still-3' ? 'still-0' : s[k]));
       if (Array.isArray(s.cpuLevels)) pick.cpuLevels = s.cpuLevels.map((l) => (LEVEL_NAMES[l] ? l : 'normal'));
       if (!COOP_MAPS[pick.coopMap]) pick.coopMap = 'scroll';
       if (!RULES[pick.rule]) pick.rule = 'bites';

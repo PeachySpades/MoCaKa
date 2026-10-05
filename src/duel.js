@@ -37,7 +37,7 @@
   // Arena modes, picked before a match:
   //   morph   classic Morphing: one stone cave slowly reshapes itself, a few walls
   //           at a time, into the next (same look throughout, no lava or ice)
-  //   xtreme  Morphing Xtreme: the themed maps take turns (crystal, lava, ice, moss),
+  //   xtreme  Morphing Xtreme: the themed maps take turns (Frozen Grotto, lava, moss),
   //           each with its own rules, XTREME_HOLD seconds each
   //   still   one themed cave, picked in the lobby, that never changes
   //   sky     Open Sky the whole match: no cave at all
@@ -48,7 +48,7 @@
   // tiles every XTREME_STEP seconds). Turning into Lava Hollow, the blocks change
   // first, then LAVA_WARN seconds of 3-2-1 before the floor turns to lava.
   const XTREME_HOLD = 28, XTREME_STEP = 0.1, XTREME_TILES = 9, LAVA_WARN = 3;
-  const XTREME_ORDER = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
+  const XTREME_ORDER = ['Frozen Grotto', 'Lava Hollow', 'Mossy Den'];
   // Lava: a bat on the lava floor (not on a block top, not mid-jump, not a ghost)
   // for LAVA_GRACE seconds sizzles: knocked out. The last rival that hit it in
   // the KO_CREDIT seconds before gets the point (Free-for-all).
@@ -77,7 +77,7 @@
     shield: { label: 'SHIELD', rgb: '150, 240, 255', name: 'Shield', desc: 'Blocks one stun or bite' },
     frenzy: { label: 'ECHO FRENZY', rgb: '255, 120, 200', name: 'Echo Frenzy', desc: '5 seconds of free, rapid squeaks' },
     fire: { label: 'FIREBALL', rgb: '255, 112, 40', name: 'Fireball', desc: 'Shoot fireballs where you fly for 8 seconds: they light the cave and stun', special: true },
-    thunder: { label: 'THUNDER', rgb: '255, 245, 90', name: 'Thunder', desc: 'For 8 seconds, call lightning on every rival near you (no parrying it)', special: true },
+    thunder: { label: 'THUNDER', rgb: '255, 245, 90', name: 'Thunder', desc: 'One big strike: lightning hits every rival near you (no parrying it)', special: true },
     freeze: { label: 'FREEZE', rgb: '110, 210, 255', name: 'Freeze', desc: 'For 8 seconds, ice blasts freeze rivals close to you', special: true },
     tornado: { label: 'TORNADO', rgb: '190, 255, 235', name: 'Tornado', desc: 'For 8 seconds, send out twisters that pull rivals in and spin them', special: true },
     ghost: { label: 'GHOST', rgb: '214, 196, 255', name: 'Ghost', desc: 'Fly through cave walls for 5 seconds, half see-through', special: true },
@@ -101,11 +101,11 @@
   const SPECIAL_CD = 0.35;
   // Timed specials: the first use starts a TIMED_LIFE-second clock, and until
   // it runs out you can use the power again and again. Shots (fireball,
-  // tornado) fire as fast as you tap; the area blasts (freeze, thunder) keep a
-  // short gap. CPUs use slower gaps so they don't spray. Ghost stays one use.
+  // tornado) fire as fast as you tap; the freeze blast keeps a short gap. CPUs
+  // use slower gaps so they don't spray. Ghost and thunder are one use each.
   const TIMED_LIFE = 8;
-  const TIMED_CD = { fire: 0.08, tornado: 0.12, thunder: 0.6, freeze: 0.6 };
-  const CPU_TIMED_CD = { fire: 0.3, tornado: 0.8, thunder: 1.6, freeze: 1.6 };
+  const TIMED_CD = { fire: 0.08, tornado: 0.12, freeze: 0.6 };
+  const CPU_TIMED_CD = { fire: 0.3, tornado: 0.8, freeze: 1.6 };
   const MAX_SHOTS_EACH = 10, MAX_TWISTERS_EACH = 4;   // oldest goes when a bat has more out
   const FIRE_SPEED = 10, FIRE_LIFE = 1.6, FIRE_R = 0.28, FIRE_STUN = 2, FIRE_KNOCK = 6, FIRE_SPLASH = 1.15, SPLASH_STUN = 1.3;
   const THUNDER_RANGE = 7, THUNDER_FAR = 11, THUNDER_DELAY = 0.45, THUNDER_STUN = 2.2, THUNDER_REVEAL = 3, BOLT_FX = 0.9;
@@ -135,6 +135,8 @@
   // JUMP_GAP pause before the next hop (a press in the last JUMP_BUFFER
   // seconds of a jump is kept and hops again as soon as it can). Stunned bats
   // can still jump (they just can't steer).
+  // stepping off a block top: push out past its edge this long; then a little hop down
+  const EDGE_PUSH = 0.16, HOP_TIME = 0.34, SQUASH_TIME = 0.22;
   const JUMP_TIME = 0.72, JUMP_CHARGES = 3, JUMP_RECHARGE = 1.8, JUMP_GAP = 0.1, JUMP_BUFFER = 0.2;
   // a bite that whiffs under a jumping bat: the chomp plays out on empty air
   const MISS_TIME = 1;
@@ -154,7 +156,7 @@
   // Xtreme: the four themed maps in XTREME_ORDER.
   let arena, arenaIndex = 0, lastCave = 0;
   // the themed caves (the lobby's 0-3), Open Sky, and the classic stone caves
-  const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open && !a.classic ? i : -1)).filter((i) => i >= 0);
+  const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open && !a.classic && !a.exploreOnly ? i : -1)).filter((i) => i >= 0);
   const classicKinds = () => window.ECHO_ARENAS.map((a, i) => (a.classic ? i : -1)).filter((i) => i >= 0);
   const arenaByName = (n) => window.ECHO_ARENAS.findIndex((a) => a.name === n);
   function nextArenaIndex() {
@@ -208,10 +210,16 @@
   const rgbNums = (c) => (c[0] === '#' ? [1, 3, 5].map((j) => parseInt(c.slice(j, j + 2), 16)) : c.split(',').map(Number));
   const mixRgb = (a, b, k) => mixA(rgbNums(a), rgbNums(b), k).map(Math.round).join(', ');
   // the theme being shown right now (cached while it doesn't change)
+  function battleLook(i) {
+    const d = window.ECHO_ARENAS[i], l = d.theme.look;
+    return l && d.icy ? { ...l, ...d.icy } : l;
+  }
   function TH() {
     const k = Math.round(themeShow * 40) / 40, key = themeFrom + ',' + themeTo + ',' + k;
     if (key === themeKey && themeCache) return themeCache;
-    const A = window.ECHO_ARENAS[themeFrom].theme, B = window.ECHO_ARENAS[themeTo].theme, la = A.look, lb = B.look;
+    const A = window.ECHO_ARENAS[themeFrom].theme, B = window.ECHO_ARENAS[themeTo].theme;
+    // (an icy Battle map, Frozen Grotto, lays its own ice floor over its look)
+    const la = battleLook(themeFrom), lb = battleLook(themeTo);
     themeKey = key;
     themeCache = {
       key, k, from: themeFrom, to: themeTo, title: (k < 0.5 ? A : B).title, style: (k < 0.5 ? A : B).style || 'stone',
@@ -222,13 +230,15 @@
         accA: mixA(la.accA, lb.accA, k), accB: mixA(la.accB, lb.accB, k), mote: mixA(la.mote, lb.mote, k),
         hemi: [mixA(la.hemi[0], lb.hemi[0], k), mixA(la.hemi[1], lb.hemi[1], k)], lava: mixN(la.lava, lb.lava, k), ice: mixN(la.ice, lb.ice, k),
         vein: mixN(la.vein || 0, lb.vein || 0, k),
+        // (the floor's texture: an icy map's floor is ice whatever its blocks are)
+        floorStyle: (k < 0.5 ? la : lb).ice > 0.5 ? 'ice' : (k < 0.5 ? A : B).style || 'stone',
       } : null,
     };
     return themeCache;
   }
   // how icy the cave is right now (0..1): icy caves are slippery
   function iceNow() {
-    const la = window.ECHO_ARENAS[themeFrom].theme.look, lb = window.ECHO_ARENAS[themeTo].theme.look;
+    const la = battleLook(themeFrom), lb = battleLook(themeTo);
     return la && lb ? mixN(la.ice, lb.ice, themeK) : 0;
   }
   // the map style in play now (by rules): the one being morphed into counts once it's half there
@@ -450,9 +460,9 @@
     }
     // more than 4 bats: a bigger arena (guests know from o.total)
     bigArena = bats.length > 4;
-    // o.arena picks the cave for 'still' (0-3: Crystal Grotto, Lava Hollow, Mossy Den,
-    // Frozen Cavern; else a random one). Classic 'morph' starts in a classic stone
-    // cave (o.arena picks which), Xtreme always in Crystal Grotto. Guests load
+    // o.arena picks the cave for 'still' (0-2: Frozen Grotto, Lava Hollow, Mossy Den;
+    // else a random one). Classic 'morph' starts in a classic stone
+    // cave (o.arena picks which), Xtreme always in Frozen Grotto. Guests load
     // whatever the host's snapshots say.
     const caves = arenaKinds(false), classic = classicKinds(), want = o.arena == null || o.arena === '' ? NaN : Math.floor(+o.arena);
     const cave = want >= 0 ? caves[want % caves.length] : mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)];
@@ -1148,6 +1158,9 @@
   // Jump: up over walls and echoes for JUMP_TIME seconds (see JUMP_TIME)
   const airborne = (b) => b.jumpT > 0;
   // 0 on the ground, up to 1 at the top of a jump
+  // the hop off a block top (0..1..0) and the squash on landing (+ squashed, - stretched)
+  const hopArc = (b) => (b && b.hopT > 0 ? Math.sin(Math.PI * (1 - b.hopT / HOP_TIME)) : 0);
+  const squashK = (b) => { const q = b && b.squashT > 0 ? b.squashT / SQUASH_TIME : 0; return q * Math.cos((1 - q) * Math.PI * 1.5); };
   const jumpH = (b) => (b && b.jumpT > 0 ? Math.sin(Math.PI * Math.min(1, 1 - b.jumpT / JUMP_TIME)) : 0);
   // (stunned bats can jump too; they just hang still while they do)
   function jump(b) {
@@ -1209,7 +1222,7 @@
   function drop(b) {
     b.top = 0;
     easeOut(b);
-    if (!lavaSafeOnly()) fx({ k: 'burst', x: r2(b.x), y: r2(b.y + 0.25), rgb: TH().wall, n: 4, sp: 1.2, sz: 3 });
+    // (the hop down, its squash and puff are cosmetic: see tickCosmetics)
   }
   // touching down: on a block it stays up top; half on rock it's eased off it
   function land(b) {
@@ -1445,7 +1458,11 @@
   // ghosts and jumping bats only stop at the outer wall; bats up on the blocks
   // too, except that over lava a block's edge holds them (unless a big hit, like a
   // fireball or a clash, knocks them flying off it)
-  const edgeHolds = (b) => lavaSafeOnly() && (b.stun <= 0 || Math.hypot(b.vx, b.vy) < 5.5);
+  // Everywhere else the edge is sticky too: drifting, ice momentum or a small bump
+  // won't carry you off; you leave a block top on purpose (push out past the edge for
+  // EDGE_PUSH seconds, or dash off it), or a big hit knocks you off.
+  const bigKnock = (b) => b.stun > 0 && Math.hypot(b.vx, b.vy) >= 5.5;
+  const edgeHolds = (b) => (lavaSafeOnly() ? !bigKnock(b) : !(bigKnock(b) || b.dashT > 0 || (b.edgeT || 0) >= EDGE_PUSH));
   const batBlocked = (b, x, y) => (b.ghostT > 0 || b.jumpT > 0 ? inBorder(x, y)
     : b.top ? inBorder(x, y) || (edgeHolds(b) && !blockAt(x, y)) : hitsWall(x, y, R));
   // turning solid again inside rock: up on top if it's a block, else eased out
@@ -1925,6 +1942,11 @@
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
       // (a dash into a bush in Mossy Den chomps right through it)
       const chomps = (x, y) => !b.top && b.jumpT <= 0 && b.ghostT <= 0 && (b.dashT > 0 || b.biteT > 0) && mossy() && hitsWall(x, y, R) && chompBush(b, x, y);
+      // up on a block: how long you've been pushing out past its edge (see edgeHolds)
+      if (b.top && b.jumpT <= 0 && b.ghostT <= 0 && (ix || iy) && b.stun <= 0) {
+        const il = Math.hypot(ix, iy);
+        b.edgeT = blockAt(b.x + (ix / il) * 0.45, b.y + (iy / il) * 0.45) ? 0 : (b.edgeT || 0) + dt;
+      } else b.edgeT = 0;
       const nx = b.x + b.vx * dt;
       if (!batBlocked(b, nx, b.y) || chomps(nx, b.y)) b.x = nx; else b.vx *= -(b.top ? 0.2 : bounce);
       const ny = b.y + b.vy * dt;
@@ -2068,8 +2090,35 @@
     shieldPops = shieldPops.filter((p) => p.t < 0.6); shatters = shatters.filter((p) => p.t < 0.6); sinks = sinks.filter((p) => p.t < SINK_TIME);
     // the lava floor eases in (and cools off); a bat's height eases between the floor and the block tops
     lavaVis += ((lavaOn ? 1 : 0) - lavaVis) * Math.min(1, dt * (lavaOn ? 4 : 1.5));
+    // stepping off a block top (not a jump): a little hop up and down to the floor, a squash
+    // and a puff of dust (or frost) on landing. Worked out from b.top here, so guests see it too.
     for (const b of bats) {
-      const want = b.jumpT > 0 ? (blockAt(b.x, b.y) ? 1 : 0) : b.top ? 1 : 0;
+      const top = b.top ? 1 : 0;
+      if (b.wasTop && !top && !b.dead && b.jumpT <= 0 && Math.hypot(b.x - (b.wasX ?? b.x), b.y - (b.wasY ?? b.y)) < 1) b.hopT = HOP_TIME;
+      if (top || b.dead || b.jumpT > 0) b.hopT = 0;
+      b.wasTop = top; b.wasX = b.x; b.wasY = b.y;
+      if (b.hopT > 0) {
+        b.hopT = Math.max(0, b.hopT - dt);
+        const p = 1 - b.hopT / HOP_TIME;
+        // from the block top (1) up a bit and down to the floor (0)
+        b.hv = (1 - p * p) + 0.55 * Math.sin(Math.PI * p) * (1 - p * 0.4);
+        if (b.hopT <= 0) {
+          b.hv = 0; b.squashT = SQUASH_TIME;
+          if (!lavaOn) {
+            const st = styleNow(), icy = st === 'ice' || iceNow() > 0.5;
+            const rgb = icy ? '225, 245, 255' : st === 'moss' ? '170, 220, 140' : '210, 200, 235';
+            for (let k = 0; k < 10; k++) {
+              const a = (k / 10) * Math.PI * 2 + Math.random() * 0.4, v = 1.4 + Math.random() * 1.2;
+              particles.push({ x: b.x + Math.cos(a) * 0.2, y: b.y + 0.22 + Math.sin(a) * 0.08, vx: Math.cos(a) * v, vy: Math.sin(a) * v * 0.35 - 0.3, life: 0.35 + Math.random() * 0.25, rgb, size: 3 + Math.random() * 2.5 });
+            }
+            const sx = (window.EchoAudio && window.EchoAudio.sfx) || {};
+            (sx.land || sx.thud)?.();
+          }
+        }
+        continue;
+      }
+      if (b.squashT > 0) b.squashT = Math.max(0, b.squashT - dt);
+      const want = b.jumpT > 0 ? (blockAt(b.x, b.y) ? 1 : 0) : top;
       b.hv = b.dead ? want : (b.hv || 0) + (want - (b.hv || 0)) * Math.min(1, dt * (b.jumpT > 0 ? 7 : 14));
     }
     for (const m of misses) {
@@ -2463,6 +2512,7 @@
 
   // One block, top-down, in the cave's style. a: how lit (0..1); open: which
   // sides face open floor (top, right, bottom, left); rgb: the light's colour
+  const FILLET_2D = 0.34;   // the round inside corners of Lava Hollow's islands (in tiles)
   function drawBlock2D(style, k, tx, ty, a, open, rgb, th) {
     const x = X(tx), y = Y(ty), s = PX;
     if (style === 'moss') {
@@ -2483,13 +2533,46 @@
       return;
     }
     if (style === 'lava') {
-      // dark basalt standing in the lava, its foot glowing
+      // dark basalt standing in the lava, its foot glowing: the corners round off
+      // where two sides face the lava, so an island reads as one rounded lump
+      const rad = s * 0.42, e = 0.5;
+      const rc = [open[0] && open[3], open[0] && open[1], open[2] && open[1], open[2] && open[3]].map((c) => (c ? rad : 0));
+      const outline = (ins) => {
+        const x0 = x + ins, y0 = y + ins, x1 = x + s + e - ins, y1 = y + s + e - ins, r = rc.map((v) => Math.max(0, v - ins));
+        ctx.beginPath();
+        ctx.moveTo(x0 + r[0], y0); ctx.lineTo(x1 - r[1], y0); if (r[1]) ctx.arcTo(x1, y0, x1, y0 + r[1], r[1]);
+        ctx.lineTo(x1, y1 - r[2]); if (r[2]) ctx.arcTo(x1, y1, x1 - r[2], y1, r[2]);
+        ctx.lineTo(x0 + r[3], y1); if (r[3]) ctx.arcTo(x0, y1, x0, y1 - r[3], r[3]);
+        ctx.lineTo(x0, y0 + r[0]); if (r[0]) ctx.arcTo(x0, y0, x0 + r[0], y0, r[0]);
+        ctx.closePath();
+      };
       ctx.fillStyle = `rgba(36, 16, 12, ${Math.max(0.92, a)})`;
-      ctx.fillRect(x, y, s + 0.5, s + 0.5);
+      outline(0); ctx.fill();
+      // a warmer top, inset only from the sides facing lava (so neighbours join up)
+      ctx.save(); outline(0); ctx.clip();
       ctx.fillStyle = `rgba(110, 50, 34, ${0.25 + a * 0.6})`;
-      ctx.fillRect(x + s * 0.12, y + s * 0.12, s * 0.76, s * 0.76);
+      const i0 = (o) => (o ? s * 0.12 : -1);
+      ctx.fillRect(x + i0(open[3]), y + i0(open[0]), s + e - i0(open[3]) - i0(open[1]), s + e - i0(open[0]) - i0(open[2]));
+      ctx.restore();
+      // the glowing rim, only along the sides (and round corners) facing lava
       ctx.strokeStyle = `rgba(${lavaVis > 0.1 ? '255, 140, 50' : rgb}, ${Math.max(a, lavaVis * 0.85)})`;
       ctx.lineWidth = Math.max(1.5, PX * 0.09);
+      const x1 = x + s + e, y1 = y + s + e;
+      // (and stops short where the lava tile next to it rounds off an inside corner, see the fillets after the walls)
+      const S = (dx, dy) => { const x2 = tx + dx, y2 = ty + dy; return x2 > 0 && y2 > 0 && x2 < arena.w - 1 && y2 < arena.h - 1 && arena.grid[y2 * arena.w + x2] !== 0; };
+      const f = s * FILLET_2D, fc = (ax, ay, dx, dy) => (S(ax, ay) && S(ax + dx, ay + dy) ? f : 0);
+      const tl = [fc(-1, 0, 0, -1), fc(1, 0, 0, -1)], rr = [fc(0, -1, 1, 0), fc(0, 1, 1, 0)], bt = [fc(1, 0, 0, 1), fc(-1, 0, 0, 1)], lf = [fc(0, 1, -1, 0), fc(0, -1, -1, 0)];
+      ctx.beginPath();
+      if (open[0]) { ctx.moveTo(x + Math.max(rc[0], tl[0]), y); ctx.lineTo(x1 - Math.max(rc[1], tl[1]), y); }
+      if (rc[1]) { ctx.moveTo(x1 - rc[1], y); ctx.arcTo(x1, y, x1, y + rc[1], rc[1]); }
+      if (open[1]) { ctx.moveTo(x1, y + Math.max(rc[1], rr[0])); ctx.lineTo(x1, y1 - Math.max(rc[2], rr[1])); }
+      if (rc[2]) { ctx.moveTo(x1, y1 - rc[2]); ctx.arcTo(x1, y1, x1 - rc[2], y1, rc[2]); }
+      if (open[2]) { ctx.moveTo(x1 - Math.max(rc[2], bt[0]), y1); ctx.lineTo(x + Math.max(rc[3], bt[1]), y1); }
+      if (rc[3]) { ctx.moveTo(x + rc[3], y1); ctx.arcTo(x, y1, x, y1 - rc[3], rc[3]); }
+      if (open[3]) { ctx.moveTo(x, y1 - Math.max(rc[3], lf[0])); ctx.lineTo(x, y + Math.max(rc[0], lf[1])); }
+      if (rc[0]) { ctx.moveTo(x, y + rc[0]); ctx.arcTo(x, y, x + rc[0], y, rc[0]); }
+      ctx.stroke();
+      return;
     } else if (style === 'crystal') {
       // a cut gem: a bright facet, a dark facet, a glowing rim
       ctx.fillStyle = `rgba(${th.fill}, ${a * 0.85})`;
@@ -2535,7 +2618,7 @@
       const ok = window.EchoDuel3D.render({
         W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams: NO_BEAMS, crystals, powerups, eats, shake, follow,
         batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE: 1, EAT_PULL, extra: extras3d,
-        theme: TH().look, jumpH, jumpLift: JUMP_LIFT, big: bigArena, level: (b) => b.hv || 0, lava: lavaVis, lavaWarn,
+        theme: TH().look, jumpH, squash: squashK, hopArc, jumpLift: JUMP_LIFT, big: bigArena, level: (b) => b.hv || 0, lava: lavaVis, lavaWarn,
       });
       if (ok) { render3dOverlay(follow); return; }
     }
@@ -2591,6 +2674,26 @@
         if (a < 0.02) continue;
         const rgb = l > 0.05 ? LIGHT_RGB[litBy[ty * arena.w + tx]] : th.wall;
         drawBlock2D(style, ty * arena.w + tx, tx, ty, a, open, rgb, th);
+      }
+    }
+    // Lava Hollow: inside corners of the rock islands are filled round so the islands' outlines flow
+    if (th.style === 'lava') {
+      const inner = (x2, y2) => x2 > 0 && y2 > 0 && x2 < arena.w - 1 && y2 < arena.h - 1 && arena.grid[y2 * arena.w + x2] !== 0;
+      const r = PX * FILLET_2D, cs = [[-1, 0, 0, -1, 0, 0], [0, -1, 1, 0, 1, 0], [1, 0, 0, 1, 1, 1], [0, 1, -1, 0, 0, 1]];
+      ctx.lineWidth = Math.max(1.5, PX * 0.09);
+      for (let ty = 1; ty < arena.h - 1; ty++) for (let tx = 1; tx < arena.w - 1; tx++) {
+        if (arena.grid[ty * arena.w + tx] !== 0) continue;
+        for (let c = 0; c < 4; c++) {
+          const [ax, ay, bx, by, ox, oy] = cs[c];
+          if (!inner(tx + ax, ty + ay) || !inner(tx + bx, ty + by) || !inner(tx + ax + bx, ty + ay + by)) continue;
+          ctx.save();
+          ctx.translate(X(tx + ox), Y(ty + oy)); ctx.rotate((c * Math.PI) / 2);
+          ctx.fillStyle = 'rgba(36, 16, 12, 0.95)';
+          ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(r, 0); ctx.arc(r, r, r, -Math.PI / 2, Math.PI, true); ctx.closePath(); ctx.fill();
+          ctx.strokeStyle = `rgba(${lavaVis > 0.1 ? '255, 140, 50' : th.wall}, ${Math.max(0.35, lavaVis * 0.85)})`;
+          ctx.beginPath(); ctx.arc(r, r, r, -Math.PI / 2, Math.PI, true); ctx.stroke();
+          ctx.restore();
+        }
       }
     }
 
@@ -3337,10 +3440,10 @@
       text: 'The blocks are bushes on soft grass. BITE·DASH into a bush to chomp right through it and make a shortcut (or an escape). Bushes grow back after a while.' },
     ice: { title: 'FROZEN CAVERN', rgb: '200, 230, 255', short: 'Slippery ice: you slide, so steer early',
       text: 'The floor is solid ice: you keep sliding after you let go, and bounce harder off the rock. Fewer blocks, lots of room to skid, so steer early and use the slide to dodge.' },
-    crystal: { title: 'CRYSTAL GROTTO', rgb: '74, 222, 255', short: 'A mirrored crystal cave: every corner is the same',
-      text: 'A crystal cave mirrored in all four quarters, so every start is fair. JUMP onto a crystal block to stand on top of it: bats down on the floor cannot bite you up there (and you cannot bite them).' },
-    xtreme: { title: 'MORPHING XTREME', rgb: '255, 120, 200', short: 'Crystal, lava, ice and moss in turn',
-      text: 'About every 30 seconds the cave turns into the next map: Crystal Grotto, Lava Hollow, Frozen Cavern, Mossy Den, each with its own rules. Before the lava comes a 3-2-1: get on a block!' },
+    crystal: { title: 'FROZEN GROTTO', rgb: '150, 230, 255', short: 'Mirrored crystals on slippery ice',
+      text: 'Crystal islands mirrored in all four quarters (every start is fair), on a floor of solid ice: you keep sliding after you let go, so steer early. JUMP onto a crystal to stand on top of it: bats down on the ice cannot bite you up there (and you cannot bite them).' },
+    xtreme: { title: 'MORPHING XTREME', rgb: '255, 120, 200', short: 'Icy crystals, lava and moss in turn',
+      text: 'About every 30 seconds the cave turns into the next map: Frozen Grotto, Lava Hollow, Mossy Den, each with its own rules. Before the lava comes a 3-2-1: get on a block!' },
     morph: { title: 'MORPHING', rgb: '150, 130, 255', short: 'The blocks slowly reshape around you',
       text: 'A few blocks at a time, the cave slowly reshapes into a new layout (now and then it melts into open sky). The rock never closes on you. JUMP onto a block to stand on top of it.' },
     sky: { title: 'OPEN SKY', rgb: '255, 236, 190', short: 'No cave at all, just the night',
@@ -3444,7 +3547,7 @@
     const key = mapInfoKey(), m = MAP_INFO[key], T = performance.now() / 1000;
     ctx.save();
     ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-    const bg = { lava: 'rgba(120, 30, 6, 0.85)', moss: 'rgba(30, 80, 30, 0.85)', ice: 'rgba(60, 90, 140, 0.8)', crystal: 'rgba(24, 40, 90, 0.85)', sky: 'rgba(16, 20, 60, 0.85)' }[key] || 'rgba(30, 24, 74, 0.85)';
+    const bg = { lava: 'rgba(120, 30, 6, 0.85)', moss: 'rgba(30, 80, 30, 0.85)', ice: 'rgba(60, 90, 140, 0.8)', crystal: 'rgba(50, 90, 150, 0.85)', sky: 'rgba(16, 20, 60, 0.85)' }[key] || 'rgba(30, 24, 74, 0.85)';
     ctx.fillStyle = bg; ctx.fill();
     ctx.save(); ctx.clip();
     if (key === 'lava') {
@@ -3477,7 +3580,7 @@
       for (let k = 0; k < 5; k++) { ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * Math.sin(T * 3 + k)})`; ctx.fillRect(x - r * 0.7 + k * r * 0.3, y + ((k * 37) % 10 - 5) * r * 0.1, 2, 2); }
     } else {
       // morphing: blocks flipping on and off
-      const cols = key === 'xtreme' ? ['74, 222, 255', '255, 140, 60', '200, 230, 255', '130, 235, 120'] : [m.rgb];
+      const cols = key === 'xtreme' ? ['150, 230, 255', '255, 140, 60', '130, 235, 120'] : [m.rgb];
       const c = cols[Math.floor(T / 1.2) % cols.length];
       for (let k = 0; k < 9; k++) {
         const on = Math.sin(T * 1.6 + k * 2.3) > 0;
@@ -3679,14 +3782,18 @@
       ctx.font = `700 ${Math.round(h * 0.11)}px ${HEAD}`; ctx.fillStyle = 'rgba(235, 248, 255, 0.95)';
       ctx.fillText(k < 0.5 ? 'fly...' : 'let go: still sliding!', x + w / 2, y + h * 0.13);
     } else if (key === 'crystal') {
-      ctx.fillStyle = 'rgb(16, 20, 50)'; ctx.fillRect(x, y, w, h);
+      // an ice floor (pale streaks) with the crystals mirrored on it
+      const ig = ctx.createLinearGradient(x, y, x + w, y + h); ig.addColorStop(0, 'rgb(80, 120, 190)'); ig.addColorStop(1, 'rgb(36, 56, 112)');
+      ctx.fillStyle = ig; ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'; ctx.lineWidth = 3;
+      for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.moveTo(x + k * w * 0.25, y); ctx.lineTo(x + k * w * 0.25 - h * 0.6, y + h); ctx.stroke(); }
       for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
         for (const [dx, dy] of [[0.28, 0.25], [0.12, 0.3]]) gem(x + w / 2 + sx * dx * w, cy + sy * dy * h, h * 0.07, (dx > 0.2) ? '120, 235, 255' : '190, 150, 255');
       }
       ctx.strokeStyle = 'rgba(150, 200, 255, 0.25)'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x + w / 2, y); ctx.lineTo(x + w / 2, y + h); ctx.moveTo(x, cy); ctx.lineTo(x + w, cy); ctx.stroke(); ctx.setLineDash([]);
       const a = T * 0.9;
       for (const [sx, sy, rgb] of [[1, 1, me], [-1, 1, foe], [1, -1, '120, 230, 160'], [-1, -1, '255, 210, 90']]) miniBat(x + w / 2 + sx * Math.cos(a) * w * 0.2, cy + sy * Math.sin(a) * h * 0.18, r * 0.8, rgb);
-      ctx.font = `700 ${Math.round(h * 0.1)}px ${HEAD}`; ctx.fillStyle = 'rgba(200, 240, 255, 0.9)'; ctx.fillText('every quarter the same', x + w / 2, y + h * 0.1);
+      ctx.font = `700 ${Math.round(h * 0.1)}px ${HEAD}`; ctx.fillStyle = 'rgba(200, 240, 255, 0.9)'; ctx.fillText('crystals on ice', x + w / 2, y + h * 0.1);
     } else if (key === 'sky') {
       ctx.fillStyle = 'rgb(10, 14, 40)'; ctx.fillRect(x, y, w, h);
       for (let k = 0; k < 30; k++) { ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + 0.4 * Math.sin(T * 2 + k)})`; ctx.fillRect(x + hash(k) * w, y + hash(k + 50) * h, 1.5, 1.5); }
@@ -3694,9 +3801,9 @@
       miniBat(x + w * 0.5 + Math.cos(T) * w * 0.25, cy + Math.sin(T * 1.3) * h * 0.2, r, me);
     } else {
       // morphing: a grid of blocks reshaping (Xtreme: in each map's colours, with its name)
-      const names = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'], cols = ['74, 222, 255', '255, 140, 60', '200, 230, 255', '130, 235, 120'];
+      const names = ['Frozen Grotto', 'Lava Hollow', 'Mossy Den'], cols = ['150, 230, 255', '255, 140, 60', '130, 235, 120'];
       const stage = Math.floor(T / 2.5), k = (T % 2.5) / 2.5, xt = key === 'xtreme';
-      const rgb = xt ? cols[stage % 4] : '120, 200, 255', s = h / 6;
+      const rgb = xt ? cols[stage % 3] : '120, 200, 255', s = h / 6;
       for (let gy = 0; gy < 5; gy++) for (let gx = 0; gx < Math.floor(w / s) - 1; gx++) {
         const h1 = hash(gx * 7 + gy * 13 + stage * 31), h0 = hash(gx * 7 + gy * 13 + (stage - 1) * 31), sw = hash(gx * 3 + gy * 5) < k * 1.3;
         if ((sw ? h1 : h0) < 0.7) continue;
@@ -3704,7 +3811,7 @@
         ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.2; ctx.strokeRect(x + s * 0.5 + gx * s, y + s * 0.5 + gy * s, s - 2, s - 2);
       }
       miniBat(x + w * 0.5 + Math.cos(T * 0.8) * w * 0.3, cy + Math.sin(T * 1.6) * h * 0.25, r * 0.85, me);
-      if (xt) { ctx.font = `700 ${Math.round(h * 0.12)}px ${HEAD}`; ctx.fillStyle = `rgb(${rgb})`; ctx.fillText(names[stage % 4], x + w / 2, y + h * 0.1); }
+      if (xt) { ctx.font = `700 ${Math.round(h * 0.12)}px ${HEAD}`; ctx.fillStyle = `rgb(${rgb})`; ctx.fillText(names[stage % 3], x + w / 2, y + h * 0.1); }
     }
   }
 
@@ -3920,7 +4027,14 @@
     }
     // up on a block: a little bigger (nearer you), with a shadow on the block top
     const up = o.rot ? 0 : Math.max(0, Math.min(1, b.hv || 0));
-    if (up > 0.02 && hj <= 0) {
+    // hopping down off a block: a little arc over a shadow on the floor
+    const ha = o.rot ? 0 : hopArc(b);
+    if (ha > 0) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${(o.alpha ?? 1) * (0.5 - 0.2 * ha)})`;
+      ctx.beginPath(); ctx.ellipse(x, y + PX * 0.14, PX * (0.4 - 0.08 * ha), PX * (0.2 - 0.04 * ha), 0, 0, Math.PI * 2); ctx.fill();
+      y -= ha * PX * 0.55;
+    }
+    if (up > 0.02 && hj <= 0 && ha <= 0) {
       ctx.fillStyle = `rgba(0, 0, 0, ${0.45 * up * (o.alpha ?? 1)})`;
       ctx.beginPath(); ctx.ellipse(x + PX * 0.08, y + PX * 0.2, PX * 0.42, PX * 0.2, 0, 0, Math.PI * 2); ctx.fill();
       y -= up * PX * 0.18;
@@ -3931,6 +4045,9 @@
     ctx.save();
     ctx.translate(x, y);
     if (o.rot) ctx.rotate(o.rot);
+    // just landed from a hop: squashed flat, a quick stretch, back to round
+    const sq = o.rot ? 0 : squashK(b);
+    if (sq) { ctx.translate(0, r * 0.35 * sq); ctx.scale(1 + 0.28 * sq, 1 - 0.32 * sq); }
     ctx.globalAlpha = alpha;
     glow(0, 0, r * 3, b.rgb, 0.3);
     if (b.power) glow(0, 0, r * 4, POWERS[b.power].rgb, 0.25 + 0.1 * Math.sin(clock * 10));

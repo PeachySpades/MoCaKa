@@ -324,7 +324,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     g.setAttribute('color', new T.BufferAttribute(col, 3));
     return g;
   }
-  // a battle block in Crystal Grotto: a faceted six-sided crystal with a bevelled top
+  // a battle block in Frozen Grotto: a faceted six-sided crystal with a bevelled top
   function crystalBlockGeo() {
     const g = new T.LatheGeometry([[0, 0], [0.7, 0], [0.66, 0.78], [0.42, 1.0], [0, 1.06]].map(([x, y]) => new T.Vector2(x, y)), 6);
     g.rotateY(Math.PI / 6); g.translate(0.5, 0, 0.5);
@@ -350,10 +350,10 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
   // Lava Hollow's floor: glowing lava that churns and flows (u.amt: 0 none .. 1 full)
   function lavaMaterial() {
     return new T.ShaderMaterial({
-      uniforms: { time: { value: 0 }, amt: { value: 0 } },
+      uniforms: { time: { value: 0 }, amt: { value: 0 }, rock: { value: null }, size: { value: new T.Vector2(1, 1) } },
       transparent: true, depthWrite: false,
       vertexShader: 'varying vec2 vP; void main() { vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-      fragmentShader: `uniform float time; uniform float amt; varying vec2 vP;
+      fragmentShader: `uniform float time; uniform float amt; uniform sampler2D rock; uniform vec2 size; varying vec2 vP;
         float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
           return mix(mix(h(i), h(i + vec2(1.0, 0.0)), f.x), mix(h(i + vec2(0.0, 1.0)), h(i + vec2(1.0, 1.0)), f.x), f.y); }
@@ -367,9 +367,53 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
           float crust = smoothstep(0.03, 0.0, abs(f - 0.47)) * 0.6;
           c = mix(c, vec3(0.12, 0.02, 0.0), crust);
           c *= 0.85 + 0.2 * sin(time * 2.0 + f * 9.0);
+          // the lava glows hot where it laps against the rock islands (rock: 1 per rock tile, smoothed)
+          float r = texture2D(rock, vP / size).r;
+          float rim = smoothstep(0.04, 0.42, r + (f - 0.5) * 0.12);
+          c = mix(c, vec3(1.0, 0.78, 0.32), rim * (0.55 + 0.15 * sin(time * 3.0 + vP.x * 1.7 + vP.y * 1.3)));
           gl_FragColor = vec4(c, amt);
         }`,
     });
+  }
+  // Lava Hollow's islands: a rock tile whose corners round off where two of its
+  // sides face the lava, with a bevelled rim, so an island reads as one rounded
+  // lump of basalt rather than a stack of boxes. mask: bit 1 top (-z), 2 right,
+  // 4 bottom (+z), 8 left open. (Sides against other rock stay square, hidden.)
+  function rockTileGeo(mask) {
+    const bs = 0.07, bt = 0.07, rad = 0.42, o = [1, 2, 4, 8].map((b) => !!(mask & b));
+    const x0 = o[3] ? bs : 0, x1 = o[1] ? 1 - bs : 1, y0 = o[0] ? bs : 0, y1 = o[2] ? 1 - bs : 1;
+    const rTL = o[0] && o[3] ? rad : 0, rTR = o[0] && o[1] ? rad : 0, rBR = o[2] && o[1] ? rad : 0, rBL = o[2] && o[3] ? rad : 0;
+    // (drawn in the shape's plane as (x, -z), so standing it up needs no mirror)
+    const sh = new T.Shape(), M = (x, z) => sh.moveTo(x, -z), L = (x, z) => sh.lineTo(x, -z), Q = (cx, cz, x, z) => sh.quadraticCurveTo(cx, -cz, x, -z);
+    M(x0 + rTL, y0);
+    L(x1 - rTR, y0); if (rTR) Q(x1, y0, x1, y0 + rTR);
+    L(x1, y1 - rBR); if (rBR) Q(x1, y1, x1 - rBR, y1);
+    L(x0 + rBL, y1); if (rBL) Q(x0, y1, x0, y1 - rBL);
+    L(x0, y0 + rTL); if (rTL) Q(x0, y0, x0 + rTL, y0);
+    const g = new T.ExtrudeGeometry(sh, { depth: WALL_H - 2 * bt, bevelEnabled: true, bevelThickness: bt, bevelSize: bs, bevelSegments: 2, curveSegments: 6 });
+    // shape (x, -z) -> world (x, z); the extrusion stands up along y, from 0 to WALL_H
+    g.rotateX(-Math.PI / 2); g.translate(0, bt, 0);
+    // (texture coordinates: the tops by position in the tile, the sides by height)
+    const pos = g.attributes.position, uv = g.attributes.uv, nr = g.attributes.normal;
+    for (let i = 0; i < pos.count; i++) {
+      const up = Math.abs(nr.getY(i)) > 0.7;
+      uv.setXY(i, up ? pos.getX(i) : (Math.abs(nr.getX(i)) > Math.abs(nr.getZ(i)) ? pos.getZ(i) : pos.getX(i)), up ? 1 - pos.getZ(i) : pos.getY(i) / WALL_H);
+    }
+    return g;
+  }
+  // ...and the inside corners: a concave fillet of rock filling the corner of a
+  // lava tile hemmed in by rock on two sides (local u and z run into that tile)
+  function rockFilletGeo() {
+    const r = 0.3, sh = new T.Shape();
+    // (in the shape's plane as (u, -z), like rockTileGeo)
+    sh.moveTo(0, 0); sh.lineTo(r, 0);
+    sh.absarc(r, -r, r, Math.PI / 2, Math.PI, false);
+    sh.lineTo(0, 0);
+    const g = new T.ExtrudeGeometry(sh, { depth: WALL_H, bevelEnabled: false, curveSegments: 8 });
+    g.rotateX(-Math.PI / 2);
+    const pos = g.attributes.position, uv = g.attributes.uv, nr = g.attributes.normal;
+    for (let i = 0; i < pos.count; i++) { const up = Math.abs(nr.getY(i)) > 0.7; uv.setXY(i, up ? pos.getX(i) : pos.getX(i) + pos.getZ(i), up ? 1 - pos.getZ(i) : pos.getY(i) / WALL_H); }
+    return g;
   }
   // the shield: a smooth glass bubble, brightest at its rim, with a slow shimmer
   // drifting over it and a soft highlight (u.alpha fades it, u.flash brightens it)
@@ -449,11 +493,13 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
 
   // ---- Arena: one block per tile, shown only where sound or senses reach ----
   let wallMat = null, floorMat = null, gemMat = null, bushMat = null, gems = null, bushes = null, lavaPlane = null, floorStyle = '';
+  let rocks = [], rockData = null, rockTex = null, rockN = new Int32Array(17), rockCol = null;
+  const FILLET_AXES = [[1, 0, 0, 0], [0, 1, 1, 0], [-1, 0, 1, 1], [0, -1, 0, 1]];   // per corner TL, TR, BR, BL: u (x, z), corner offset (x, z)
   function buildTiles(arena) {
     if (walls) {
-      scene.remove(walls, floor, gems, bushes, lavaPlane);
-      for (const m of [walls, floor, gems, bushes]) { m.geometry.dispose(); m.dispose(); }
-      lavaPlane.geometry.dispose();
+      scene.remove(walls, floor, gems, bushes, lavaPlane, ...rocks);
+      for (const m of [walls, floor, gems, bushes, ...rocks]) { m.geometry.dispose(); m.dispose(); }
+      lavaPlane.geometry.dispose(); rockTex.dispose();
     }
     const n = arena.w * arena.h, tx = textures();
     const wg = new T.BoxGeometry(1, WALL_H, 1);
@@ -464,7 +510,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     fg.rotateX(-Math.PI / 2); fg.translate(0.5, 0, 0.5);
     floorMat = floorMat || patch(new T.MeshBasicMaterial({ map: tx.tile }), 'atlas', 0, 'stone-floor');
     floor = new T.InstancedMesh(fg, floorMat, n);
-    // the themed blocks: crystals (Crystal Grotto) and bushes (Mossy Den); one block mesh shows at a time
+    // the themed blocks: crystals (Frozen Grotto) and bushes (Mossy Den); one block mesh shows at a time
     if (!gemMat) {
       gemMat = crystalMat();
       bushMat = new T.MeshLambertMaterial({ vertexColors: true, flatShading: true });
@@ -473,10 +519,25 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     }
     gems = new T.InstancedMesh(crystalBlockGeo(), gemMat, n);
     bushes = new T.InstancedMesh(bushGeo(), bushMat, n);
+    // Lava Hollow's rock islands: one mesh per shape of tile (which sides face the lava)
+    rocks = Array.from({ length: 17 }, (_, mask) => {
+      const m = new T.InstancedMesh(mask < 16 ? rockTileGeo(mask) : rockFilletGeo(), wallMat, mask < 16 ? n : n * 2);
+      m.count = 0; m.visible = false;
+      return m;
+    });
+    rockCol = new Float32Array(n * 3);
+    // where the rock is, for the lava's hot rim (smoothed between tile centres)
+    rockData = new Uint8Array(n * 4);
+    rockTex = new T.DataTexture(rockData, arena.w, arena.h, T.RGBAFormat);
+    rockTex.magFilter = rockTex.minFilter = T.LinearFilter; rockTex.needsUpdate = true;
     lavaPlane = new T.Mesh(new T.PlaneGeometry(arena.w, arena.h).rotateX(-Math.PI / 2).translate(arena.w / 2, 0.012, arena.h / 2), lavaMaterial());
-    lavaPlane.visible = false; lavaPlane.renderOrder = 1;
+    lavaPlane.material.uniforms.rock.value = rockTex; lavaPlane.material.uniforms.size.value.set(arena.w, arena.h);
+    // (drawn first of all the see-through things: they blend over the lava, and none of them
+    // gets painted over by it. Drawn after them, it covered every half-see-through bat (ghosts,
+    // wings) and glow over it, so they looked cut out of the scene.)
+    lavaPlane.visible = false; lavaPlane.renderOrder = -10;
     scene.add(lavaPlane);
-    for (const m of [walls, floor, gems, bushes]) {
+    for (const m of [walls, floor, gems, bushes, ...rocks]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(n * 3), 3);
       m.instanceColor.setUsage(T.DynamicDrawUsage);
@@ -763,9 +824,13 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     // the lava floor: v.lava (0..1, as it eases in), or a pulsing warning glow during the 3-2-1
     const lavaAmt = Math.max(v.lava || 0, v.lavaWarn > 0 ? 0.18 + 0.14 * Math.sin(clock * 9) : 0);
     tintDecor(th);
-    if (floorStyle !== style) { floorStyle = style; floorMat.map = textures().floors[style] || textures().tile; floorMat.needsUpdate = true; }
+    // (the floor's own texture: Frozen Grotto has crystal blocks on an ice floor)
+    const fStyle = th?.floorStyle || style;
+    if (floorStyle !== fStyle) { floorStyle = fStyle; floorMat.map = textures().floors[fStyle] || textures().tile; floorMat.needsUpdate = true; }
     const blockMesh = style === 'crystal' ? gems : style === 'moss' ? bushes : walls;
     for (const m of [walls, gems, bushes]) m.visible = m === blockMesh || m === walls;
+    const rocky = style === 'lava' && blockMesh === walls;
+    rockN.fill(0);
     lavaPlane.visible = !open && lavaAmt > 0.01;
     if (lavaPlane.visible) { lavaPlane.material.uniforms.time.value = clock; lavaPlane.material.uniforms.amt.value = Math.min(1, lavaAmt); }
     const lavaLit = style === 'lava' ? Math.max(0.3, (v.lava || 0) * 0.5) : 0;
@@ -825,9 +890,20 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
             k2 *= 0.7;
           } else tmpM.makeScale(1, top, 1).setPosition(tx, 0, ty);
           if (style === 'lava' && !border) { r *= 0.42; g *= 0.4; b *= 0.42; }
-          for (const m of [walls, gems, bushes]) if (m !== mesh && m.visible) m.setMatrixAt(k, ZERO);
-          mesh.setMatrixAt(k, tmpM);
-          mesh.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2));
+          tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2);
+          if (rocky && !border) {
+            // a rounded rock tile, by which of its sides face the lava
+            const o = (x2, y2) => x2 <= 0 || y2 <= 0 || x2 >= w - 1 || y2 >= h - 1 || arena.grid[y2 * w + x2] !== 1;
+            const mask = (o(tx, ty - 1) ? 1 : 0) | (o(tx + 1, ty) ? 2 : 0) | (o(tx, ty + 1) ? 4 : 0) | (o(tx - 1, ty) ? 8 : 0);
+            const rm = rocks[mask], j = rockN[mask]++;
+            rm.setMatrixAt(j, tmpM.makeTranslation(tx, 0, ty)); rm.setColorAt(j, tmpC);
+            rockCol[k * 3] = tmpC.r; rockCol[k * 3 + 1] = tmpC.g; rockCol[k * 3 + 2] = tmpC.b;
+            for (const m of [walls, gems, bushes]) if (m.visible) m.setMatrixAt(k, ZERO);
+          } else {
+            for (const m of [walls, gems, bushes]) if (m !== mesh && m.visible) m.setMatrixAt(k, ZERO);
+            mesh.setMatrixAt(k, tmpM);
+            mesh.setColorAt(k, tmpC);
+          }
         } else {
           for (const m of [walls, gems, bushes]) if (m.visible) m.setMatrixAt(k, ZERO);
           wallTop[k] = 0;
@@ -851,6 +927,34 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       }
     }
     floor.visible = !open && lavaAmt < 0.99;
+    if (rocky) {
+      // inside corners: fill the corner of a lava tile that has rock on two sides (and across)
+      const R = (x2, y2) => x2 > 0 && y2 > 0 && x2 < w - 1 && y2 < h - 1 && arena.grid[y2 * w + x2] === 1;
+      const fm = rocks[16];
+      for (let ty = 1; ty < h - 1; ty++) for (let tx = 1; tx < w - 1; tx++) {
+        if (arena.grid[ty * w + tx] === 1) continue;
+        // corners TL, TR, BR, BL: the two sides and the diagonal
+        const cs = [[-1, 0, 0, -1], [0, -1, 1, 0], [1, 0, 0, 1], [0, 1, -1, 0]];
+        for (let c = 0; c < 4; c++) {
+          const [ax, ay, bx, by] = cs[c];
+          if (!R(tx + ax, ty + ay) || !R(tx + bx, ty + by) || !R(tx + ax + bx, ty + ay + by)) continue;
+          const [ux, uz, ox, oz] = FILLET_AXES[c], kk = (ty + ay) * w + tx + ax, j = rockN[16]++;
+          // basis: u, up, and z = u x up (into the tile as well)
+          tmpM.set(ux, 0, -uz, tx + ox, 0, 1, 0, 0, uz, 0, ux, ty + oz, 0, 0, 0, 1);
+          fm.setMatrixAt(j, tmpM); fm.setColorAt(j, tmpC.setRGB(rockCol[kk * 3], rockCol[kk * 3 + 1], rockCol[kk * 3 + 2]));
+        }
+      }
+    }
+    rocks.forEach((m, j) => { m.count = rockN[j]; m.visible = rockN[j] > 0; if (m.visible) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; } });
+    if (lavaPlane.visible) {
+      // the rock map for the lava's hot rim (only rewritten when the cave changes shape)
+      let changed = false;
+      for (let k = 0; k < w * h; k++) {
+        const tx = k % w, ty = (k - tx) / w, v2 = arena.grid[k] === 1 && tx > 0 && ty > 0 && tx < w - 1 && ty < h - 1 ? 255 : 0;
+        if (rockData[k * 4] !== v2) { rockData[k * 4] = rockData[k * 4 + 1] = rockData[k * 4 + 2] = v2; rockData[k * 4 + 3] = 255; changed = true; }
+      }
+      if (changed) rockTex.needsUpdate = true;
+    }
     for (const m of [walls, gems, bushes]) if (m.visible) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; }
     floor.instanceColor.needsUpdate = true;
     if (open && moon) { moon.position.set(arena.w * 0.8, -6, arena.h * 0.15); starField.material.opacity = 0.55 + 0.25 * Math.sin(clock * 0.8); }
@@ -921,7 +1025,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       } else if (!b || b.dead) alpha = 0;
       const blink = b && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0;
       rig.g.visible = rig.glow.visible = alpha > 0.03 && !blink;
-      const hop = b && v.jumpH ? v.jumpH(b) : 0, up = b && v.level ? v.level(b) : 0;
+      const hop = b && v.jumpH ? v.jumpH(b) : 0, up = b && v.level ? v.level(b) : 0, ha0 = b && v.hopArc ? v.hopArc(b) : 0;
       rig.shadow.visible = rig.g.visible && (hop > 0 || up > 0.02) && !open;
       if (!rig.g.visible) return;
       rig.glow.position.set(x, 0.03 + up * WALL_H, y);
@@ -930,12 +1034,16 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
         const tk = Math.floor(y) * arena.w + Math.floor(x);
         rig.shadow.position.set(x, (wallTop[tk] || 0) + 0.035, y);
         rig.shadow.scale.setScalar(1.3 - 0.3 * hop);
-        rig.shadow.material.opacity = alpha * (0.85 - 0.2 * hop);
+        rig.shadow.material.opacity = alpha * (hop > 0 ? 0.85 - 0.2 * hop : ha0 > 0 ? 0.75 - 0.2 * ha0 : 0.5);   // (standing on a block: a softer one)
       }
       const stunned = b.stun > 0;
       const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : hop > 0 ? 28 : 16) + b.i);
       rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05 + hop * (v.jumpLift || 1.1) + up * WALL_H, y);
       rig.g.scale.setScalar(scale * 1.15 * (1 + 0.2 * hop));
+      // just landed from a hop off a block: squash flat, a quick stretch, back to round
+      const sq = v.squash ? v.squash(b) : 0, ha = v.hopArc ? v.hopArc(b) : 0;
+      if (ha) rig.g.scale.multiplyScalar(1 + 0.14 * ha);   // (and a touch bigger, nearer you, at the top of a hop)
+      if (sq) { rig.g.scale.x *= 1 + 0.3 * sq; rig.g.scale.z *= 1 + 0.3 * sq; rig.g.scale.y *= 1 - 0.34 * sq; rig.g.position.y -= 0.12 * sq; }
       // turn to face the way it's flying: toward the camera you see its face,
       // flying away you see its back
       const speed = Math.hypot(b.vx, b.vy);

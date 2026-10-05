@@ -5,13 +5,16 @@
 // version when a map has one (the four themed maps are drawn as one quarter,
 // mirrored into all four corners, so they're fair from every start), else a
 // stretched copy (see duel.js).
-// The first four are the themed caves; the lobby's arena pick (0-3) is an index
-// among them. 'Still' plays one of them all match. 'Morphing Xtreme' turns one
-// into the next (crystal, lava, ice, moss), each with its own rules:
-//   Crystal Grotto  crystal blocks, mirrored in all four quarters
-//   Lava Hollow     blocks stand in a floor of lava: stay on top, hop block to block
+// The first three are the themed Battle caves; the lobby's arena pick (0-2) is an
+// index among them. 'Still' plays one of them all match. 'Morphing Xtreme' turns
+// one into the next (Frozen Grotto, lava, moss), each with its own rules:
+//   Frozen Grotto   crystal blocks, mirrored in all four quarters, on a slippery
+//                   ice floor (icy: the floor look and slip duel.js uses)
+//   Lava Hollow     organic rock islands (a big one in the middle) in a floor of
+//                   lava: stay on top, hop island to island
 //   Mossy Den       the blocks are bushes on grass: dash through them, they grow back
-//   Frozen Cavern   icy floor (you slide), few blocks, lots of room
+//   Frozen Cavern   (exploreOnly) no longer played in Battle; Co-op Explore's ice cave
+//                   borrows its look
 // Open Sky (open: true) is its own mode, and classic 'Morphing' melts into it now
 // and then. The four 'classic' maps at the end are the old stone caves that classic
 // Morphing reshapes between, all in one stone look.
@@ -27,7 +30,9 @@
 // (Co-op Explore borrows the looks of the first four by index, so keep the order.)
 window.ECHO_ARENAS = [
   {
-    name: 'Crystal Grotto',
+    name: 'Frozen Grotto',
+    // (Battle plays it on slippery ice: duel.js swaps in this floor; Co-op Explore keeps the crystal look)
+    icy: { ice: 1, floor: [0.5, 0.64, 1.0] },
     theme: { wall: '74, 222, 255', fill: '18, 52, 80', bg: '#05060d', ambient: 'sparkle', ambientRgb: '150, 240, 255',
       style: 'crystal', title: 'Crystal cave', look: { stone: [0.5, 0.52, 1.0], floor: [0.36, 0.37, 0.72], bg: [0.025, 0.028, 0.085], accA: [0.3, 0.9, 1.0], accB: [0.62, 0.4, 1.0], mote: [0.62, 0.86, 1.0], hemi: [[0.71, 0.72, 1.0], [0.16, 0.13, 0.38]], lava: 0, ice: 0 } },
     map: [
@@ -74,36 +79,36 @@ window.ECHO_ARENAS = [
     map: [
       '##################################',
       '#................................#',
-      '#.###..###..##......##..###..###.#',
-      '#.###..#E#..##.####.##..#E#..###.#',
-      '#...........##.####.##...........#',
-      '#.##..###................###..##.#',
-      '#.##..###..###.####.###..###..##.#',
-      '#..........#E#.####.#E#..........#',
-      '#.##..###..###.####.###..###..##.#',
-      '#.##..###................###..##.#',
-      '#...........##.####.##...........#',
-      '#.###..#E#..##.####.##..#E#..###.#',
-      '#.###..###..##......##..###..###.#',
+      '#.##....##..............##....##.#',
+      '#.###..####............####..###.#',
+      '#..##...#E...########...E#...##..#',
+      '#..........###E####E###..........#',
+      '#.##...#....##########....#...##.#',
+      '#.###.#E#..#####..#####..#E#.###.#',
+      '#.##...#....##########....#...##.#',
+      '#..........###E####E###..........#',
+      '#..##...#E...########...E#...##..#',
+      '#.###..####............####..###.#',
+      '#.##....##..............##....##.#',
       '#................................#',
       '##################################',
     ],
     big: [
       '#######################################',
       '#.....................................#',
-      '#.###..###..###.........###..###..###.#',
-      '#.###..#E#..###..#####..###..#E#..###.#',
-      '#................#####................#',
-      '#.##..###..###...........###..###..##.#',
-      '#.##..###..###..###.###..###..###..##.#',
-      '#.###..##.......#E#.#E#.......##..###.#',
-      '#.###..##.......###.###.......##..###.#',
-      '#.###..##.......#E#.#E#.......##..###.#',
-      '#.##..###..###..###.###..###..###..##.#',
-      '#.##..###..###...........###..###..##.#',
-      '#................#####................#',
-      '#.###..#E#..###..#####..###..#E#..###.#',
-      '#.###..###..###.........###..###..###.#',
+      '#.##.....###...............###.....##.#',
+      '#.###...#####.............#####...###.#',
+      '#..##....#E#....#######....#E#....##..#',
+      '#..............#########..............#',
+      '#.##.....#...###E#####E###...#.....##.#',
+      '#.###...###...###########...###...###.#',
+      '#..##..##E#..######.######..#E##..##..#',
+      '#.###...###...###########...###...###.#',
+      '#.##.....#...###E#####E###...#.....##.#',
+      '#..............#########..............#',
+      '#..##....#E#....#######....#E#....##..#',
+      '#.###...#####.............#####...###.#',
+      '#.##.....###...............###.....##.#',
       '#.....................................#',
       '#######################################',
     ],
@@ -151,6 +156,8 @@ window.ECHO_ARENAS = [
   },
   {
     name: 'Frozen Cavern',
+    // (no longer a Battle map: Frozen Grotto has its ice. Kept for Co-op Explore's ice cave look.)
+    exploreOnly: true,
     theme: { wall: '200, 230, 255', fill: '30, 50, 80', bg: '#04070e', ambient: 'snow', ambientRgb: '230, 240, 255',
       style: 'ice', title: 'Ice cave', look: { stone: [0.8, 0.92, 1.12], floor: [0.56, 0.7, 0.98], bg: [0.02, 0.035, 0.075], accA: [0.75, 0.95, 1.0], accB: [0.55, 0.78, 1.0], mote: [0.95, 0.98, 1.0], hemi: [[0.86, 0.93, 1.0], [0.3, 0.4, 0.62]], lava: 0, ice: 1, vein: 1 } },
     map: [
