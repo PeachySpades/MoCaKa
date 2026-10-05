@@ -185,6 +185,12 @@
     freeze() { [2600, 3100, 3700, 4200].forEach((f, i) => tone(f, f * 0.98, 0.25, 'sine', 0.05, i * 0.04)); hiss(0.4, 0.08, 6000); tone(500, 1600, 0.2, 'triangle', 0.04); },
     vortex() { hiss(1.2, 0.1, 600, undefined, sfxBus, 'bandpass'); tone(140, 420, 0.9, 'sawtooth', 0.035); tone(420, 140, 0.9, 'sawtooth', 0.025, 0.4); },
     ghost() { tone(500, 900, 0.5, 'sine', 0.06); tone(750, 1350, 0.5, 'sine', 0.04, 0.08); tone(400, 300, 0.6, 'triangle', 0.03, 0.2); },
+    // Co-op Explore: a key (a bright jingle), a gate grinding open with a chime, a revive (a warm
+    // rising "ba-dum" and sparkle), and flying off into the night (a whoosh and a little fanfare)
+    key() { [1319, 1568, 2093, 2637].forEach((f, i) => { tone(f, f * 1.01, 0.18, 'triangle', 0.06, i * 0.06); tone(f * 2, f * 2, 0.1, 'sine', 0.02, i * 0.06 + 0.02); }); hiss(0.25, 0.03, 7000, ac && ac.currentTime + 0.1); },
+    gate() { tone(70, 130, 0.6, 'sawtooth', 0.05); hiss(0.7, 0.1, 400, undefined, sfxBus, 'lowpass'); [523, 784, 1047].forEach((f, i) => tone(f, f, 0.3, 'sine', 0.05, 0.35 + i * 0.08)); },
+    revive() { tone(330, 440, 0.12, 'triangle', 0.1); tone(440, 660, 0.14, 'triangle', 0.1, 0.13); [784, 988, 1175, 1568].forEach((f, i) => tone(f, f * 1.01, 0.3, 'sine', 0.06, 0.26 + i * 0.07)); hiss(0.4, 0.04, 6000, ac && ac.currentTime + 0.3); },
+    flyoff() { hiss(0.8, 0.12, 900, undefined, sfxBus, 'bandpass'); tone(300, 1200, 0.6, 'sine', 0.05); [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f * 1.01, 0.25, 'triangle', 0.07, 0.45 + i * 0.1)); tone(1568, 1570, 0.7, 'sine', 0.05, 0.95); },
   };
 
   // Music: an upbeat jazz band (horns, piano, bass, guitar, vibes, drums),

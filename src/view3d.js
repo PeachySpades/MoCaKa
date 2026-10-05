@@ -838,7 +838,8 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     if (cave) return true;
     if (!init()) return false;
     const sc = new T.Scene(), tx = textures();
-    sc.add(new T.HemisphereLight(0xb4b8ff, 0x2a2260, 1.0));
+    const hemiC = new T.HemisphereLight(0xb4b8ff, 0x2a2260, 1.0);
+    sc.add(hemiC);
     const key = new T.DirectionalLight(0xd8dcff, 1.2);
     key.position.set(-0.5, 0.9, 1);
     sc.add(key);
@@ -846,11 +847,12 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     // the same cracked blue-violet stone as the battle arenas
     const bg = new T.BoxGeometry(1, 1, CAVE_DEPTH);
     bg.translate(0.5, -0.5, -CAVE_DEPTH / 2);
-    const rock = new T.InstancedMesh(bg, stoneMat(tx.rough, tx.roughGlow, 'world', 1.6, 'stone-cave'), CAVE_POOL);
+    // (the veins can glow in a cave theme's colour: Co-op Explore's lava and ice caves)
+    const rock = new T.InstancedMesh(bg, stoneMat(tx.rough, tx.roughGlow, 'world', 1.6, 'stone-cave-tint', true), CAVE_POOL);
     // the back wall behind open air, which the echo washes over too
     const pg = new T.PlaneGeometry(1, 1);
     pg.translate(0.5, -0.5, -CAVE_DEPTH);
-    const back = new T.InstancedMesh(pg, stoneMat(tx.rough, tx.roughGlow, 'world', 0.9, 'stone-back'), CAVE_POOL);
+    const back = new T.InstancedMesh(pg, stoneMat(tx.rough, tx.roughGlow, 'world', 0.9, 'stone-back-tint', true), CAVE_POOL);
     // crystals and mushrooms growing on ledges, with soft glows (the camera looks straight on)
     const crystals = new T.InstancedMesh(crystalGeo(), crystalMat(), DECO_POOL);
     const shrooms = new T.InstancedMesh(mushroomGeo(), crystalMat(), DECO_POOL);
@@ -872,7 +874,13 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     motes.frustumCulled = false;
     sc.add(motes);
     const cam = new T.PerspectiveCamera(FOV, 2, 0.1, 100);
+    // Co-op Explore's exit: a big cave mouth onto the night sky (v.mouth), with a glow around it
+    const mouth = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+    const mouthGlow = new T.Mesh(new T.PlaneGeometry(1, 1), glowMatOf());
+    mouth.visible = mouthGlow.visible = false;
+    sc.add(mouth, mouthGlow);
     cave = { scene: sc, rock, back, crystals, shrooms, glows, hazards, hazGlows, motes, moteBase: base, cam, bat: null, W: 0, H: 0, last: 0,
+      hemi: hemiC, mouth, mouthGlow, mouthSrc: null,
       p: new T.Vector3(), q: new T.Quaternion(), e: new T.Euler(), s: new T.Vector3() };
     return true;
   }
@@ -881,14 +889,30 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
   const tileHash = (x, y, k = 0) => { const v = Math.sin(x * 127.1 + y * 311.7 + k * 74.7) * 43758.5453; return v - Math.floor(v); };
 
   // v: { W, H, PX, cam: {x, y}, shake: {x, y} (pixels), level: {w, h, grid, lit}, near(x, y) -> 0..1,
-  //      moka: {x, y, face, vx, vy, hurt}, clock, wall (echo colour) }
+  //      moka: {x, y, face, vx, vy, hurt}, clock, wall (echo colour),
+  //      theme (optional, an ECHO_ARENAS look: stone, bg, accA, accB, mote, hemi, lava, ice, vein),
+  //      mouth (optional: { x, y, r, open, canvas } the exit's cave mouth, painted on canvas) }
   function renderCave(v) {
     if (!caveInit()) return false;
     const { W: w, H: h, PX: px, level: L, clock } = v;
     if (canvas.style.display === 'none') canvas.style.display = '';
     const c = cave;
     if (c.W !== w || c.H !== h) { c.W = w; c.H = h; renderer.setSize(w, h, false); }
-    const bg = CAVE_BG, echo = rgbOf(v.wall);
+    // a cave theme (Co-op Explore's crystal, lava and ice caves) recolours the stone, the light,
+    // the crystals and the motes; lava glows along the floors and ice glints on them
+    const th = v.theme || null;
+    const bg = th ? th.bg : CAVE_BG, echo = rgbOf(v.wall), STONE_C = th ? th.stone : STONE, ACC_A = th ? th.accA : CYAN, ACC_B = th ? th.accB : VIOLET;
+    const lava = th ? th.lava || 0 : 0, ice = th ? th.ice || 0 : 0;
+    const tkey = th ? th.stone.join() + th.accA.join() : '';
+    if (c.tkey !== tkey) {
+      c.tkey = tkey;
+      if (th) { c.hemi.color.setRGB(...th.hemi[0]); c.hemi.groundColor.setRGB(...th.hemi[1]); c.motes.material.color.setRGB(...th.mote); }
+      else { c.hemi.color.setHex(0xb4b8ff); c.hemi.groundColor.setHex(0x2a2260); c.motes.material.color.setHex(0x9fdcff); }
+      for (const m of [c.rock.material, c.back.material]) {
+        if (!m.userData.tint) continue;
+        m.userData.tint.color.value.setRGB(...ACC_A); m.userData.tint.mix.value = th ? th.vein || 0 : 0;
+      }
+    }
     if (!c.scene.background) c.scene.background = new T.Color();
     c.scene.background.setRGB(bg[0], bg[1], bg[2]);
 
@@ -897,8 +921,8 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     const tx0 = Math.max(0, Math.floor(v.cam.x - halfW)), tx1 = Math.min(L.w - 1, Math.ceil(v.cam.x + halfW));
     const ty0 = Math.max(0, Math.floor(v.cam.y - halfH)), ty1 = Math.min(L.h - 1, Math.ceil(v.cam.y + halfH));
     const solidAt = (x, y) => x < 0 || y < 0 || x >= L.w || y >= L.h || L.grid[y * L.w + x] === 1;
-    // stone lit by the echo: mostly its own blue-violet, with a wash of the echo colour
-    const sr = STONE[0] + (echo[0] - STONE[0]) * 0.3, sg = STONE[1] + (echo[1] - STONE[1]) * 0.3, sb = STONE[2] + (echo[2] - STONE[2]) * 0.3;
+    // stone lit by the echo: mostly its own blue-violet (or the theme's stone), with a wash of the echo colour
+    const sr = STONE_C[0] + (echo[0] - STONE_C[0]) * 0.3, sg = STONE_C[1] + (echo[1] - STONE_C[1]) * 0.3, sb = STONE_C[2] + (echo[2] - STONE_C[2]) * 0.3;
     let nr = 0, nb = 0, nc = 0, nm = 0, ng = 0;
     // faint stone starts a touch brighter than the background, so it fades in rather than reading as a shadow
     const b0 = [bg[0] * 1.6, bg[1] * 1.6, bg[2] * 1.6];
@@ -919,14 +943,23 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
           c.rock.setColorAt(nr++, tmpC.setRGB(b0[0] + (sr - b0[0]) * f, b0[1] + (sg - b0[1]) * f, b0[2] + (sb - b0[2]) * f));
           // a few ledges grow mushrooms or crystals, a few ceilings hang crystals
           const hsh = tileHash(tx, ty), up = !solidAt(tx, ty - 1), down = !solidAt(tx, ty + 1);
-          const col = tileHash(tx, ty, 3) < 0.55 ? CYAN : VIOLET, kk = Math.min(1, a * 1.25);
+          const col = tileHash(tx, ty, 3) < 0.55 ? ACC_A : ACC_B, kk = Math.min(1, a * 1.25);
+          if (up && lava > 0.02 && tileHash(tx, ty, 7) < 0.16 && ng < DECO_POOL) {
+            // lava glowing in a crack along the floor, pulsing
+            const p2 = lava * (0.6 + 0.4 * Math.sin(clock * 1.7 + tx * 3.1));
+            put(c.glows, ng++, tx + 0.5, -ty + 0.12, 0.05, 0, 0, 1.5, 0.7, 1.0 * p2, 0.38 * p2, 0.06 * p2);
+          } else if (up && ice > 0.02 && tileHash(tx, ty, 7) > 0.82 && ng < DECO_POOL) {
+            // frost glinting on the floor
+            const p2 = ice * 0.45 * Math.max(0, Math.sin(clock * 2.2 + tx * 1.7));
+            put(c.glows, ng++, tx + 0.2 + tileHash(tx, ty, 7) * 0.6, -ty + 0.08, 0.05, 0, 0, 0.5, 0.5, 0.85 * p2, 0.95 * p2, p2);
+          }
           if (up && hsh < 0.12 && nm < DECO_POOL - 4) {
             const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3);
             for (let j = 0; j < n; j++) {
               const sc = 0.9 + tileHash(tx, ty, 10 + j) * 1.0;
-              put(c.shrooms, nm++, tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6, -ty, -0.25 - tileHash(tx, ty, 30 + j) * 1.4, j, 0, sc, sc, CYAN[0] * kk, CYAN[1] * kk, CYAN[2] * kk);
+              put(c.shrooms, nm++, tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6, -ty, -0.25 - tileHash(tx, ty, 30 + j) * 1.4, j, 0, sc, sc, ACC_A[0] * kk, ACC_A[1] * kk, ACC_A[2] * kk);
             }
-            if (ng < DECO_POOL) put(c.glows, ng++, tx + 0.5, -ty + 0.2, -0.2, 0, 0, 1.3, 1.3, CYAN[0] * kk * 0.35, CYAN[1] * kk * 0.35, CYAN[2] * kk * 0.35);
+            if (ng < DECO_POOL) put(c.glows, ng++, tx + 0.5, -ty + 0.2, -0.2, 0, 0, 1.3, 1.3, ACC_A[0] * kk * 0.35, ACC_A[1] * kk * 0.35, ACC_A[2] * kk * 0.35);
           } else if (((up && hsh < 0.2) || (down && hsh > 0.92 && !v.noCeilDecor)) && nc < DECO_POOL - 4) {
             const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3), flip = !(up && hsh < 0.2);
             for (let j = 0; j < n; j++) {
@@ -958,6 +991,23 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       put(c.hazards, nh++, hx + 0.16, -hz.y, -0.06, 2.0, Math.PI - 0.3, 1.0, len * 0.48, hr, hg, hb);
       put(c.hazGlows, nhg++, hx, -hz.y - len * 0.45, 0.1, 0, 0, 1.5, 1.5, CYAN[0] * k * 0.55, CYAN[1] * k * 0.55, CYAN[2] * k * 0.55);
     }
+    // the cave mouth: the night sky through a round opening just behind the play plane (so rock
+    // around it hides its edges and the bats fly in front of it), glowing green once it's open
+    const mo = v.mouth;
+    c.mouth.visible = c.mouthGlow.visible = !!mo;
+    if (mo) {
+      if (c.mouthSrc !== mo.canvas) {
+        c.mouthSrc = mo.canvas;
+        if (c.mouth.material.map) c.mouth.material.map.dispose();
+        c.mouth.material.map = new T.CanvasTexture(mo.canvas);
+        c.mouth.material.needsUpdate = true;
+      }
+      const d = mo.r * 2.3;
+      c.mouth.position.set(mo.x, -mo.y, -0.35); c.mouth.scale.set(d, d, 1);
+      const pulse = 0.6 + 0.4 * Math.sin(clock * 2.6), gc = mo.open ? [0.47, 1.0, 0.67] : [1.0, 0.84, 0.35], gk = (mo.open ? 0.55 : 0.28) * pulse;
+      c.mouthGlow.position.set(mo.x, -mo.y, -0.3); c.mouthGlow.scale.set(d * 1.6, d * 1.6, 1);
+      c.mouthGlow.material.color.setRGB(gc[0] * gk, gc[1] * gk, gc[2] * gk);
+    }
     c.hazards.count = nh; c.hazGlows.count = nhg;
     c.rock.count = nr; c.back.count = nb; c.crystals.count = nc; c.shrooms.count = nm; c.glows.count = ng;
     for (const m of [c.rock, c.back, c.crystals, c.shrooms, c.glows, c.hazards, c.hazGlows]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
@@ -984,14 +1034,15 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
         let r = c.team[k];
         if (!r || r.key !== lookKey(b)) { dropRig(r); r = c.team[k] = batRig({ color: b.color, look: b.look }, c.scene); }
         r.g.visible = !b.hidden;
-        r.g.position.set(b.x, -b.y, 0.15);
-        r.g.scale.setScalar((v.mokaR || 0.28) / 0.3);
+        r.g.position.set(b.x, -b.y, 0.15 + (b.z || 0));
+        r.g.scale.setScalar(((v.mokaR || 0.28) / 0.3) * (b.scale ?? 1));
         const wantK = Math.max(-0.7, Math.min(0.7, (b.vx || 0) * 0.15)) + (b.face || 0) * 0.15;
         r.yaw += (wantK - r.yaw) * Math.min(1, dt * 8);
         r.g.rotation.set(0.1, r.yaw, Math.max(-0.3, Math.min(0.3, -(b.vx || 0) * 0.04)));
         const fl = Math.sin(clock * (b.flap || 18) + k);
         r.wings[0].rotation.z = -fl * 0.7; r.wings[1].rotation.z = fl * 0.7;
-        r.glow.visible = false; r.shield.visible = false; r.stars.forEach((st) => (st.visible = false));
+        r.glow.visible = false; r.shield.visible = !!b.shield && !b.hidden; r.stars.forEach((st) => (st.visible = false));
+        if (r.shield.visible) r.shield.rotation.y = clock;
         const al = b.alpha ?? 1;
         rigAlpha(r, al, clock);
       });

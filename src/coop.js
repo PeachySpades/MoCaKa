@@ -23,6 +23,15 @@
 // sometimes fumble a squeak or a dash and sometimes daydream. Their skill follows
 // the level option (see BUDDY below); a team of only CPUs rarely gets out.
 //
+// The Explore map (start option map: 'explore') is a cave the team roams freely. In Classic and
+// Escape it is a run of three caves, each with its own look: a crystal cave, a lava cave and a
+// slippery ice cave. Each cave's exit is a big cave mouth out to the night sky, locked until the
+// team has found the cave's keys (1, 2, then 3), which are hidden in out-of-the-way spots. Gates
+// seal off some dead ends until someone hits their switch (fly into it, bite it or shoot it).
+// Power-ups (like Battle's) and hearts wait in the hard-to-reach spots: a living bat that flies
+// to a fallen teammate spends one of the team's hearts to revive it. Out of the last cave, the
+// bats fly off into the night. Hunt stays one crystal cave (its exit opens on monsters, not keys).
+//
 // Same shape as duel.js, so the lobby can launch it the same way:
 //   local   everyone on one device (split touch zones / shared keyboard), plus CPU bats
 //   host    this device simulates the run for an online room and streams snapshots
@@ -59,6 +68,32 @@
     hunt: { scroll: 0.85, stun: 1, ghost: 1, owl: 1, sense: 1.1, swoops: 3, wave: 8 },
   };
   const HUNT_TIME = 150, COMBO_TIME = 2.5, MAX_COMBO = 5;
+  // Explore extras. The team keeps the hearts it finds (up to TEAM_HEARTS) to revive fallen bats:
+  // a living bat within REVIVE_R of one brings it back with REVIVE_HEARTS. The exit opens for a bat
+  // within EXIT_R of the cave mouth's middle once every key is found; the team then flies off
+  // (EXIT_IN s into the mouth, then the night sky: EXIT_NEXT s in all between caves, EXIT_FINAL after the last).
+  const TEAM_HEARTS = 5, REVIVE_R = 1.15, REVIVE_HEARTS = 2, EXIT_R = 1.6, MOUTH_R = 2.4;
+  const EXIT_IN = 1.4, EXIT_NEXT = 4.4, EXIT_FINAL = 8.5, SWITCH_R = 0.42;
+  // Power-ups, with Battle's names, colours and icons. Speed, Shield, Mega Screech and Echo Frenzy
+  // work the moment you grab them (a Mega Screech or a Frenzy only lights the cave: echoes never
+  // stun monsters). Fireball, Freeze and Ghost are held for the POWER button (E or Q): Fireball and
+  // Freeze last TIMED_LIFE s from the first use; a fireball knocks out the monster it hits, a freeze
+  // blast freezes monsters around you solid for FREEZE_TIME s (bite them while they're frozen);
+  // Ghost lets you fly through rock and gates for GHOST_TIME s.
+  const PW = {
+    mega: { label: 'MEGA SCREECH', rgb: '255, 226, 120', name: 'Mega' },
+    speed: { label: 'SPEED', rgb: '120, 255, 170', name: 'Speed' },
+    shield: { label: 'SHIELD', rgb: '150, 240, 255', name: 'Shield' },
+    frenzy: { label: 'ECHO FRENZY', rgb: '255, 120, 200', name: 'Frenzy' },
+    fire: { label: 'FIREBALL', rgb: '255, 112, 40', name: 'Fireball', special: true },
+    freeze: { label: 'FREEZE', rgb: '110, 210, 255', name: 'Freeze', special: true },
+    ghost: { label: 'GHOST', rgb: '214, 196, 255', name: 'Ghost', special: true },
+  };
+  const PTYPES = Object.keys(PW);
+  const TIMED_LIFE = 8, FIRE_SPEED = 10, FIRE_LIFE = 1.4, FIRE_R = 0.26, FREEZE_R = 2.6, FREEZE_TIME = 4, GHOST_TIME = 5;
+  const SPEED_TIME = 6, FRENZY_TIME = 5;
+  const GATE_COLS = ['255, 204, 90', '120, 255, 210', '255, 140, 235'];
+  const KEY_RGB = '255, 214, 90', HEART_RGB = '255, 107, 138';
   // Explore: the Hunt clock runs this much longer (the cave is big); monsters farther than WAKE_X / WAKE_Y
   // tiles from every bat sleep; a lantern lights when a living bat comes within LANTERN_R
   const HUNT_EXPLORE = 1.6, WAKE_X = 15, WAKE_Y = 10, LANTERN_R = 2.4;
@@ -92,16 +127,16 @@
     { name: 'Bo', color: '#ffb347', rgb: '255, 179, 71' },
   ];
   const KEYMAP = [
-    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], slash: ['KeyX'] },
-    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], slash: ['Comma'] },
-    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], slash: ['KeyO'] },
-    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], slash: ['NumpadSubtract'] },
+    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], slash: ['KeyX'], special: ['KeyE', 'KeyQ'] },
+    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], slash: ['Comma'], special: ['KeyM'] },
+    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], slash: ['KeyO'], special: ['KeyY'] },
+    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], slash: ['NumpadSubtract'], special: ['NumpadMultiply'] },
   ];
   const COL = {
     wall: '74, 222, 255', moth: '255, 226, 120', dust: '190, 200, 230', crystal: '150, 240, 255', exit: '120, 255, 170',
     danger: '255, 84, 104', owl: '255, 196, 64', stun: '255, 226, 120', ghost: '255, 190, 235', crawl: '160, 255, 120',
   };
-  const PHASES = ['count', 'play', 'wipe', 'win', 'lose'];
+  const PHASES = ['count', 'play', 'wipe', 'win', 'lose', 'exit'];
   const TITLES = { classic: 'Co-op Run', escape: 'Escape', hunt: 'Hunt' };
   const KINDS = ['spider', 'crawler', 'owl', 'ghost'];
   const MSTATES = ['hang', 'tell', 'drop', 'hold', 'climb', 'perch', 'swoop', 'recover', 'leave', 'walk', 'leap', 'drift', 'chase', 'fall', 'out'];
@@ -115,11 +150,15 @@
   // the map (start option `map`): 'scroll' (the side-scrolling run) or 'explore' (a big cave to roam, no scrolling)
   const MAPS = ['scroll', 'explore'];
   let mapKind = 'scroll', explore = false, huntGoal = 0;
+  // Explore: which cave of the run (0..2) and its look (an ECHO_ARENAS theme); the hearts the team
+  // carries; fireballs in flight; how long the fly-off has been playing; time spent in this cave
+  let stage = 0, TH = null, teamHearts = 0, shots = [], shotId = 0, exitClock = 0, caveTime = 0, amb = [];
   let hunt = { left: HUNT_TIME, wave: 0, waveT: 0, bonus: 0 }, spawnT = 0;
   let bats = [], rings = [], particles = [], popups = [], outbox = [];
   // crystal bursts in flight: { id (the shard's), seed, by (whose echo), age, dead (bitmask), bits }
   let bursts = [];
   let chomps = [];   // dive-bite mouths snapping shut (cosmetic)
+  let novas = [], revives = [];   // freeze blasts and revive rings (cosmetic)
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
   let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '';
@@ -131,17 +170,21 @@
     const lv = {
       def, w, h, grid: new Uint8Array(w * h), lit: new Float32Array(w * h),
       start: { x: 5.5, y: 6.5 }, goal: { x: w - 6.5, y: 6.5 }, moths: [], crystals: [], checkpoints: [], monsters: [], shards: [],
+      keys: [], hearts: [], powers: [], gates: [], gateAt: new Int16Array(w * h).fill(-1),
     };
     const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
     const specs = [];
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const c = ch(x, y), cx = x + 0.5, cy = y + 0.5;
-        lv.grid[y * w + x] = c === '#' ? 1 : 0;
+        lv.grid[y * w + x] = c === '#' || c === 'G' ? 1 : 0;
         if (c === 'S') lv.start = { x: cx, y: cy };
         else if (c === 'E') lv.goal = { x: cx, y: cy };
         else if (c === 'm') lv.moths.push({ x: cx, y: cy, got: false, phase: (x * 7 + y) % 6 });
         else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: (x * 3 + y) % 6 });
+        else if (c === 'k') lv.keys.push({ x: cx, y: cy, got: false, phase: (x * 5 + y) % 6 });
+        else if (c === 'h') lv.hearts.push({ x: cx, y: cy, got: false, phase: (x * 3 + y * 7) % 6 });
+        else if (c === 'p') lv.powers.push({ x: cx, y: cy, got: false, phase: (x + y * 5) % 6, type: PW[(def.powers || {})[`${x},${y}`]] ? def.powers[`${x},${y}`] : 'speed' });
         else if (c === 'v') lv.shards.push(resetShard({ id: lv.shards.length, x: cx, y, seed: (x * 7 + y * 13) % 10 }));
         else if (c === 'K') lv.checkpoints.push({ x: cx, y: cy, floor: floorBelow(ch, x, y) });
         else if (c === 's') specs.push({ kind: 'spider', x: cx, y: y + 0.42, bot: Math.min(floorBelow(ch, x, y), def.explore ? y + 8 : 1e9) - 0.45 });
@@ -153,7 +196,15 @@
     lv.checkpoints.sort((a, b) => a.x - b.x);
     lv.monsters = specs.map((sp, id) => resetMonster({ id, ...sp, hx: sp.x, hy: sp.y }));
     lv.base = lv.monsters.length;   // monsters past this index arrived in a wave during play
+    // gates (solid until their switch is hit) and the grid the 3D view draws (a gate is drawn as bars, not rock)
+    (def.gates || []).forEach((gt, id) => {
+      lv.gates.push({ id, tiles: gt.tiles, sw: { x: gt.sw[0] + 0.5, y: gt.sw[1] + 0.5 }, open: false, t: 0, nag: -9 });
+      for (const [gx, gy] of gt.tiles) lv.gateAt[gy * w + gx] = id;
+    });
+    lv.vgrid = lv.grid.map((v, k) => (lv.gateAt[k] >= 0 ? 0 : v));
     if (def.explore) {
+      // the big cave mouth out to the night sky, in the exit chamber's back wall
+      lv.mouth = { x: lv.goal.x, y: lv.goal.y - 0.2, r: MOUTH_R };
       // Explore: how far (in tiles flown) every open tile is from the exit; lanterns in order along the way
       lv.gd = distanceField(lv, Math.floor(lv.goal.x), Math.floor(lv.goal.y));
       lv.total = Math.max(1, gdAt(lv, lv.start.x, lv.start.y));
@@ -196,9 +247,20 @@
     const d = DIFF[difficulty];
     D = { ...d, speed: d.speed * V.scroll, stun: d.stun * V.stun, ghost: d.ghost * V.ghost, owl: d.owl * V.owl, sense: d.sense * V.sense };
   }
-  const buildLevel = () => loadLevel(window.makeCoopLevel(seed, difficulty, variant, mapKind));
+  const buildLevel = () => {
+    const lv = loadLevel(window.makeCoopLevel(seed, difficulty, variant, mapKind, explore ? stage : 0));
+    const a = explore && window.ECHO_ARENAS ? window.ECHO_ARENAS[lv.def.arena | 0] : null;
+    TH = a ? a.theme : null;
+    caveTime = 0; amb = [];
+    return lv;
+  };
+  // Explore: how many caves this run has (Classic and Escape fly three, Hunt one), and the cave's look
+  const stageCount = () => (explore && L && L.def.stages) || 1;
+  const wallRgb = () => (explore && TH ? TH.wall : COL.wall);
+  const slipK = () => (explore && TH && TH.look && TH.look.ice ? TH.look.ice : 0);
+  const keysLeft = () => (L ? L.keys.reduce((n, k) => n + (k.got ? 0 : 1), 0) : 0);
   function setMap(m) { mapKind = MAPS.includes(m) ? m : 'scroll'; explore = mapKind === 'explore'; }
-  function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#') b++; return b + 1; }
+  function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#' && ch(x, b + 1) !== 'G') b++; return b + 1; }
   // a loose ceiling crystal: y is the ceiling line it hangs from (its tip is at y + SHARD_LEN)
   function resetShard(s) { return Object.assign(s, { st: 'hang', t: 0, by: -1, lit: 0 }); }
   function resetMonster(m) {
@@ -229,7 +291,8 @@
       i, ...BATS[i], ctrl, local: localSlot, x: 0, y: 0, vx: 0, vy: 0, face: 1,
       hearts: MAX_HEARTS, echoes: START_ECHOES, cooldown: 0, hurt: 0, safe: 0, ko: false, loud: 0, noEcho: 0,
       dashT: 0, dashCd: 0, biteT: 0, slashT: 0, slashCd: 0, slashA: 0, combo: 0, comboT: 0,
-      st: { moths: 0, stuns: 0, kills: 0, kos: 0, squeaks: 0, points: 0, combo: 0 },
+      power: null, powerT: 0, mega: false, shield: false, held: null, heldLeft: 0, specialCd: 0, ghostT: 0,
+      st: { moths: 0, stuns: 0, kills: 0, kos: 0, squeaks: 0, points: 0, combo: 0, keys: 0, revives: 0, powers: 0 },
       ai: ctrl === 'cpu' ? newAi(buddyLevel(i)) : null,
       look: lookFor(i, ctrl === 'cpu', looks),
     };
@@ -267,6 +330,7 @@
     setMap(o.map);
     buddyLevels = Array.isArray(o.levels) ? o.levels.slice(0, 4) : [];
     seed = o.seed != null ? (o.seed >>> 0) : Math.floor(Math.random() * 1e9);
+    stage = 0; teamHearts = 0; shots = []; exitClock = 0;
     L = buildLevel();
     bats = [];
     const lk = Array.isArray(o.looks) ? o.looks : null;
@@ -347,6 +411,38 @@
       }
       sparkle(sh.x, sh.y + SHARD_LEN / 2, 10);
       for (let k = 0; k < 6; k++) particles.push({ x: sh.x + (Math.random() - 0.5) * 0.5, y: sh.y + 0.1, vx: (Math.random() - 0.5) * 0.6, vy: Math.random() * 0.8, g: 6, life: 0.6, rgb: COL.dust, s: 3 });
+    } else if (ev.k === 'gate') {
+      // a gate opens: its bars slide up into the rock, and sparks run from the switch to the gate
+      const gt = L && L.gates[ev.id];
+      if (!gt) return;
+      applyGateOpen(gt);
+      gt.t = 0; gt.fx = true;
+      const rgb = GATE_COLS[gt.id % GATE_COLS.length];
+      const [mx, my] = gt.tiles[Math.floor(gt.tiles.length / 2)];
+      for (let k = 0; k <= 14; k++) {
+        const f = k / 14, x = gt.sw.x + (mx + 0.5 - gt.sw.x) * f, y = gt.sw.y + (my + 0.5 - gt.sw.y) * f;
+        particles.push({ x, y, vx: (Math.random() - 0.5) * 0.6, vy: -0.4 - Math.random() * 0.6, life: 0.5 + f * 0.9, rgb, s: 4 });
+      }
+      for (const [x, y] of gt.tiles) burst(x + 0.5, y + 0.5, rgb, 8, 3);
+      sparkle(gt.sw.x, gt.sw.y - 0.2, 8);
+      lightAround(mx + 0.5, my + 0.5, 3.5); lightAround(gt.sw.x, gt.sw.y, 2.5);
+      const s2 = (window.EchoAudio && window.EchoAudio.sfx) || {};
+      (s2.gate || s2.wallUp)?.();
+    } else if (ev.k === 'nova') {
+      novas.push({ x: ev.x, y: ev.y, t: 0 });
+      if (L) lightAround(ev.x, ev.y, FREEZE_R + 0.8);
+      for (let k = 0; k < 18; k++) {
+        const a = (k / 18) * Math.PI * 2, v = 4 + Math.random() * 2;
+        particles.push({ x: ev.x, y: ev.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.45 + Math.random() * 0.2, rgb: k % 2 ? '220, 248, 255' : PW.freeze.rgb, s: 4 });
+      }
+    } else if (ev.k === 'revive') {
+      // a ring of hearts bursts out and floats up around the bat coming back
+      revives.push({ x: ev.x, y: ev.y, t: 0, rgb: bats[ev.b]?.rgb || HEART_RGB });
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2;
+        particles.push({ x: ev.x + Math.cos(a) * 0.4, y: ev.y + Math.sin(a) * 0.4, vx: Math.cos(a) * 1.6, vy: Math.sin(a) * 1.6 - 1.4, life: 1 + Math.random() * 0.4, rgb: HEART_RGB, heart: true });
+      }
+      burst(ev.x, ev.y, HEART_RGB, 16, 3);
     } else if (ev.k === 'cut') {
       // a snapped spider thread: where it broke, for the two halves springing back
       const m = L && L.monsters[ev.id];
@@ -381,6 +477,7 @@
       if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'squeak');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
       if (keysFor(slot, 'slash').includes(e.code)) act(slot, 'slash');
+      if (keysFor(slot, 'special').includes(e.code)) act(slot, 'special');
     }
   });
   addEventListener('keyup', (e) => keys.delete(e.code));
@@ -396,6 +493,9 @@
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
   const inDashButton = (cx, cy) => inButton(dashButton(), cx, cy);
+  // While you hold a special power-up, a POWER button pops up above DASH (as in Battle)
+  const powerButton = () => { const d = dashButton(), r = 36; return { x: d.x, y: d.y - d.r - 14 - r, r }; };
+  const powerShown = () => localCount === 1 && phase === 'play' && !!localBat(0)?.held && !localBat(0).ko;
   const inSlashButton = (cx, cy) => inButton(slashButton(), cx, cy);
   function zoneAt(clientX, clientY) {
     const n = localCount;
@@ -410,6 +510,7 @@
     e.preventDefault();
     window.EchoAudio?.unlock?.();
     if (e.pointerType === 'touch') touchUsed = true;
+    if (powerShown() && inButton(powerButton(), e.clientX, e.clientY)) { act(0, 'special'); return; }
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
     if (touchUsed && inSlashButton(e.clientX, e.clientY)) { act(0, 'slash'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
@@ -457,7 +558,7 @@
     if (paused) return;
     const b = localBat(slot);
     if (!b) return;
-    if ((a === 'dash' || a === 'slash') && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
+    if ((a === 'dash' || a === 'slash' || a === 'special') && !(Math.hypot(dx || 0, dy || 0) > 0.1)) {
       const { ix, iy } = localInput(slot);
       if (Math.hypot(ix, iy) > 0.2) { dx = ix; dy = iy; }
     }
@@ -472,6 +573,7 @@
     if (a === 'squeak' || a === 'charge') squeak(b);
     else if (a === 'dash') dash(b, dx, dy);
     else if (a === 'slash') slash(b, dx, dy);
+    else if (a === 'special') useSpecial(b, dx, dy);
   }
 
   // ---- Online hooks (host side) -------------------------------------------
@@ -479,7 +581,7 @@
     const b = bats[slot];
     if (!b || b.ctrl !== 'remote' || mode !== 'host' || !msg) return;
     if (msg.t === 'in') remoteInput.set(slot, { ix: Math.max(-1, Math.min(1, +msg.ix || 0)), iy: Math.max(-1, Math.min(1, +msg.iy || 0)) });
-    else if (msg.t === 'act' && ['squeak', 'charge', 'dash', 'slash'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
+    else if (msg.t === 'act' && ['squeak', 'charge', 'dash', 'slash', 'special'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
   }
   function dropRemote(slot) {
     const b = bats[slot];
@@ -494,17 +596,23 @@
   const canAct = (b) => active && b && phase === 'play' && !b.ko;
   function squeak(b) {
     if (!canAct(b) || b.cooldown > 0) return;
-    b.cooldown = SQUEAK_COOLDOWN;
-    if (b.echoes <= 0) {
+    // Echo Frenzy: free, rapid squeaks for a while
+    const frenzy = b.power === 'frenzy';
+    b.cooldown = frenzy ? 0.15 : SQUEAK_COOLDOWN;
+    if (b.echoes <= 0 && !frenzy) {
       b.noEcho = 0.6;
       if (b.ctrl === 'local') applyFx({ k: 'sfx', n: 'empty' });
       return;
     }
-    b.echoes--;
+    if (!frenzy) b.echoes--;
     b.loud = LOUD_TIME;
     b.st.squeaks++;
-    rings.push({ id: ++ringId, x: b.x, y: b.y, r: 0, owner: b.i, hit: new Set() });
+    // Mega Screech: the next squeak lights twice as far (it stuns nothing either)
+    const mega = b.mega;
+    b.mega = false;
+    rings.push({ id: ++ringId, x: b.x, y: b.y, r: 0, owner: b.i, hit: new Set(), max: mega ? RING_MAX * 2.1 : RING_MAX });
     fx({ k: 'sfx', n: 'squeak' });
+    if (mega) { fx({ k: 'sfx', n: 'beam', alt: 'squeak' }); fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: 'MEGA!', rgb: PW.mega.rgb, life: 0.8 }); }
   }
   function dash(b, dx, dy) {
     if (!canAct(b) || b.dashCd > 0) return;
@@ -552,10 +660,207 @@
     }
     // flying crystal pieces get swatted out of the air
     for (const bu of bursts) for (const p of bu.bits) if (bitLive(bu, p) && inArc(b, p.x, p.y, BIT_R)) breakBit(bu, p, 6);
+    // and a bite flips a switch
+    if (L.gates) for (const gt of L.gates) if (!gt.open && inArc(b, gt.sw.x, gt.sw.y, SWITCH_R)) hitSwitch(gt, b);
+  }
+
+  // ---- Explore: power-ups, keys, hearts, switches and gates, reviving --------------
+  function useSpecial(b, dx, dy) {
+    if (!canAct(b) || !b.held || b.specialCd > 0) return;
+    const type = b.held;
+    if (type === 'ghost') {
+      b.held = null; b.ghostT = GHOST_TIME;
+      fx({ k: 'burst', x: b.x, y: b.y, rgb: PW.ghost.rgb, n: 16, sp: 2.5 });
+      fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: 'GHOST!', rgb: PW.ghost.rgb, life: 0.9 });
+      fx({ k: 'sfx', n: 'ghost', alt: 'power' });
+      return;
+    }
+    if (!b.heldLeft) b.heldLeft = TIMED_LIFE;
+    let ux = dx, uy = dy;
+    if (!(Math.hypot(ux || 0, uy || 0) > 0.1)) {
+      const sp = Math.hypot(b.vx, b.vy);
+      if (sp > 0.6) { ux = b.vx / sp; uy = b.vy / sp; } else { ux = b.face || 1; uy = 0; }
+    }
+    const len = Math.hypot(ux, uy) || 1;
+    ux /= len; uy /= len;
+    if (Math.abs(ux) > 0.2) b.face = Math.sign(ux);
+    const cpu = b.ctrl === 'cpu';
+    if (type === 'fire') {
+      b.specialCd = cpu ? 0.35 : 0.1;
+      const mine = shots.filter((o) => o.owner === b.i);
+      if (mine.length >= 10) shots.splice(shots.indexOf(mine[0]), 1);
+      shots.push({ id: ++shotId, x: b.x + ux * 0.3, y: b.y + uy * 0.3, vx: ux * FIRE_SPEED, vy: uy * FIRE_SPEED, owner: b.i, t: 0 });
+      fx({ k: 'sfx', n: 'fire', alt: 'dash' });
+    } else if (type === 'freeze') {
+      b.specialCd = cpu ? 1.6 : 0.6;
+      fx({ k: 'nova', x: r2(b.x), y: r2(b.y) });
+      fx({ k: 'sfx', n: 'freeze' });
+      for (const m of L.monsters) {
+        if (m.dead || downed(m) || m.st === 'leave' || Math.hypot(m.x - b.x, m.y - b.y) > FREEZE_R + m.r) continue;
+        if (variant === 'escape') { m.stun = Math.max(m.stun, 1.6); repel(m, b.x, b.y, 3); }
+        else { m.stun = Math.max(m.stun, FREEZE_TIME); m.ice = FREEZE_TIME; m.vx = 0; m.vy = 0; }
+        b.st.stuns++;
+        fx({ k: 'popup', x: m.x, y: m.y - 0.6, text: 'FROZEN!', rgb: PW.freeze.rgb, life: 0.8 });
+      }
+      for (const bu of bursts) for (const p of bu.bits) if (bitLive(bu, p) && Math.hypot(p.x - b.x, p.y - b.y) < FREEZE_R) breakBit(bu, p, 4);
+      for (const gt of L.gates) if (!gt.open && Math.hypot(gt.sw.x - b.x, gt.sw.y - b.y) < FREEZE_R) hitSwitch(gt, b);
+    }
+  }
+  // host: fireballs fly straight, light the cave around them, knock out the first monster they
+  // hit (in Escape: knock it back), flip a switch, and burst on rock
+  function updateShots(dt) {
+    for (const sh of shots) {
+      sh.t += dt;
+      const steps = Math.max(1, Math.ceil(FIRE_SPEED * dt / 0.2));
+      for (let k = 0; k < steps && !sh.dead; k++) {
+        sh.x += sh.vx * dt / steps; sh.y += sh.vy * dt / steps;
+        if (solidAt(sh.x, sh.y) || sh.t > FIRE_LIFE) { sh.dead = true; fx({ k: 'burst', x: r2(sh.x - sh.vx * 0.02), y: r2(sh.y - sh.vy * 0.02), rgb: PW.fire.rgb, n: 10, sp: 2.5 }); break; }
+        const b = bats[sh.owner];
+        for (const m of L.monsters) {
+          if (m.dead || downed(m) || m.st === 'leave' || Math.abs(m.x - sh.x) > 1 || Math.hypot(m.x - sh.x, m.y - sh.y) > m.r + FIRE_R) continue;
+          if (b) hitMonster(m, b, 'fire');
+          sh.dead = true;
+          fx({ k: 'burst', x: r2(sh.x), y: r2(sh.y), rgb: PW.fire.rgb, n: 14, sp: 3 });
+          break;
+        }
+        for (const gt of L.gates) if (!gt.open && b && Math.hypot(gt.sw.x - sh.x, gt.sw.y - sh.y) < SWITCH_R + FIRE_R) { hitSwitch(gt, b); sh.dead = true; }
+        for (const bu of bursts) for (const p of bu.bits) if (bitLive(bu, p) && Math.hypot(p.x - sh.x, p.y - sh.y) < FIRE_R + BIT_R) breakBit(bu, p, 4);
+      }
+    }
+    shots = shots.filter((sh) => !sh.dead);
+  }
+  // every device: fireballs and freeze blasts light the cave like sound does
+  function lightAround(x, y, r) {
+    for (let ty = Math.max(0, Math.floor(y - r)); ty <= Math.min(L.h - 1, Math.floor(y + r)); ty++) {
+      for (let tx = Math.max(0, Math.floor(x - r)); tx <= Math.min(L.w - 1, Math.floor(x + r)); tx++) {
+        const d = Math.hypot(tx + 0.5 - x, ty + 0.5 - y), k = ty * L.w + tx;
+        if (d < r) L.lit[k] = Math.max(L.lit[k], Math.min(1, 1.3 - d / r));
+      }
+    }
+  }
+  function grabPower(b, p) {
+    p.got = true; gotDirty = true; b.st.powers++;
+    const pw = PW[p.type];
+    if (pw.special) { b.held = p.type; b.heldLeft = 0; b.specialCd = 0; }
+    else if (p.type === 'mega') b.mega = true;
+    else if (p.type === 'shield') b.shield = true;
+    else { b.power = p.type; b.powerT = p.type === 'speed' ? SPEED_TIME : FRENZY_TIME; }
+    fx({ k: 'burst', x: p.x, y: p.y, rgb: pw.rgb, n: 16 });
+    fx({ k: 'popup', x: b.x, y: b.y - 0.9, text: pw.label, rgb: pw.rgb, life: 1.1 });
+    fx({ k: 'sfx', n: 'power' });
+  }
+  // a switch is hit: its gate opens (every device opens it from the 'gate' effect)
+  function hitSwitch(gt, b) {
+    if (gt.open) return;
+    applyGateOpen(gt);
+    fx({ k: 'gate', id: gt.id });
+    fx({ k: 'shake', v: 0.25 });
+    fx({ k: 'banner', text: 'A gate opened!', sub: `${b.name} hit the switch`, rgb: GATE_COLS[gt.id % GATE_COLS.length], t: 1.8 });
+  }
+  function applyGateOpen(gt) {
+    if (gt.open) return;
+    gt.open = true; gt.t = 0;
+    for (const [x, y] of gt.tiles) L.grid[y * L.w + x] = 0;
+    if (L.def.explore) L.gd = distanceField(L, Math.floor(L.goal.x), Math.floor(L.goal.y));
+    gotDirty = true;
+  }
+  // a living bat reaches a fallen teammate: one of the team's hearts brings it back
+  function revive(d, r) {
+    teamHearts--;
+    r.st.revives++;
+    Object.assign(d, { ko: false, hearts: REVIVE_HEARTS, safe: REVIVE_SAFE, vx: 0, vy: 0, hurt: 0 });
+    if (hitsWall(d.x, d.y, R)) {
+      const spot = [[0, -0.9], [0, 0.9], [-0.9, 0], [0.9, 0], [0, 0]].map(([ox2, oy2]) => ({ x: r.x + ox2, y: r.y + oy2 })).find((p) => !hitsWall(p.x, p.y, R + 0.05));
+      d.x = spot ? spot.x : r.x; d.y = spot ? spot.y : r.y;
+    }
+    fx({ k: 'revive', b: d.i, x: r2(d.x), y: r2(d.y) });
+    fx({ k: 'sfx', n: 'revive', alt: 'heartUp' });
+    fx({ k: 'banner', text: `${d.name} is back!`, sub: `${r.name} used a heart${teamHearts ? ` · ${teamHearts} left` : ''}`, rgb: d.rgb, t: 1.8 });
+  }
+  // Explore pickups and the switches, for a living bat
+  function explorePickups(b) {
+    const close = (o, r = 0.62) => Math.abs(o.x - b.x) < r + 0.1 && Math.hypot(o.x - b.x, o.y - b.y) < r;
+    for (const k of L.keys) {
+      if (k.got || !close(k, 0.66)) continue;
+      k.got = true; gotDirty = true; b.st.keys++;
+      const left = keysLeft(), n = L.keys.length;
+      fx({ k: 'burst', x: k.x, y: k.y, rgb: KEY_RGB, n: 22, sp: 3.5 });
+      fx({ k: 'popup', x: k.x, y: k.y - 0.7, text: `KEY ${n - left}/${n}`, rgb: KEY_RGB, life: 1.3 });
+      fx({ k: 'sfx', n: 'key', alt: 'checkpoint' });
+      if (!left) fx({ k: 'banner', text: n > 1 ? 'All the keys!' : 'You found the key!', sub: 'The exit is open: fly out through the big cave mouth', rgb: KEY_RGB, t: 2.6 });
+      else fx({ k: 'banner', text: `Key ${n - left} of ${n}!`, sub: `${left} more to find`, rgb: KEY_RGB, t: 1.8 });
+    }
+    for (const h of L.hearts) {
+      if (h.got || !close(h)) continue;
+      // the team keeps it for reviving; with a full bag it heals whoever grabbed it instead
+      if (teamHearts < TEAM_HEARTS) teamHearts++;
+      else if (b.hearts < MAX_HEARTS) b.hearts++;
+      else continue;
+      h.got = true; gotDirty = true;
+      fx({ k: 'burst', x: h.x, y: h.y, rgb: HEART_RGB, n: 16 });
+      fx({ k: 'popup', x: h.x, y: h.y - 0.7, text: '+1 ♥', rgb: HEART_RGB, life: 1 });
+      fx({ k: 'sfx', n: 'heartUp', alt: 'moth' });
+    }
+    for (const p of L.powers) if (!p.got && close(p)) grabPower(b, p);
+    for (const gt of L.gates) {
+      if (gt.open) continue;
+      if (Math.hypot(gt.sw.x - b.x, gt.sw.y - b.y) < R + SWITCH_R) hitSwitch(gt, b);
+      // flying up to a shut gate: a nudge to go and find its switch
+      else if (clock - gt.nag > 6 && gt.tiles.some(([x, y]) => Math.hypot(x + 0.5 - b.x, y + 0.5 - b.y) < 1.6)) {
+        gt.nag = clock;
+        const [x, y] = gt.tiles[Math.floor(gt.tiles.length / 2)];
+        fx({ k: 'popup', x: x + 0.5, y: y - 0.3, text: 'Find the switch!', rgb: GATE_COLS[gt.id % GATE_COLS.length], life: 1.6 });
+      }
+    }
+  }
+  // a fallen bat's ghost that a heart can bring back, and a bat stuck in rock after Ghost wears off
+  function unGhost(b) {
+    b.ghostT = 0;
+    if (!hitsWall(b.x, b.y, R)) return;
+    let best = null, bd = 1e9;
+    for (let ty = Math.floor(b.y) - 6; ty <= Math.floor(b.y) + 6; ty++) {
+      for (let tx = Math.floor(b.x) - 6; tx <= Math.floor(b.x) + 6; tx++) {
+        const d = Math.hypot(tx + 0.5 - b.x, ty + 0.5 - b.y);
+        if (d < bd && !hitsWall(tx + 0.5, ty + 0.5, R + 0.04)) { bd = d; best = { x: tx + 0.5, y: ty + 0.5 }; }
+      }
+    }
+    if (best) { b.x = best.x; b.y = best.y; b.vx = b.vy = 0; }
+    fx({ k: 'burst', x: b.x, y: b.y, rgb: PW.ghost.rgb, n: 10 });
+  }
+
+  // ---- Explore: out of the cave mouth, and on to the next cave ------------------
+  function startExit() {
+    const final = stage >= stageCount() - 1;
+    setPhase('exit', final ? EXIT_FINAL : EXIT_NEXT);
+    exitClock = 0; shots = []; rings = [];
+    for (const b of bats) { b.dashT = 0; b.biteT = 0; b.ghostT = 0; }
+    fx({ k: 'sfx', n: 'flyoff', alt: 'win' });
+    if (!final) fx({ k: 'banner', text: `${L.def.stageName || 'Cave'} cleared!`, sub: 'Out into the night...', rgb: COL.exit, t: EXIT_IN });
+  }
+  function nextLevel() {
+    stage++;
+    L = buildLevel();
+    cpIndex = -1; tries = TRIES; huntOpened = false; exitNag = null;
+    rings = []; bursts = []; shots = []; particles = []; popups = []; chomps = []; camF = null;
+    gotDirty = true; shardDirty = true; lastDead = '';
+    for (const b of bats) {
+      Object.assign(b, { ko: false, hearts: MAX_HEARTS, echoes: Math.max(b.echoes, START_ECHOES), safe: 0, hurt: 0, cooldown: 0, dashCd: 0, slashCd: 0, loud: 0, ghostT: 0 });
+      if (b.ai) b.ai.path = [];
+    }
+    placeTeam(L.start.x, L.start.y);
+    setPhase('count', 3);
   }
 
   function hurtBat(b, fromX, fromY) {
     if (b.ko || b.hurt > 0 || b.safe > 0) return;
+    if (b.shield) {
+      // a shield takes the hit (one hit)
+      b.shield = false; b.safe = 0.9;
+      fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: 'BLOCKED', rgb: PW.shield.rgb, life: 0.8 });
+      fx({ k: 'burst', x: b.x, y: b.y, rgb: PW.shield.rgb, n: 14 });
+      fx({ k: 'sfx', n: 'block' });
+      return;
+    }
     b.hearts--;
     b.hurt = HURT_TIME;
     const dx = b.x - fromX, dy = b.y - fromY, d = Math.hypot(dx, dy) || 1;
@@ -572,8 +877,10 @@
     fx({ k: 'burst', x: b.x, y: b.y, rgb: b.rgb, n: 22, sp: 4 });
     fx({ k: 'sfx', n: 'crash' });
     fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: crushed ? 'CAUGHT!' : 'KO!', rgb: COL.danger, life: 1.4 });
+    b.held = null; b.heldLeft = 0; b.power = null; b.shield = false; b.mega = false; b.ghostT = 0;
     const team = bats.filter((o) => !o.ko);
-    if (team.length) fx({ k: 'banner', text: `${b.name} is down!`, sub: 'Reach the next lantern to revive', rgb: b.rgb, t: 2 });
+    const sub = !explore ? 'Reach the next lantern to revive' : teamHearts > 0 ? 'Fly to them to spend a heart and revive them' : 'Find a heart to revive them, or reach the next lantern';
+    if (team.length) fx({ k: 'banner', text: `${b.name} is down!`, sub, rgb: b.rgb, t: 2 });
     else wipe();
   }
   function wipe() {
@@ -607,7 +914,7 @@
     for (const c of L.crystals) if (explore || c.x >= scroll.x) c.got = false;
     for (const s of L.shards) if (back(s.x)) resetShard(s);   // loose crystals grow back too
     gotDirty = true; shardDirty = true;
-    rings = []; bursts = [];
+    rings = []; bursts = []; shots = [];
     for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;
     setPhase('count', 2);
   }
@@ -624,7 +931,7 @@
         alive.forEach((b, k) => { b.st.points += each + (k === 0 ? hunt.bonus - each * alive.length : 0); });
       }
     }
-    const team = { moths: 0, stuns: 0, kills: 0, kos: 0, points: 0 };
+    const team = { moths: 0, stuns: 0, kills: 0, kos: 0, points: 0, keys: 0, revives: 0 };
     for (const b of bats) for (const k in team) team[k] += b.st[k];
     const players = bats.map((b) => ({ slot: b.i, name: b.name, color: b.color, cpu: (b.ctrl === 'cpu' && !b.was) || !!b.cpuFlag, alive: !b.ko, ...b.st }));
     const top = [...players].sort((a, b) => b.points - a.points || b.kills - a.kills)[0];
@@ -632,10 +939,12 @@
       won, how, variant, difficulty, seed, map: mapKind, time: Math.round(playTime), triesUsed: TRIES - tries + (won ? 1 : 0), triesTotal: TRIES,
       checkpoint: cpIndex + 1, checkpoints: L.checkpoints.length, progress: Math.round(progress() * 100) / 100,
       mothsTotal: L.moths.length, team, players,
+      // Explore: how far through the run of caves
+      stage: explore ? stage + 1 : 1, stages: stageCount(),
     };
     if (variant === 'hunt') Object.assign(result, { score: team.points, bonus: hunt.bonus, waves: hunt.wave, best: top && top.points > 0 ? top.slot : -1 });
     const text = {
-      classic: won ? ['You made it out!', 'The whole team is free'] : ['Out of tries', 'The monsters win this time'],
+      classic: won ? [explore && stageCount() > 1 ? 'Free at last!' : 'You made it out!', 'The whole team is free'] : ['Out of tries', 'The monsters win this time'],
       escape: won ? ['You escaped!', 'Not a single monster could stop you'] : ['Caught in the dark', 'The chasers win this time'],
       hunt: how === 'time' ? ['Time!', `Team score ${team.points}`] : won ? ['Out with the loot!', `Team score ${team.points} · bonus ${hunt.bonus}`] : ['Out of tries', `Team score ${team.points}`],
     }[variant];
@@ -675,7 +984,7 @@
   // Explore Hunt: the exit opens once the team has knocked out huntGoal monsters
   const teamKills = () => bats.reduce((t, b) => t + b.st.kills, 0);
   const huntKills = () => (mode === 'client' ? hunt.kills | 0 : teamKills());
-  const exitOpen = () => !huntGoal || huntKills() >= huntGoal;
+  const exitOpen = () => (!huntGoal || huntKills() >= huntGoal) && keysLeft() === 0;
   const sectionSpeed = () => SPEEDS[Math.max(0, Math.min(3, Math.floor((scroll.x + VIEW_W / 2) / (L.w / 4))))] * D.speed;
 
   function update(dt) {
@@ -692,6 +1001,24 @@
       b.slashCd = Math.max(0, b.slashCd - dt);
       if (b.slashT > 0 && (b.slashT -= dt) > 0 && phase === 'play' && !b.ko) slashHits(b);
       if (b.comboT > 0 && (b.comboT -= dt) <= 0) b.combo = 0;
+      if (phase !== 'play') continue;
+      // power-ups wear off
+      if (b.power && (b.powerT -= dt) <= 0) { b.power = null; b.powerT = 0; }
+      b.specialCd = Math.max(0, b.specialCd - dt);
+      if (b.held && b.heldLeft > 0 && (b.heldLeft -= dt) <= 0) {
+        fx({ k: 'popup', x: b.x, y: b.y - 0.9, text: `${PW[b.held].label} OVER`, rgb: PW[b.held].rgb, life: 0.8 });
+        b.held = null; b.heldLeft = 0;
+      }
+      if (b.ghostT > 0 && (b.ghostT -= dt) <= 0) unGhost(b);
+    }
+    if (phase === 'exit') {
+      // the team flies out of the cave mouth (and, between caves, on to the next one)
+      phaseT -= dt;
+      exitFlight(dt);
+      fadeLight(dt);
+      if (phaseT <= 0) { if (stage >= stageCount() - 1) finish(true); else nextLevel(); }
+      broadcast(dt);
+      return;
     }
     if (phase === 'count') {
       const before = Math.ceil(countdown);
@@ -752,6 +1079,8 @@
     shardDust(dt);
     updateBursts(dt, true);
     if (phase !== 'play') { broadcast(dt); return; }
+    if (shots.length) updateShots(dt);
+    caveTime += dt;
     for (const m of L.monsters) updateMonster(m, dt);
     if (phase !== 'play') { broadcast(dt); return; }
     contacts();
@@ -773,6 +1102,15 @@
         fx({ k: 'burst', x: c.x, y: c.y, rgb: COL.crystal, n: 12 });
         fx({ k: 'popup', x: c.x, y: c.y - 0.6, text: `+${CRYSTAL_ECHOES} ECHOES`, rgb: COL.crystal, life: 0.8 });
         fx({ k: 'sfx', n: 'crystal' });
+      }
+      if (explore) explorePickups(b);
+    }
+    // Explore: a living bat that reaches a fallen teammate spends one of the team's hearts on it
+    if (explore && teamHearts > 0) {
+      for (const d of bats) {
+        if (!d.ko || teamHearts <= 0) continue;
+        const r = bats.find((o) => !o.ko && Math.hypot(o.x - d.x, o.y - d.y) < REVIVE_R);
+        if (r) revive(d, r);
       }
     }
 
@@ -806,12 +1144,15 @@
       }
     }
 
-    // the green light at the end (Explore Hunt: shut until enough monsters are knocked out)
-    const atExit = bats.some((b) => !b.ko && Math.hypot(L.goal.x - b.x, L.goal.y - b.y) < 0.95);
-    if (atExit && exitOpen()) finish(true);
+    // the green light at the end (Explore: the big cave mouth, locked until every key is found;
+    // Explore Hunt: shut until enough monsters are knocked out)
+    const atExit = bats.some((b) => !b.ko && Math.hypot(L.goal.x - b.x, L.goal.y - b.y) < (explore ? EXIT_R : 0.95));
+    if (atExit && exitOpen()) { if (explore) startExit(); else finish(true); }
     else if (atExit && clock - (exitNag || -9) > 2.5) {
       exitNag = clock;
-      fx({ k: 'banner', text: 'The exit is shut', sub: `Knock out ${huntGoal - teamKills()} more monster${huntGoal - teamKills() === 1 ? '' : 's'} to open it`, rgb: COL.owl, t: 1.6 });
+      const kl = keysLeft(), hl = huntGoal - teamKills();
+      if (kl) fx({ k: 'banner', text: 'The exit is locked', sub: `Find ${kl} more key${kl === 1 ? '' : 's'} to open it`, rgb: KEY_RGB, t: 1.8 });
+      else fx({ k: 'banner', text: 'The exit is shut', sub: `Knock out ${hl} more monster${hl === 1 ? '' : 's'} to open it`, rgb: COL.owl, t: 1.6 });
     }
     if (huntGoal && !huntOpened && exitOpen()) {
       huntOpened = true;
@@ -822,22 +1163,33 @@
   }
 
   function moveBat(b, ix, iy, dt) {
+    // Explore's ice cave is slippery (as in Battle): less grip to turn or stop, and walls bounce
+    // harder. CPU buddies get a little more grip so they can still keep up.
+    const slip = slipK() * (b.ctrl === 'cpu' ? 0.7 : 1), fast = b.power === 'speed';
     if (b.dashT > 0) {
       b.dashT -= dt;
       if (Math.random() < 0.6) particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, rgb: b.rgb });
-    } else if (ix || iy) { b.vx += ix * ACCEL * dt; b.vy += iy * ACCEL * dt; }
-    else { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
+    } else if (ix || iy) { const acc = ACCEL * (fast ? 1.3 : 1) * (1 - 0.62 * slip); b.vx += ix * acc * dt; b.vy += iy * acc * dt; }
+    else { const dr = DRAG * (1 - 0.82 * slip); b.vx -= b.vx * dr * dt; b.vy -= b.vy * dr * dt; }
     // CPU buddies fly a little slower than people can
     const slow = b.ctrl === 'cpu' && b.ai ? BUDDY[b.ai.skill].speed : 1;
-    const maxSp = b.dashT > 0 ? DASH_SPEED : MAX_SPEED * slow, sp = Math.hypot(b.vx, b.vy);
+    const maxSp = b.dashT > 0 ? DASH_SPEED : MAX_SPEED * slow * (fast ? 1.45 : 1), sp = Math.hypot(b.vx, b.vy);
     if (sp > maxSp) { b.vx *= maxSp / sp; b.vy *= maxSp / sp; }
     if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
+    if (fast && Math.random() < 0.4) particles.push({ x: b.x - b.vx * 0.05, y: b.y - b.vy * 0.05, vx: 0, vy: 0, life: 0.3, rgb: PW.speed.rgb, s: 3 });
+    // Ghost: straight through rock and gates (but not off the map)
+    if (b.ghostT > 0) {
+      b.x = Math.max(1.3, Math.min(L.w - 1.3, b.x + b.vx * dt));
+      b.y = Math.max(1.3, Math.min(L.h - 1.3, b.y + b.vy * dt));
+      return;
+    }
+    const bounce = 0.25 + 0.35 * slip;
     const steps = Math.max(1, Math.ceil((Math.hypot(b.vx, b.vy) * dt) / 0.2)), sdt = dt / steps;
     for (let k = 0; k < steps; k++) {
       const nx = b.x + b.vx * sdt;
-      if (!hitsWall(nx, b.y, R)) b.x = nx; else { b.vx *= -0.25; b.dashT = 0; }
+      if (!hitsWall(nx, b.y, R)) b.x = nx; else { b.vx *= -bounce; b.dashT = 0; }
       const ny = b.y + b.vy * sdt;
-      if (!hitsWall(b.x, ny, R)) b.y = ny; else { b.vy *= -0.25; b.dashT = 0; }
+      if (!hitsWall(b.x, ny, R)) b.y = ny; else { b.vy *= -bounce; b.dashT = 0; }
       if (b.dashT > 0) cutThreads(b);
     }
     // the shared screen: the right edge holds you back, the left edge pushes you on (not in Explore)
@@ -849,6 +1201,17 @@
       b.vx = Math.max(b.vx, scroll.speed);
       if (hitsWall(b.x, b.y, R)) knockOut(b, true);
     }
+  }
+  // Explore: the team (ghosts too) swirls into the cave mouth and out
+  function exitFlight(dt) {
+    const m = L.mouth || L.goal, n = Math.max(1, bats.length);
+    bats.forEach((b, k) => {
+      const a = (k / n) * Math.PI * 2 + exitClock * 4, rr = 0.7 * Math.max(0, 1 - exitClock / EXIT_IN);
+      const tx = m.x + Math.cos(a) * rr, ty = m.y + Math.sin(a) * rr * 0.7;
+      const e = Math.min(1, dt * (2.5 + exitClock * 3));
+      b.vx = Math.max(-3, Math.min(3, (tx - b.x) * 3)); b.vy = 0;
+      b.x += (tx - b.x) * e; b.y += (ty - b.y) * e;
+    });
   }
   // knocked-out bats drift through rock as ghosts, kept on screen
   function moveGhost(b, ix, iy, dt) {
@@ -913,7 +1276,7 @@
         if (!ring.crackSfx) { ring.crackSfx = true; fx({ k: 'sfx', n: 'crack', alt: 'freeze' }); }
       }
     }
-    rings = rings.filter((ring) => ring.r < RING_MAX);
+    rings = rings.filter((ring) => ring.r < (ring.max || RING_MAX));
   }
 
   // ---- Bursting crystals --------------------------------------------------------
@@ -1062,12 +1425,13 @@
     m.st = 'fall'; m.vy = -3; m.vx = dx * 2.5; m.stun = 0; m.t = 0; m.bounced = false; m.by = b.i; m.drop = false;
     if (m.kind === 'spider') fx({ k: 'cut', id: m.id, y: r2(m.y) });   // its thread springs back up
     b.st.kills++;
-    const text = score(m, b) || (how === 'bite' ? 'CHOMP!' : how === 'crystal' ? 'CRUNCH!' : 'CHOMP!');
+    const text = score(m, b) || (how === 'bite' ? 'CHOMP!' : how === 'crystal' ? 'CRUNCH!' : how === 'fire' ? 'BURNED!' : 'CHOMP!');
+    m.ice = 0;
     fx({ k: 'burst', x: m.x, y: m.y, rgb: m.kind === 'crawler' ? COL.crawl : m.kind === 'owl' ? COL.owl : COL.danger, n: 14, sp: 3.5 });
     fx({ k: 'popup', x: m.x, y: m.y - 0.7, text, rgb: how === 'bite' ? '255, 226, 120' : b.rgb, life: 0.8 });
     fx({ k: 'shake', v: 0.15, s: b.i });
     if (how === 'bite') { fx({ k: 'chomp', b: b.i, a: r2(Math.atan2(m.y - b.y, m.x - b.x)) }); fx({ k: 'sfx', n: 'bigChomp', alt: 'chomp' }); }
-    else fx({ k: 'sfx', n: how === 'crystal' ? 'chomp' : 'swat', alt: 'chomp' });
+    else fx({ k: 'sfx', n: how === 'crystal' ? 'chomp' : how === 'fire' ? 'boom' : 'swat', alt: 'chomp' });
   }
   // a cut spider drops (hurting a bat it lands on), bounces once, lies out, fades and is gone
   function updateDowned(m, dt) {
@@ -1131,6 +1495,8 @@
     m.cd = Math.max(0, m.cd - dt);
     if (m.stun > 0) {
       m.stun = Math.max(0, m.stun - dt);
+      // frozen solid in a block of ice: it doesn't budge
+      if (m.ice > 0) { m.ice = Math.max(0, m.ice - dt); m.vx = 0; m.vy = 0; return; }
       // stunned things drop out of the air a little, then hang there dazed
       if (m.kind === 'crawler' && m.st === 'leap') crawlerPhysics(m, dt);
       else { m.vx *= 1 - 3 * dt; m.vy *= 1 - 3 * dt; if (m.kind === 'owl' || m.kind === 'ghost') moveFree(m, dt, true); }
@@ -1460,7 +1826,22 @@
     // how far from the exit it's happy to be: a few tiles behind its person (each buddy a little more)
     const target = lead ? gdAt(L, lead.x, lead.y) - 2.5 + (b.i % 4) * 1.2 + S.lag * 10 : 0;
     const wantCrystal = b.echoes < 3;
-    let best = s0, bestCost = 1e9, crystal = -1;
+    let best = s0, bestCost = 1e9, crystal = -1, thing = -1;
+    const keyHunt = !follow && keysLeft() > 0;
+    // things worth a detour, each up to so many tiles away: keys, switches, hearts, power-ups,
+    // and a fallen teammate while the team has a heart to revive it with
+    const goals = new Map();
+    const addGoal = (x, y, lim) => {
+      const tx = Math.floor(x), ty = Math.floor(y);
+      if (tx < 0 || ty < 0 || tx >= w || ty >= L.h || L.grid[ty * w + tx] === 1) return;
+      const k = ty * w + tx;
+      goals.set(k, Math.max(goals.get(k) || 0, lim));
+    };
+    for (const o of L.keys) if (!o.got) addGoal(o.x, o.y, 24);
+    for (const gt of L.gates) if (!gt.open) addGoal(gt.sw.x, gt.sw.y, 16);
+    if (teamHearts < TEAM_HEARTS) for (const o of L.hearts) if (!o.got) addGoal(o.x, o.y, 12);
+    for (const o of L.powers) if (!o.got && !(PW[o.type].special && (b.held || o.type === 'ghost'))) addGoal(o.x, o.y, 12);
+    if (teamHearts > 0) for (const o of bats) if (o.ko) for (const [dx, dy] of [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8]]) addGoal(o.x + dx, o.y + dy, 60);
     while (qh < qt) {
       const k = q[qh++], x = k % w, y = (k - x) / w;
       if (follow) { if (k === leadK) { best = k; break; } }
@@ -1471,14 +1852,25 @@
         if (cost < bestCost) { bestCost = cost; best = k; }
       }
       if (wantCrystal && crystal < 0 && dist[k] < 14 && L.crystals.some((c) => !c.got && Math.floor(c.x) === x && Math.floor(c.y) === y)) crystal = k;
-      if (dist[k] > 90 && !follow) continue;
+      if (thing < 0 && goals.size && dist[k] <= (goals.get(k) ?? -1)) thing = k;
+      if (dist[k] > 90 && !follow && !keyHunt) continue;
       for (const nk of [k + 1, k - 1, k + w, k - w]) {
         if (nk < 0 || nk >= n || prev[nk] !== -2 || L.grid[nk] === 1) continue;
         prev[nk] = k; dist[nk] = dist[k] + 1;
         q[qt++] = nk;
       }
     }
+    // with keys still missing (and nobody to follow) the run is about the keys: the nearest one it
+    // can reach, else the switch of the nearest closed gate, rather than the locked exit
+    if (keyHunt) {
+      let kb = -1, kd = 1e9;
+      const near = (x, y) => { const k = Math.floor(y) * w + Math.floor(x); if (dist[k] >= 0 && dist[k] < kd) { kd = dist[k]; kb = k; } };
+      for (const o of L.keys) if (!o.got) near(o.x, o.y);
+      if (kb < 0) for (const gt of L.gates) if (!gt.open) near(gt.sw.x, gt.sw.y);
+      if (kb >= 0) best = kb;
+    }
     if (crystal >= 0) best = crystal;
+    if (thing >= 0) best = thing;
     const path = [];
     for (let k = best; k >= 0 && prev[k] !== -1; k = prev[k]) path.push({ x: (k % w) + 0.5, y: Math.floor(k / w) + 0.5 });
     return path.reverse();
@@ -1550,6 +1942,19 @@
         ix -= ((m.x - b.x) / (d || 1)) * S.dodge; iy -= ((m.y - b.y) / (d || 1)) * S.dodge;
       }
     }
+    // a held power-up: fireballs at a monster coming for it, a freeze blast when one is close
+    if (b.held && b.specialCd <= 0 && (b.held === 'fire' || b.held === 'freeze')) {
+      let tgt = null, td = 1e9;
+      for (const m of L.monsters) {
+        if (m.dead || downed(m) || m.st === 'leave' || m.ice > 0) continue;
+        const d = Math.hypot(m.x - b.x, m.y - b.y);
+        if (d < td && (m.lit > 0.2 || d < 2.5)) { td = d; tgt = m; }
+      }
+      if (tgt && noticed('p' + tgt.id, b.held === 'fire' ? td < 5.5 : td < 2.2, 0.6)) {
+        const a = Math.atan2(tgt.y - b.y, tgt.x - b.x) + (Math.random() - 0.5) * S.aim * 0.5;
+        useSpecial(b, Math.cos(a), Math.sin(a));
+      }
+    }
     // bursting crystals: a careful buddy gets out from under a cracked one and away from
     // its flying pieces (an easy one doesn't, and sometimes sets them off right overhead)
     if (S.shard) {
@@ -1587,8 +1992,17 @@
     return len > 1 ? { ix: ix / len, iy: iy / len } : { ix, iy };
   }
 
+  let flown = false;
   function tickCosmetics(dt) {
     shake = Math.max(0, shake - dt);
+    // the fly-off's own clock (every device runs it from the phase)
+    if (phase === 'exit') { exitClock += dt; flown = true; } else if (phase === 'win' && flown) exitClock += dt; else { exitClock = 0; flown = false; }
+    for (const n of novas) n.t += dt;
+    novas = novas.filter((n) => n.t < 0.6);
+    for (const r of revives) r.t += dt;
+    revives = revives.filter((r) => r.t < 1.2);
+    if (L) for (const sh of shots) lightAround(sh.x, sh.y, 1.7);
+    if (L && L.gates) for (const gt of L.gates) if (gt.open && gt.t < 2) gt.t += dt;
     if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
     for (const p of popups) p.t += dt;
     popups = popups.filter((p) => p.t < p.life);
@@ -1619,7 +2033,9 @@
       t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), mp: MAPS.indexOf(mapKind), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
       sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime),
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
-        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd)]),
+        r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd),
+        // power-ups: held special (index + 1), its clock, the timed one (index + 1) and its clock, shield, mega, ghost
+        b.held ? PTYPES.indexOf(b.held) + 1 : 0, r2(b.heldLeft), b.power ? PTYPES.indexOf(b.power) + 1 : 0, r2(b.powerT), b.shield ? 1 : 0, b.mega ? 1 : 0, r2(b.ghostT), r2(b.specialCd)]),
       // wave monsters also carry their kind, home row and floor so a guest can make them
       m: L.monsters.filter(sendM)
         .map((m) => {
@@ -1627,18 +2043,29 @@
           if (m.id >= L.base) v.push(KINDS.indexOf(m.kind), r2(m.hy), r2(m.bot ?? m.hy));
           return v;
         }),
-      r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner]),
+      r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max > RING_MAX ? r2(g.max) : 0]),
       fx: outbox,
     };
     if (variant === 'hunt') { s.hl = r2(hunt.left); s.hw = hunt.wave; if (huntGoal) { s.hk = teamKills(); s.hg = huntGoal; } }
     if (explore) {
       const dd = L.monsters.slice(0, L.base).map((m) => (m.dead ? 1 : 0)).join('');
       if (dd !== lastDead || snapCount % 20 === 0) { s.dd = dd; lastDead = dd; }
+      // which cave of the run, the team's hearts, fireballs in flight, monsters frozen solid
+      s.stg = stage; s.th = teamHearts;
+      if (shots.length) s.fb = shots.map((sh) => [sh.id, r2(sh.x), r2(sh.y), r2(sh.vx), r2(sh.vy), sh.owner]);
+      const fz = L.monsters.filter((m) => m.ice > 0 && !m.dead).map((m) => [m.id, r2(m.ice)]);
+      if (fz.length) s.fz = fz;
     }
     // everyone's look, now and then (they never change during a run)
     if (snapCount <= 5 || snapCount % 100 === 0) s.lk = bats.map((b) => b.look);
     // which moths and crystals are gone: when it changes, and once a second anyway
-    if (gotDirty || snapCount % 20 === 0) { s.g = L.moths.map((m) => (m.got ? 1 : 0)).join('') + '|' + L.crystals.map((c) => (c.got ? 1 : 0)).join(''); gotDirty = false; }
+    if (gotDirty || snapCount % 20 === 0) {
+      const bits = (a) => a.map((o) => (o.got ? 1 : 0)).join('');
+      s.g = bits(L.moths) + '|' + bits(L.crystals);
+      // Explore: keys, hearts and power-ups too, and which gates are open
+      if (explore) { s.g += '|' + bits(L.keys) + '|' + bits(L.hearts) + '|' + bits(L.powers); s.gt = L.gates.map((gt) => (gt.open ? 1 : 0)).join(''); }
+      gotDirty = false;
+    }
     // loose crystals (0 hanging, 1 cracked and shaking, 2 burst), and the bursts in flight:
     // [shard, seed, whose echo, age, broken pieces] so a guest flies the very same pieces
     if (shardDirty || snapCount % 20 === 0) { s.sh = L.shards.map((c) => SHARD_ST.indexOf(c.st)).join(''); shardDirty = false; }
@@ -1652,12 +2079,24 @@
     if (mode !== 'client' || !active || !s) return;
     // the cave comes from the host's seed; rebuild it if ours doesn't match
     const vr = VARIANTS[s.vr] || variant, mp = MAPS[s.mp] || 'scroll';
-    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty) || vr !== variant || mp !== mapKind)) {
+    if (s.sd != null && ((s.sd >>> 0) !== seed || (s.lv && s.lv !== difficulty) || vr !== variant || mp !== mapKind || (s.stg | 0) !== stage)) {
       seed = s.sd >>> 0;
       setRules(DIFF[s.lv] ? s.lv : difficulty, vr);
       setMap(mp);
+      stage = s.stg | 0;
       L = buildLevel();
-      bursts = []; camF = null;
+      bursts = []; shots = []; camF = null; particles = []; popups = [];
+    }
+    if (s.th != null) teamHearts = s.th | 0;
+    if (explore) {
+      const known = new Map(shots.map((sh) => [sh.id, sh]));
+      shots = (s.fb || []).map(([id, x, y, vx, vy, owner]) => {
+        const o = known.get(id);
+        return o && Math.hypot(o.x - x, o.y - y) < 0.8 ? Object.assign(o, { vx, vy }) : { id, x, y, vx, vy, owner, t: 0 };
+      });
+      const fz = new Map((s.fz || []).map(([id, t]) => [id, t]));
+      for (const m of L.monsters) m.ice = fz.get(m.id) || 0;
+      if (s.gt) L.gates.forEach((gt, k) => { if (s.gt[k] === '1' && !gt.open) { applyGateOpen(gt); gt.t = 2; } });
     }
     if (s.hl != null) { hunt.left = s.hl; hunt.wave = s.hw | 0; }
     if (s.hg != null) { huntGoal = s.hg; hunt.kills = s.hk | 0; }
@@ -1682,6 +2121,8 @@
       b.st.points = v[14] | 0; b.combo = v[15] | 0;   // (a guest only draws these)
       if (v[16] > 0.1 && !(b.slashT > 0)) b.slashT = v[16];   // a wing slash: the guest plays it out itself
       b.slashA = v[17] || 0; b.slashCd = v[18] || 0;
+      b.held = PTYPES[(v[19] | 0) - 1] || null; b.heldLeft = v[20] || 0; b.power = PTYPES[(v[21] | 0) - 1] || null; b.powerT = v[22] || 0;
+      b.shield = !!v[23]; b.mega = !!v[24]; b.ghostT = v[25] || 0; b.specialCd = v[26] || 0;
       if (s.lk && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
@@ -1697,9 +2138,12 @@
       m.tx = x; m.ty = y; m.st = MSTATES[st] || m.st; m.t = t; m.stun = stun; m.ax = ax; m.ay = ay; m.dead = !!dead; m.face = face;
     }
     if (s.g) {
-      const [mg, cg] = s.g.split('|');
+      const [mg, cg, kg = '', hg = '', pg = ''] = s.g.split('|');
       L.moths.forEach((m, k) => { m.got = mg[k] === '1'; });
       L.crystals.forEach((c, k) => { c.got = cg[k] === '1'; });
+      L.keys.forEach((o, k) => { o.got = kg[k] === '1'; });
+      L.hearts.forEach((o, k) => { o.got = hg[k] === '1'; });
+      L.powers.forEach((o, k) => { o.got = pg[k] === '1'; });
     }
     if (s.sh) {
       L.shards.forEach((c, k) => {
@@ -1722,9 +2166,9 @@
       for (const p of bu.bits) if ((dead & (1 << p.i)) && bitLive(bu, p)) breakBit(bu, p, 6);
     }
     const known = new Map(rings.map((g) => [g.id, g]));
-    rings = s.r.map(([id, x, y, r, owner]) => {
+    rings = s.r.map(([id, x, y, r, owner, max]) => {
       const g = known.get(id);
-      return { id, x, y, r: g ? Math.max(g.r, r) : r, owner, hit: g ? g.hit : new Set() };
+      return { id, x, y, r: g ? Math.max(g.r, r) : r, owner, hit: g ? g.hit : new Set(), max: max || RING_MAX };
     });
     for (const ev of s.fx || []) applyFx(ev);
     over = phase === 'win' || phase === 'lose';
@@ -1749,6 +2193,8 @@
       b.slashT = Math.max(0, (b.slashT || 0) - dt);
     }
     for (const m of L.monsters) if (m.tx !== undefined && !m.dead) { m.x += (m.tx - m.x) * k; m.y += (m.ty - m.y) * k; }
+    for (const sh of shots) { sh.x += sh.vx * dt; sh.y += sh.vy * dt; }
+    if (phase === 'play') caveTime += dt;
     fadeLight(dt);
     advanceRings(dt, false);
     shardDust(dt);
@@ -1784,15 +2230,18 @@
     return a;
   }
 
-  let stoneTile = null, stoneCtx = null;
+  let stoneTile = null, stoneCtx = null, stoneKey = '';
   function stonePattern() {
-    if (stoneTile && stoneCtx === ctx) return stoneTile;
+    // (Explore: tinted to the cave's own stone, crystal, lava or ice)
+    const st = explore && TH && TH.look ? TH.look.stone : null, key = st ? st.join() : '';
+    if (stoneTile && stoneCtx === ctx && stoneKey === key) return stoneTile;
+    stoneKey = key;
     const S = 128, c = document.createElement('canvas');
     c.width = c.height = S;
     const g = c.getContext('2d');
     let sd = 99;
     const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
-    g.fillStyle = 'rgb(46, 46, 108)'; g.fillRect(0, 0, S, S);
+    g.fillStyle = st ? `rgb(${st.map((v) => Math.round(Math.min(255, v * 92))).join(', ')})` : 'rgb(46, 46, 108)'; g.fillRect(0, 0, S, S);
     for (let k = 0; k < 14; k++) {
       const x = rnd() * S, y = rnd() * S, r = S * (0.1 + rnd() * 0.25), dark = rnd() < 0.6;
       for (const dx of [-S, 0, S]) for (const dy of [-S, 0, S]) {
@@ -1833,23 +2282,38 @@
     if (!explore && halfW * 2 >= VIEW_W) cam.x = scroll.x + VIEW_W / 2;
     if (halfH * 2 >= L.h) cam.y = L.h / 2;
     ox = W / 2 - cam.x * PX + sx; oy = H / 2 - cam.y * PX + sy;
+    lastCam = cam;
+    // Explore: out of the cave mouth, the fly-off plays over the whole screen under the night sky
+    if (flown && exitClock > EXIT_IN) {
+      window.EchoCave3D?.hide?.();
+      drawNight(exitClock - EXIT_IN, stage >= stageCount() - 1);
+      drawSticks();
+      return;
+    }
+    // into the mouth: the bats shrink away into it
+    const into = flown ? Math.min(1, exitClock / EXIT_IN) : 0;
     let threeD = false;
     if (in3d()) {
       threeD = window.EchoCave3D.render({
-        W, H, PX, cam, shake: { x: sx, y: sy }, level: L, near: nearGlow, clock, wall: COL.wall, mokaColor: BATS[0].color, mokaR: R,
+        W, H, PX, cam, shake: { x: sx, y: sy }, clock, wall: wallRgb(), mokaColor: BATS[0].color, mokaR: R,
+        // (Explore: closed gates are drawn as glowing bars on top, not as rock; each cave has its own look)
+        level: L.vgrid ? { w: L.w, h: L.h, grid: L.vgrid, lit: L.lit } : L, near: nearGlow,
+        theme: explore && TH ? TH.look : null,
+        mouth: L.mouth ? { x: L.mouth.x, y: L.mouth.y, r: L.mouth.r, open: exitOpen(), canvas: mouthCanvas() } : null,
         // the loose crystals, drawn among the ordinary ceiling crystals
         hazards: shardViews(),
         bats: bats.map((b) => ({
           x: b.x, y: b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0), vx: b.vx, face: b.face, color: b.color, look: b.look || null,
-          alpha: b.ko ? 0.38 : 1, flap: b.ko ? 6 : b.dashT > 0 ? 40 : 18,
-          hidden: !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)),
+          alpha: (b.ko ? 0.38 : b.ghostT > 0 ? 0.5 : 1) * (1 - into * 0.6), flap: b.ko ? 6 : b.dashT > 0 || into ? 40 : 18,
+          hidden: !into && !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)),
+          shield: b.shield && !b.ko, scale: 1 - into * 0.75, z: -into * 1.6,
         })),
       });
     }
     if (threeD) ctx.clearRect(0, 0, W, H);
     else {
       window.EchoDuel3D?.hide?.();
-      ctx.fillStyle = CAVE_BG;
+      ctx.fillStyle = explore && TH ? TH.bg : CAVE_BG;
       ctx.fillRect(0, 0, W, H);
     }
 
@@ -1863,19 +2327,22 @@
         for (let tx = tx0; tx <= tx1; tx++) {
           const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
           if (a < 0.02) continue;
-          ctx.globalAlpha = solid(tx, ty) ? Math.min(1, a * 1.15) : a * 0.32;
+          ctx.globalAlpha = rockAt(tx, ty) ? Math.min(1, a * 1.15) : a * 0.32;
           ctx.fillRect(X(tx), Y(ty), PX + 0.5, PX + 0.5);
         }
       }
       ctx.globalAlpha = 1;
       drawDecor(tx0, tx1, ty0, ty1);
+      if (explore) drawFloorTheme(tx0, tx1, ty0, ty1);
+      if (L.mouth) drawMouth2D(tx0, tx1, ty0, ty1);
     }
     // walls: the faces that touch open air get glowing neon edges, in both views
+    const wallC = wallRgb();
     ctx.lineCap = 'round';
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
-        if (!solid(tx, ty)) continue;
-        const open = [!solid(tx, ty - 1), !solid(tx + 1, ty), !solid(tx, ty + 1), !solid(tx - 1, ty)];
+        if (!rockAt(tx, ty)) continue;
+        const open = [!rockAt(tx, ty - 1), !rockAt(tx + 1, ty), !rockAt(tx, ty + 1), !rockAt(tx - 1, ty)];
         if (!open.some(Boolean)) continue;
         const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
         if (a < 0.02) continue;
@@ -1883,8 +2350,8 @@
         const edges = [[x, y, x + s, y], [x + s, y, x + s, y + s], [x, y + s, x + s, y + s], [x, y, x, y + s]];
         ctx.beginPath();
         for (let i = 0; i < 4; i++) if (open[i]) { ctx.moveTo(edges[i][0], edges[i][1]); ctx.lineTo(edges[i][2], edges[i][3]); }
-        ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.22})`; ctx.lineWidth = 7; ctx.stroke();
-        ctx.strokeStyle = `rgba(${COL.wall}, ${a * 0.95})`; ctx.lineWidth = 2; ctx.stroke();
+        ctx.strokeStyle = `rgba(${wallC}, ${a * 0.22})`; ctx.lineWidth = 7; ctx.stroke();
+        ctx.strokeStyle = `rgba(${wallC}, ${a * 0.95})`; ctx.lineWidth = 2; ctx.stroke();
       }
     }
 
@@ -1908,8 +2375,9 @@
       ctx.fillStyle = `rgba(${rgb}, ${on ? 0.9 : 0.55})`;
       ctx.fillText(on ? '✓' : `${k + 1}`, x, top - PX * 0.6);
     });
-    // the green light at the end
-    if (visX(L.goal.x, L.goal.y)) {
+    if (explore) drawExploreThings(visX, threeD);
+    // the green light at the end (Explore: the cave mouth, drawn above)
+    if (!L.mouth && visX(L.goal.x, L.goal.y)) {
       // (Explore Hunt: dim and amber with the count left until enough monsters are knocked out)
       const pulse = 0.55 + 0.25 * Math.sin(clock * 2.4), shut = !exitOpen(), rgb = shut ? COL.owl : COL.exit;
       glow(X(L.goal.x), Y(L.goal.y), PX * 2.2, rgb, pulse * (shut ? 0.35 : 0.8));
@@ -1944,7 +2412,7 @@
     for (const m of L.monsters) if (!m.dead && visX(m.x, m.y)) drawMonster(m);
 
     for (const ring of rings) {
-      const f = 1 - ring.r / RING_MAX, rgb = BATS[ring.owner]?.rgb || COL.wall;
+      const f = 1 - ring.r / (ring.max || RING_MAX), rgb = BATS[ring.owner]?.rgb || COL.wall;
       ctx.strokeStyle = `rgba(${rgb}, ${f * 0.9})`; ctx.lineWidth = 2.5;
       ctx.beginPath(); ctx.arc(X(ring.x), Y(ring.y), ring.r * PX, 0, Math.PI * 2); ctx.stroke();
       if (ring.r > 0.8) {
@@ -1965,8 +2433,10 @@
       }
     }
     drawBits();
+    if (explore) drawPowerFx();
     for (const c of chomps) drawChomp(c);
-    for (const b of bats) drawBat(b, threeD);
+    for (const b of bats) drawBat(b, threeD, into);
+    if (explore) drawAmbient(dtR());
     for (const p of popups) {
       const k = p.t / p.life;
       ctx.font = `700 ${Math.max(11, PX * 0.42)}px ${FONT}`;
@@ -1990,7 +2460,455 @@
     drawOffscreenMates();
     drawHud();
     if (touchUsed && localCount === 1 && phase === 'play') { drawDashButton(); drawSlashButton(); }
+    if (powerShown()) drawPowerButton();
     drawSticks();
+  }
+
+  // ---- Explore: drawing the keys, hearts, power-ups, switches, gates and the cave mouth ----
+  let lastCam = { x: 0, y: 0 };
+  const dtR = () => frameDt;
+  // rock to draw (a closed gate is solid, but drawn as glowing bars instead)
+  const rockAt = (tx, ty) => solid(tx, ty) && !(L.gateAt && tx >= 0 && ty >= 0 && tx < L.w && ty < L.h && L.gateAt[ty * L.w + tx] >= 0);
+  const rgbStr = (a) => a.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)).join(', ');
+
+  // The night sky seen through the cave mouth: deep blue, stars, a moon and dark hills.
+  // Painted once; 2D draws it clipped to the open tiles, 3D lays it in the exit chamber's back.
+  let mouthCv = null;
+  function mouthCanvas() {
+    if (mouthCv) return mouthCv;
+    const S = 256, c = document.createElement('canvas');
+    c.width = c.height = S;
+    const g = c.getContext('2d');
+    let sd = 7;
+    const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+    const sky = g.createLinearGradient(0, 0, 0, S);
+    sky.addColorStop(0, '#0b1240'); sky.addColorStop(0.55, '#2a1f6e'); sky.addColorStop(0.85, '#5b3a8c'); sky.addColorStop(1, '#1a1440');
+    g.fillStyle = sky; g.fillRect(0, 0, S, S);
+    for (let k = 0; k < 90; k++) {
+      const x = rnd() * S, y = rnd() * S * 0.75, r = 0.5 + rnd() * 1.4;
+      g.fillStyle = `rgba(255, 255, 255, ${0.5 + rnd() * 0.5})`;
+      g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+    }
+    // the moon, with its glow
+    const mg = g.createRadialGradient(S * 0.68, S * 0.3, 4, S * 0.68, S * 0.3, S * 0.3);
+    mg.addColorStop(0, 'rgba(255, 244, 200, 0.55)'); mg.addColorStop(1, 'rgba(255, 244, 200, 0)');
+    g.fillStyle = mg; g.fillRect(0, 0, S, S);
+    g.fillStyle = '#fff4d0'; g.beginPath(); g.arc(S * 0.68, S * 0.3, S * 0.09, 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(200, 190, 150, 0.35)'; g.beginPath(); g.arc(S * 0.66, S * 0.28, S * 0.02, 0, Math.PI * 2); g.arc(S * 0.71, S * 0.33, S * 0.015, 0, Math.PI * 2); g.fill();
+    // far hills and a nearer one, with a few fireflies
+    for (const [h, col] of [[0.72, '#1c1650'], [0.82, '#0d0b2c']]) {
+      g.fillStyle = col; g.beginPath(); g.moveTo(0, S);
+      for (let x = 0; x <= S; x += 8) g.lineTo(x, S * h + Math.sin(x * 0.03 + h * 9) * S * 0.04 + Math.sin(x * 0.011) * S * 0.05);
+      g.lineTo(S, S); g.closePath(); g.fill();
+    }
+    for (let k = 0; k < 10; k++) {
+      const x = rnd() * S, y = S * (0.7 + rnd() * 0.2);
+      const fg = g.createRadialGradient(x, y, 0, x, y, 6);
+      fg.addColorStop(0, 'rgba(230, 255, 140, 0.9)'); fg.addColorStop(1, 'rgba(230, 255, 140, 0)');
+      g.fillStyle = fg; g.fillRect(x - 6, y - 6, 12, 12);
+    }
+    // a soft round edge, so it reads as a hole in the rock
+    g.globalCompositeOperation = 'destination-in';
+    const edge = g.createRadialGradient(S / 2, S / 2, S * 0.36, S / 2, S / 2, S / 2);
+    edge.addColorStop(0, 'rgba(0, 0, 0, 1)'); edge.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = edge; g.fillRect(0, 0, S, S);
+    return (mouthCv = c);
+  }
+  // 2D: the mouth in the exit chamber's back wall (only where there's open air in front of it)
+  function drawMouth2D(tx0, tx1, ty0, ty1) {
+    const m = L.mouth, r = m.r * 1.15;
+    if (m.x + r < tx0 || m.x - r > tx1 + 1 || m.y + r < ty0 || m.y - r > ty1 + 1) return;
+    ctx.save();
+    ctx.beginPath();
+    for (let ty = Math.floor(m.y - r); ty <= Math.ceil(m.y + r); ty++) {
+      for (let tx = Math.floor(m.x - r); tx <= Math.ceil(m.x + r); tx++) if (!rockAt(tx, ty)) ctx.rect(X(tx) - 0.5, Y(ty) - 0.5, PX + 1, PX + 1);
+    }
+    ctx.clip();
+    ctx.drawImage(mouthCanvas(), X(m.x - r), Y(m.y - r), r * 2 * PX, r * 2 * PX);
+    ctx.restore();
+  }
+  // the mouth's frame on top (both views): a glowing rim; locked, crystal bars and a key slot for each key
+  function drawMouthFrame() {
+    const m = L.mouth, x = X(m.x), y = Y(m.y), r = m.r * PX, open = exitOpen(), pulse = 0.6 + 0.4 * Math.sin(clock * 2.6);
+    const rgb = open ? COL.exit : KEY_RGB;
+    glow(x, y, r * 1.6, rgb, (open ? 0.35 : 0.18) * pulse);
+    ctx.strokeStyle = `rgba(${rgb}, ${0.35 + 0.35 * pulse})`; ctx.lineWidth = Math.max(2, PX * 0.07);
+    ctx.beginPath(); ctx.arc(x, y, r * 0.98, 0, Math.PI * 2); ctx.stroke();
+    if (open) {
+      // sparkles drift into the opening: this way out
+      for (let k = 0; k < 8; k++) {
+        const f = (clock * 0.45 + k / 8) % 1, a = k * 2.4 + clock * 0.3, d = r * (1.3 - f);
+        ctx.fillStyle = `rgba(220, 255, 230, ${0.9 * (1 - f) * f * 3})`;
+        ctx.beginPath(); ctx.arc(x + Math.cos(a) * d, y + Math.sin(a) * d * 0.8, Math.max(1.5, PX * 0.05), 0, Math.PI * 2); ctx.fill();
+      }
+      return;
+    }
+    // locked: crystal bars across the opening, and a key slot for each key (filled once found)
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, r * 0.95, 0, Math.PI * 2); ctx.clip();
+    for (let k = -3; k <= 3; k++) {
+      const bx = x + k * r * 0.28;
+      ctx.strokeStyle = `rgba(${KEY_RGB}, 0.22)`; ctx.lineWidth = PX * 0.22; ctx.beginPath(); ctx.moveTo(bx, y - r); ctx.lineTo(bx, y + r); ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 240, 200, ${0.55 + 0.2 * pulse})`; ctx.lineWidth = Math.max(1.5, PX * 0.06); ctx.stroke();
+    }
+    ctx.restore();
+    const n = L.keys.length, got = n - keysLeft(), sz = PX * 0.36, gap = sz * 1.5;
+    ctx.fillStyle = 'rgba(10, 8, 30, 0.75)';
+    roundRect(x - (n * gap) / 2 - sz * 0.3, y - sz * 0.75, n * gap + sz * 0.6, sz * 1.5, sz * 0.5); ctx.fill();
+    for (let k = 0; k < n; k++) drawKey(x - (n * gap) / 2 + gap * (k + 0.5), y, sz * 0.9, k < got ? KEY_RGB : '120, 110, 90', k < got ? 1 : 0.7);
+  }
+  // a little golden key, centred on x, y, about 2s long
+  function drawKey(x, y, s, rgb, a = 1) {
+    ctx.save();
+    ctx.translate(x, y); ctx.rotate(-0.5);
+    ctx.strokeStyle = `rgba(${rgb}, ${a})`; ctx.fillStyle = `rgba(${rgb}, ${a})`;
+    ctx.lineWidth = Math.max(1.5, s * 0.22); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(-s * 0.55, 0, s * 0.36, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-s * 0.2, 0); ctx.lineTo(s * 0.95, 0); ctx.moveTo(s * 0.62, 0); ctx.lineTo(s * 0.62, s * 0.34); ctx.moveTo(s * 0.88, 0); ctx.lineTo(s * 0.88, s * 0.28); ctx.stroke();
+    ctx.restore();
+  }
+  // Battle's power-up look: a ring of the power's colour round its icon (a dashed spinning ring for a held one)
+  function drawPowerup(p) {
+    const x = X(p.x), y = Y(p.y + Math.sin(clock * 2.5 + p.phase) * 0.12), pw = PW[p.type], rgb = pw.rgb, s = PX * 0.3;
+    glow(x, y, PX * 1.1, rgb, 0.3 + 0.15 * Math.sin(clock * 4 + p.phase));
+    ctx.strokeStyle = `rgb(${rgb})`;
+    ctx.lineWidth = Math.max(1.5, PX * 0.07);
+    ctx.beginPath(); ctx.arc(x, y, s * 1.25, 0, Math.PI * 2); ctx.stroke();
+    if (pw.special) {
+      ctx.setLineDash([s * 0.35, s * 0.3]); ctx.lineDashOffset = -clock * 20;
+      ctx.beginPath(); ctx.arc(x, y, s * 1.6, 0, Math.PI * 2); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    drawIcon(p.type, x, y, s, `rgb(${rgb})`);
+  }
+  // each power's little picture (the same as Battle's), centred on x, y, about 2s across
+  function drawIcon(type, x, y, s, color) {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = Math.max(1.5, s * 0.2); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    if (type === 'mega') {
+      ctx.arc(x, y, s * 0.25, 0, Math.PI * 2); ctx.fill();
+      ctx.lineWidth = Math.max(1.5, s * 0.16);
+      for (const [rr, w] of [[0.55, 0.9], [0.85, 0.7]]) {
+        ctx.beginPath(); ctx.arc(x, y, s * rr, -w, w); ctx.stroke();
+        ctx.beginPath(); ctx.arc(x, y, s * rr, Math.PI - w, Math.PI + w); ctx.stroke();
+      }
+    } else if (type === 'speed') {
+      for (const off of [-0.3, 0.25]) {
+        ctx.beginPath();
+        ctx.moveTo(x + (off - 0.25) * s, y - 0.5 * s); ctx.lineTo(x + (off + 0.25) * s, y); ctx.lineTo(x + (off - 0.25) * s, y + 0.5 * s);
+        ctx.stroke();
+      }
+    } else if (type === 'shield') {
+      ctx.moveTo(x, y - 0.65 * s); ctx.lineTo(x + 0.55 * s, y - 0.35 * s); ctx.lineTo(x + 0.45 * s, y + 0.3 * s);
+      ctx.lineTo(x, y + 0.7 * s); ctx.lineTo(x - 0.45 * s, y + 0.3 * s); ctx.lineTo(x - 0.55 * s, y - 0.35 * s); ctx.closePath();
+      ctx.stroke();
+    } else if (type === 'frenzy') {
+      ctx.arc(x - 0.32 * s, y, 0.3 * s, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x + 0.32 * s, y, 0.3 * s, 0, Math.PI * 2); ctx.stroke();
+    } else if (type === 'fire') {
+      const flame = (k, dy) => {
+        ctx.beginPath();
+        ctx.moveTo(x, y + dy - s * 0.95 * k);
+        ctx.bezierCurveTo(x + s * 0.75 * k, y + dy - s * 0.2 * k, x + s * 0.7 * k, y + dy + s * 0.75 * k, x, y + dy + s * 0.8 * k);
+        ctx.bezierCurveTo(x - s * 0.7 * k, y + dy + s * 0.75 * k, x - s * 0.75 * k, y + dy - s * 0.2 * k, x, y + dy - s * 0.95 * k);
+        ctx.fill();
+      };
+      flame(1, 0);
+      ctx.fillStyle = 'rgba(255, 240, 190, 0.95)'; flame(0.5, s * 0.35);
+    } else if (type === 'freeze') {
+      ctx.lineWidth = Math.max(1.3, s * 0.15);
+      for (let k = 0; k < 3; k++) {
+        const a = (k * Math.PI) / 3 + Math.PI / 2, c = Math.cos(a), n = Math.sin(a);
+        ctx.moveTo(x - c * s * 0.9, y - n * s * 0.9); ctx.lineTo(x + c * s * 0.9, y + n * s * 0.9);
+        for (const sd of [-1, 1]) {
+          const mx = x + sd * c * s * 0.55, my = y + sd * n * s * 0.55;
+          for (const t of [-0.6, 0.6]) {
+            const b = a + (sd > 0 ? 0 : Math.PI) + t * 1.2;
+            ctx.moveTo(mx, my); ctx.lineTo(mx + Math.cos(b) * s * 0.28, my + Math.sin(b) * s * 0.28);
+          }
+        }
+      }
+      ctx.stroke();
+    } else if (type === 'ghost') {
+      ctx.moveTo(x - s * 0.62, y + s * 0.75);
+      ctx.lineTo(x - s * 0.62, y - s * 0.15);
+      ctx.arc(x, y - s * 0.15, s * 0.62, Math.PI, 0);
+      ctx.lineTo(x + s * 0.62, y + s * 0.75);
+      for (let k = 0; k < 3; k++) {
+        const x1 = x + s * 0.62 - (k + 0.5) * (s * 1.24 / 3), x2 = x + s * 0.62 - (k + 1) * (s * 1.24 / 3);
+        ctx.quadraticCurveTo(x1, y + s * (k % 2 ? 0.95 : 0.45), x2, y + s * 0.75);
+      }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#1a1030';
+      ctx.beginPath(); ctx.ellipse(x - s * 0.22, y - s * 0.15, s * 0.1, s * 0.16, 0, 0, Math.PI * 2); ctx.ellipse(x + s * 0.22, y - s * 0.15, s * 0.1, s * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+  // a lever on a stone base, in its gate's colour: pointing left and blinking until it's hit
+  function drawSwitch(gt) {
+    const x = X(gt.sw.x), base = Y(gt.sw.y + 0.5), on = gt.open, rgb = GATE_COLS[gt.id % GATE_COLS.length];
+    const pulse = 0.5 + 0.5 * Math.sin(clock * 5 + gt.id);
+    if (!on) glow(x, base - PX * 0.35, PX * (0.9 + 0.2 * pulse), rgb, 0.3 + 0.2 * pulse);
+    else glow(x, base - PX * 0.3, PX * 0.7, rgb, 0.25);
+    const a = on ? 0.6 : -0.6, len = PX * 0.5, kx = x + Math.sin(a) * len, ky = base - PX * 0.12 - Math.cos(a) * len;
+    ctx.strokeStyle = 'rgba(220, 220, 240, 0.9)'; ctx.lineWidth = Math.max(2, PX * 0.07); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x, base - PX * 0.12); ctx.lineTo(kx, ky); ctx.stroke();
+    ctx.fillStyle = on ? `rgb(${rgb})` : `rgba(${rgb}, ${0.6 + 0.4 * pulse})`;
+    ctx.beginPath(); ctx.arc(kx, ky, PX * 0.11, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(40, 36, 70, 0.95)';
+    roundRect(x - PX * 0.28, base - PX * 0.2, PX * 0.56, PX * 0.2, PX * 0.06); ctx.fill();
+    ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+  // a gate: glowing bars across the tunnel in its switch's colour. Opening, they slide up into the rock.
+  function drawGate(gt) {
+    const rgb = GATE_COLS[gt.id % GATE_COLS.length];
+    const k = gt.open ? Math.min(1, gt.t / 0.9) : 0;
+    if (k >= 1) return;
+    const a = 1 - k, lift = k * k * PX * 1.2, pulse = 0.7 + 0.3 * Math.sin(clock * 3 + gt.id);
+    for (const [tx, ty] of gt.tiles) {
+      const x = X(tx), y = Y(ty) - lift;
+      ctx.fillStyle = `rgba(20, 14, 44, ${0.55 * a})`; ctx.fillRect(x, y, PX, PX);
+      glow(x + PX / 2, y + PX / 2, PX * 0.8, rgb, 0.25 * a * pulse);
+      for (let j = 0; j < 3; j++) {
+        const bx = x + PX * (0.2 + j * 0.3);
+        ctx.strokeStyle = `rgba(${rgb}, ${0.35 * a})`; ctx.lineWidth = PX * 0.16;
+        ctx.beginPath(); ctx.moveTo(bx, y + 1); ctx.lineTo(bx, y + PX - 1); ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.8 * a})`; ctx.lineWidth = Math.max(1, PX * 0.04); ctx.stroke();
+      }
+      ctx.strokeStyle = `rgba(${rgb}, ${0.8 * a})`; ctx.lineWidth = Math.max(1.5, PX * 0.05);
+      ctx.beginPath(); ctx.moveTo(x, y + PX * 0.12); ctx.lineTo(x + PX, y + PX * 0.12); ctx.moveTo(x, y + PX * 0.88); ctx.lineTo(x + PX, y + PX * 0.88); ctx.stroke();
+    }
+  }
+  function drawExploreThings(visX, threeD) {
+    if (L.mouth && visX(L.mouth.x, L.mouth.y)) drawMouthFrame();
+    for (const gt of L.gates) {
+      if (visX(gt.sw.x, gt.sw.y)) drawSwitch(gt);
+      if (gt.tiles.some(([x, y]) => visX(x, y))) drawGate(gt);
+    }
+    for (const k of L.keys) {
+      if (k.got || !visX(k.x, k.y)) continue;
+      const x = X(k.x), y = Y(k.y + Math.sin(clock * 2 + k.phase) * 0.12), tw = Math.max(0, Math.sin(clock * 3 + k.phase * 2));
+      glow(x, y, PX * 1.2, KEY_RGB, 0.35 + 0.2 * tw);
+      drawKey(x, y, PX * 0.32, KEY_RGB);
+      // a twinkle now and then, so it catches the eye
+      if (tw > 0.85) { ctx.fillStyle = `rgba(255, 255, 240, ${(tw - 0.85) * 6})`; const r = PX * 0.3; ctx.beginPath(); ctx.moveTo(x + PX * 0.25, y - PX * 0.3 - r); ctx.lineTo(x + PX * 0.25 + r * 0.2, y - PX * 0.3); ctx.lineTo(x + PX * 0.25, y - PX * 0.3 + r); ctx.lineTo(x + PX * 0.25 - r * 0.2, y - PX * 0.3); ctx.closePath(); ctx.fill(); }
+    }
+    for (const h of L.hearts) {
+      if (h.got || !visX(h.x, h.y)) continue;
+      const x = X(h.x), y = Y(h.y + Math.sin(clock * 2.2 + h.phase) * 0.1), beat = 1 + 0.12 * Math.max(0, Math.sin(clock * 6 + h.phase));
+      glow(x, y, PX * 0.95, HEART_RGB, 0.4);
+      heart(x, y, PX * 0.2 * beat, true);
+    }
+    for (const p of L.powers) if (!p.got && visX(p.x, p.y)) drawPowerup(p);
+  }
+  // fireballs, freeze blasts and revive rings
+  function drawPowerFx() {
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    for (const sh of shots) {
+      const x = X(sh.x), y = Y(sh.y), sp = Math.hypot(sh.vx, sh.vy) || 1, ux = sh.vx / sp, uy = sh.vy / sp;
+      glow(x, y, PX * 1.4 * (1 + 0.12 * Math.sin(clock * 37 + sh.id)), '255, 110, 30', 0.4);
+      for (let k = 6; k >= 0; k--) {
+        const f = k / 6;
+        ctx.fillStyle = `rgba(255, ${Math.round(200 - 140 * f)}, ${Math.round(80 - 60 * f)}, ${0.55 * (1 - f * 0.7)})`;
+        ctx.beginPath(); ctx.arc(X(sh.x - ux * f * 0.9), Y(sh.y - uy * f * 0.9), PX * (0.3 - 0.03 * k), 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.fillStyle = 'rgba(255, 245, 210, 0.95)';
+      ctx.beginPath(); ctx.arc(x, y, PX * 0.13, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const n of novas) {
+      const k = n.t / 0.6, e = 1 - (1 - Math.min(1, n.t / 0.3)) ** 3, f = 1 - k, R0 = FREEZE_R * e * PX, x = X(n.x), y = Y(n.y);
+      glow(x, y, Math.max(4, R0 * 1.1), PW.freeze.rgb, 0.35 * f);
+      ctx.strokeStyle = `rgba(${PW.freeze.rgb}, ${0.9 * f})`; ctx.lineWidth = Math.max(2, PX * 0.2 * f);
+      ctx.beginPath(); ctx.arc(x, y, Math.max(1, R0), 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = `rgba(220, 248, 255, ${0.9 * f})`;
+      for (let j = 0; j < 12; j++) {
+        const a = (j / 12) * Math.PI * 2 + 0.2, r0 = R0 * 0.82, r1 = R0 * 1.12, w = 0.09;
+        ctx.beginPath(); ctx.moveTo(x + Math.cos(a - w) * r0, y + Math.sin(a - w) * r0); ctx.lineTo(x + Math.cos(a) * r1, y + Math.sin(a) * r1); ctx.lineTo(x + Math.cos(a + w) * r0, y + Math.sin(a + w) * r0); ctx.fill();
+      }
+    }
+    for (const r of revives) {
+      const k = r.t / 1.2, x = X(r.x), y = Y(r.y);
+      glow(x, y, PX * (1 + k * 2), HEART_RGB, 0.5 * (1 - k));
+      ctx.strokeStyle = `rgba(${HEART_RGB}, ${1 - k})`; ctx.lineWidth = Math.max(2, PX * 0.1 * (1 - k));
+      ctx.beginPath(); ctx.arc(x, y, PX * (0.3 + k * 2.2), 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = `rgba(${r.rgb}, ${0.8 * (1 - k)})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, PX * (0.2 + k * 1.4), 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+    // monsters frozen solid sit in a block of ice
+    for (const m of L.monsters) {
+      if (!(m.ice > 0) || m.dead) continue;
+      const x = X(m.x), y = Y(m.y), s = PX * (m.r + 0.16), a = Math.min(1, m.ice * 2);
+      ctx.fillStyle = `rgba(150, 220, 255, ${0.35 * a})`; ctx.strokeStyle = `rgba(220, 248, 255, ${0.9 * a})`; ctx.lineWidth = 1.5;
+      roundRect(x - s, y - s, s * 2, s * 2, s * 0.25); ctx.fill(); ctx.stroke();
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.6 * a})`;
+      ctx.beginPath(); ctx.moveTo(x - s * 0.6, y - s * 0.7); ctx.lineTo(x - s * 0.2, y - s * 0.3); ctx.stroke();
+    }
+  }
+  // 2D: lava glowing in cracks along the floor; ice glinting on it; theme decor colours
+  function drawFloorTheme(tx0, tx1, ty0, ty1) {
+    const lk = TH && TH.look;
+    if (!lk || (!lk.lava && !lk.ice)) return;
+    for (let ty = ty0; ty <= ty1; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (rockAt(tx, ty) || !rockAt(tx, ty + 1)) continue;
+        const hsh = tileHash(tx, ty, 7), a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5), 0.25);
+        if (lk.lava && hsh < 0.16) {
+          const p = 0.6 + 0.4 * Math.sin(clock * 1.7 + tx * 3.1);
+          glow(X(tx + 0.5), Y(ty + 1), PX * 0.9, '255, 110, 30', 0.35 * p * Math.min(1, a * 2));
+          ctx.fillStyle = `rgba(255, ${Math.round(120 + 80 * p)}, 40, ${0.8 * Math.min(1, a * 2)})`;
+          ctx.beginPath(); ctx.ellipse(X(tx + 0.5), Y(ty + 1) - 1, PX * 0.42, PX * 0.07, 0, 0, Math.PI * 2); ctx.fill();
+        } else if (lk.ice && hsh > 0.82) {
+          const p = Math.max(0, Math.sin(clock * 2.2 + tx * 1.7));
+          ctx.fillStyle = `rgba(230, 245, 255, ${0.5 * p * Math.min(1, a * 2)})`;
+          const cx = X(tx + 0.2 + hsh * 0.6), cy = Y(ty + 1) - 2, r = PX * 0.12;
+          ctx.beginPath(); ctx.moveTo(cx, cy - r); ctx.lineTo(cx + r * 0.25, cy); ctx.lineTo(cx, cy + r * 0.5); ctx.lineTo(cx - r * 0.25, cy); ctx.closePath(); ctx.fill();
+        }
+      }
+    }
+  }
+  // drifting embers (lava), falling snow (ice) or twinkling motes (crystal), around the camera
+  function drawAmbient(dt) {
+    if (!TH) return;
+    const kind = TH.ambient, rgb = TH.ambientRgb || '200, 220, 255', vw = W / PX, vh = H / PX;
+    while (amb.length < 36) {
+      const x = lastCam.x + (Math.random() - 0.5) * vw * 1.1, y = lastCam.y + (Math.random() - 0.5) * vh * 1.1;
+      amb.push({ x, y, ph: Math.random() * 6.28, life: 2 + Math.random() * 3, t: 0 });
+    }
+    for (const p of amb) {
+      p.t += dt;
+      if (kind === 'ember') { p.y -= dt * 0.7; p.x += Math.sin(clock * 1.3 + p.ph) * dt * 0.3; }
+      else if (kind === 'snow') { p.y += dt * 0.55; p.x += Math.sin(clock * 0.9 + p.ph) * dt * 0.35; }
+      else { p.x += Math.sin(clock * 0.5 + p.ph) * dt * 0.1; p.y += Math.cos(clock * 0.4 + p.ph) * dt * 0.1; }
+      if (Math.abs(p.x - lastCam.x) > vw * 0.6 || Math.abs(p.y - lastCam.y) > vh * 0.6) p.t = p.life;
+      const a = Math.sin(Math.min(1, p.t / p.life) * Math.PI) * (kind === 'sparkle' ? 0.5 + 0.5 * Math.sin(clock * 4 + p.ph) : 1);
+      if (a <= 0.02) continue;
+      const x = X(p.x), y = Y(p.y), r = kind === 'snow' ? 2.2 : kind === 'ember' ? 1.8 : 1.5;
+      ctx.fillStyle = `rgba(${rgb}, ${0.75 * a})`;
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      if (kind === 'ember') glow(x, y, 6, rgb, 0.3 * a);
+    }
+    amb = amb.filter((p) => p.t < p.life);
+  }
+
+  // ---- The fly-off: out of the cave mouth into the night ------------------------
+  // t: seconds since the bats left the cave. Final: the bats burst out of the mouth in a hillside,
+  // swirl together round the moon among the fireflies and fly away into the stars.
+  // Between caves: they zip across the night from one cave mouth into the next (lava's glows red, ice's blue).
+  const nightStars = [];
+  function drawNight(t, final) {
+    if (!nightStars.length) {
+      let sd = 3;
+      const rnd = () => (sd = (sd * 16807) % 2147483647) / 2147483647;
+      for (let k = 0; k < 140; k++) nightStars.push({ x: rnd(), y: rnd() * 0.8, r: 0.5 + rnd() * 1.5, ph: rnd() * 6.28 });
+    }
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#060a24'); sky.addColorStop(0.6, '#1d1650'); sky.addColorStop(1, '#3a2466');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+    for (const st of nightStars) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.45 + 0.45 * Math.sin(clock * 2 + st.ph)})`;
+      ctx.beginPath(); ctx.arc(st.x * W, st.y * H, st.r, 0, Math.PI * 2); ctx.fill();
+    }
+    // a shooting star now and then
+    const sf = (t * 0.45) % 1;
+    if (sf < 0.25) {
+      const k = sf / 0.25, x0 = W * 0.15 + W * 0.5 * k, y0 = H * 0.08 + H * 0.15 * k;
+      const g = ctx.createLinearGradient(x0, y0, x0 - 60, y0 - 18);
+      g.addColorStop(0, `rgba(255, 255, 255, ${1 - k})`); g.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.strokeStyle = g; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 - 60, y0 - 18); ctx.stroke();
+    }
+    const mx = W * 0.72, my = H * 0.27, mr = Math.min(W, H) * 0.09;
+    glow(mx, my, mr * 4, '255, 244, 200', 0.25);
+    ctx.fillStyle = '#fff4d0'; ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = 'rgba(210, 196, 150, 0.35)';
+    ctx.beginPath(); ctx.arc(mx - mr * 0.3, my - mr * 0.2, mr * 0.2, 0, Math.PI * 2); ctx.arc(mx + mr * 0.25, my + mr * 0.3, mr * 0.14, 0, Math.PI * 2); ctx.fill();
+    // hills, the far ones lighter
+    const hill = (h, col, f) => {
+      ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 10) ctx.lineTo(x, H * h + Math.sin(x * f + h * 7) * H * 0.04 + Math.sin(x * f * 0.37) * H * 0.06);
+      ctx.lineTo(W, H); ctx.closePath(); ctx.fill();
+    };
+    hill(0.68, '#241c5a', 0.012); hill(0.8, '#130f36', 0.02);
+    // the cave they came out of: a dark rocky hill on the left with the mouth glowing in its cave's colours
+    const here = TH ? TH.wall : COL.exit;
+    const cx = W * 0.14, cy = H * 0.8, cr = Math.min(W, H) * 0.12;
+    ctx.fillStyle = '#0a0820';
+    ctx.beginPath(); ctx.moveTo(-10, H); ctx.quadraticCurveTo(W * 0.02, H * 0.42, W * 0.2, H * 0.5); ctx.quadraticCurveTo(W * 0.32, H * 0.6, W * 0.36, H); ctx.closePath(); ctx.fill();
+    glow(cx, cy, cr * 2.2, here, 0.45);
+    ctx.fillStyle = `rgba(${here}, 0.55)`; ctx.beginPath(); ctx.ellipse(cx, cy, cr, cr * 0.8, 0, Math.PI, 0); ctx.fill();
+    ctx.fillStyle = '#05040f'; ctx.beginPath(); ctx.ellipse(cx, cy + 2, cr * 0.8, cr * 0.62, 0, Math.PI, 0); ctx.fill();
+    // between caves: the next cave's mouth across the valley
+    let nx = 0, ny = 0;
+    if (!final) {
+      const nt = window.ECHO_ARENAS?.[window.COOP_STAGES?.[stage + 1]?.arena ?? 0]?.theme, nrgb = nt ? nt.wall : COL.exit;
+      nx = W * 0.86; ny = H * 0.82;
+      ctx.fillStyle = '#0a0820';
+      ctx.beginPath(); ctx.moveTo(W * 0.62, H); ctx.quadraticCurveTo(W * 0.75, H * 0.5, W * 0.9, H * 0.55); ctx.quadraticCurveTo(W * 1.02, H * 0.6, W + 10, H); ctx.closePath(); ctx.fill();
+      glow(nx, ny, cr * 2.4, nrgb, 0.5 + 0.2 * Math.sin(clock * 3));
+      ctx.fillStyle = `rgba(${nrgb}, 0.6)`; ctx.beginPath(); ctx.ellipse(nx, ny, cr, cr * 0.8, 0, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = '#05040f'; ctx.beginPath(); ctx.ellipse(nx, ny + 2, cr * 0.8, cr * 0.62, 0, Math.PI, 0); ctx.fill();
+    }
+    // fireflies
+    for (let k = 0; k < 16; k++) {
+      const fx2 = W * ((k * 0.137 + Math.sin(clock * 0.3 + k) * 0.05) % 1), fy = H * (0.55 + 0.35 * ((k * 0.311) % 1)) + Math.sin(clock * 1.1 + k * 2) * 10;
+      const a = 0.5 + 0.5 * Math.sin(clock * 3 + k * 1.7);
+      glow(fx2, fy, 9, '230, 255, 140', 0.5 * a);
+      ctx.fillStyle = `rgba(240, 255, 170, ${a})`; ctx.beginPath(); ctx.arc(fx2, fy, 1.6, 0, Math.PI * 2); ctx.fill();
+    }
+    // the bats: out of the mouth one after another, then (final) a loop together round the moon
+    // and away into the stars; (between caves) a swoop across into the next mouth
+    const dur = final ? EXIT_FINAL - EXIT_IN : EXIT_NEXT - EXIT_IN, n = bats.length;
+    const S = Math.min(W, H) * 0.075;
+    bats.forEach((b, k) => {
+      const lag = k * 0.3, u = Math.max(0, Math.min(1, (t - lag) / (dur - 0.3 - (n - 1) * 0.3)));
+      if (t - lag < 0) return;
+      let x, y, sc;
+      if (final) {
+        // out and up to the moon, then a loop round it all together (spread round the ring), then off toward the stars
+        const ring = (v) => { const a = Math.PI * 1.15 + v * Math.PI * 2 + (k / n) * Math.PI * 2, rr = mr * (2.5 - v * 0.3); return [mx + Math.cos(a) * rr * 1.3, my + Math.sin(a) * rr * 0.85]; };
+        if (u < 0.3) { const v = u / 0.3, e = v * (2 - v), [rx, ry] = ring(0); x = cx + (rx - cx) * e; y = cy - cr * 0.3 + (ry - cy) * e - Math.sin(v * Math.PI) * H * 0.12; sc = 0.6 + 0.6 * v; }
+        else if (u < 0.75) { const v = (u - 0.3) / 0.45; [x, y] = ring(v * 1.25); sc = 1.2 - v * 0.3; }
+        else { const v = (u - 0.75) / 0.25, [sx2, sy2] = ring(1.25), e = v * v; x = sx2 + (W * (0.3 + k * 0.14) - sx2) * e; y = sy2 + (-H * 0.05 - sy2) * e; sc = 0.9 * (1 - v * 0.8); }
+      } else {
+        const e = u * u * (3 - 2 * u);
+        x = cx + (nx - cx) * e; y = cy - cr * 0.3 + (ny - cy) * e - Math.sin(e * Math.PI) * H * (0.32 + (k % 2) * 0.08) + Math.sin(t * 6 + k) * 4; sc = 0.7 + 0.5 * Math.sin(e * Math.PI) - (e > 0.92 ? (e - 0.92) * 8 : 0);
+      }
+      if (sc <= 0.05) return;
+      // a sparkly trail in the bat's colour
+      if (Math.random() < 0.7) particles.push({ x: (x - ox) / PX, y: (y - oy) / PX, vx: (Math.random() - 0.5) * 0.4, vy: 0.3, life: 0.6, rgb: b.rgb, s: 3 });
+      glow(x, y, S * sc * 1.6, b.rgb, 0.35);
+      const prev = b.nightX ?? x;
+      b.nightX = x;
+      if (b.look && window.EchoLooks?.draw2D) {
+        try { window.EchoLooks.draw2D(ctx, b.look, x, y, S * sc * 0.5, { face: x >= prev ? 1 : -1, flap: clock * 22 / (2 * Math.PI) + k * 0.2, alpha: 1 }); return; } catch { /* plain bat below */ }
+      }
+      ctx.fillStyle = b.color;
+      const r = S * sc * 0.5, fl = Math.sin(clock * 22 + k);
+      ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+      for (const sd of [-1, 1]) { ctx.beginPath(); ctx.moveTo(x + sd * r * 0.6, y); ctx.lineTo(x + sd * r * 2.4, y - r * fl); ctx.lineTo(x + sd * r * 1.4, y + r * 0.4); ctx.closePath(); ctx.fill(); }
+    });
+    // their sparkly trails (the particles above, in screen space)
+    for (const p of particles) {
+      ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
+      ctx.fillRect(X(p.x) - 1.5, Y(p.y) - 1.5, 3, 3);
+    }
+    // words
+    const size = Math.max(13, Math.min(20, H / 26));
+    const a = Math.min(1, t * 1.5);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const next = !final ? window.COOP_STAGES?.[stage + 1] : null;
+    const title = final ? (stageCount() > 1 ? 'Free at last!' : 'Out of the cave!') : `Next: ${next ? next.name : 'the next cave'}`;
+    const sub = final ? (stageCount() > 1 ? `All ${stageCount()} caves done. Into the night, together!` : 'Into the night, together!') : `Cave ${stage + 2} of ${stageCount()}`;
+    const ty = H * 0.56;
+    ctx.font = `700 ${size * 2}px ${FONT}`;
+    ctx.fillStyle = `rgba(5, 6, 15, ${0.8 * a})`; ctx.fillText(title, W / 2, ty + 4);
+    ctx.fillStyle = `rgba(255, 244, 200, ${a})`; ctx.fillText(title, W / 2, ty);
+    ctx.font = `600 ${size * 0.9}px ${FONT}`;
+    ctx.fillStyle = `rgba(5, 6, 15, ${0.7 * a})`; ctx.fillText(sub, W / 2 + 1, ty + size * 1.7 + 2);
+    ctx.fillStyle = `rgba(232, 236, 255, ${0.9 * a})`; ctx.fillText(sub, W / 2, ty + size * 1.7);
   }
 
   // eyes that glow in the dark: they show even when the body doesn't
@@ -2022,22 +2940,24 @@
   const DECO_CYAN = '120, 235, 255', DECO_VIOLET = '175, 125, 255';
   // 2D: the odd mushroom or crystal on a ledge, and crystals hanging from the ceiling
   function drawDecor(tx0, tx1, ty0, ty1) {
+    // (Explore: in the cave's own accent colours)
+    const accA = explore && TH && TH.look ? rgbStr(TH.look.accA) : DECO_CYAN, accB = explore && TH && TH.look ? rgbStr(TH.look.accB) : DECO_VIOLET;
     for (let ty = ty0; ty <= ty1; ty++) {
       for (let tx = tx0; tx <= tx1; tx++) {
-        if (!solid(tx, ty)) continue;
+        if (!rockAt(tx, ty)) continue;
         const a = Math.max(L.lit[ty * L.w + tx], nearGlow(tx + 0.5, ty + 0.5));
         if (a < 0.02) continue;
         const hsh = tileHash(tx, ty), up = !solid(tx, ty - 1), down = !solid(tx, ty + 1);
-        const rgb = tileHash(tx, ty, 3) < 0.55 ? DECO_CYAN : DECO_VIOLET;
+        const rgb = tileHash(tx, ty, 3) < 0.55 ? accA : accB;
         ctx.globalAlpha = Math.min(1, a * 1.25);
         if (up && hsh < 0.12) {
           const n = 2 + Math.floor(tileHash(tx, ty, 1) * 3);
-          glow(X(tx + 0.5), Y(ty), PX * 0.6, DECO_CYAN, 0.35);
+          glow(X(tx + 0.5), Y(ty), PX * 0.6, accA, 0.35);
           for (let j = 0; j < n; j++) {
             const mx = X(tx + 0.2 + tileHash(tx, ty, 20 + j) * 0.6), sc = PX * (0.9 + tileHash(tx, ty, 10 + j)) * 0.1, my = Y(ty);
-            ctx.fillStyle = `rgba(${DECO_CYAN}, 0.75)`;
+            ctx.fillStyle = `rgba(${accA}, 0.75)`;
             ctx.fillRect(mx - sc * 0.15, my - sc * 1.2, sc * 0.3, sc * 1.2);
-            ctx.fillStyle = `rgb(${DECO_CYAN})`;
+            ctx.fillStyle = `rgb(${accA})`;
             ctx.beginPath(); ctx.ellipse(mx, my - sc * 1.2, sc * 0.7, sc * 0.45, 0, Math.PI, 0); ctx.fill();
           }
         } else if ((up && hsh < 0.2) || (down && hsh > 0.92)) {
@@ -2303,10 +3223,21 @@
     }
   }
 
-  function drawBat(b, threeD) {
-    const x = X(b.x), y = Y(b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0)), r = PX * R;
+  function drawBat(b, threeD, into = 0) {
+    const x = X(b.x), y = Y(b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0)), r = PX * R * (1 - into * 0.75);
+    // Explore: a fallen bat the team can revive (it has a heart to spend) shows a pulsing heart
+    if (b.ko && explore && teamHearts > 0 && phase === 'play') {
+      const p = 0.75 + 0.25 * Math.sin(clock * 6);
+      glow(x + r * 2.2, y - r * 2.2, PX * 0.5, HEART_RGB, 0.45 * p);
+      heart(x + r * 2.2, y - r * 2.2, PX * 0.13 * (0.9 + 0.2 * p), true);
+    }
+    if (b.shield && !b.ko && !into) {
+      // a shimmering bubble (3D draws its own)
+      if (!threeD) { ctx.strokeStyle = `rgba(${PW.shield.rgb}, ${0.55 + 0.2 * Math.sin(clock * 5)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r * 2.3, 0, Math.PI * 2); ctx.stroke(); }
+      glow(x, y, r * 3, PW.shield.rgb, 0.18);
+    }
     if (!threeD) {
-      const blink = !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0));
+      const blink = !into && !b.ko && ((b.hurt > 0 && Math.floor(b.hurt * 12) % 2 === 0) || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0));
       if (!blink && b.look && window.EchoLooks?.draw2D) {
         // the bat's own look, over a soft ring in its seat colour so teammates stay easy to tell apart
         glow(x, y, r * 3, b.rgb, b.dashT > 0 ? 0.5 : 0.28);
@@ -2316,14 +3247,14 @@
         }
         try {
           window.EchoLooks.draw2D(ctx, b.look, x, y, r, {
-            face: b.face || 1, flap: clock * (b.ko ? 6 : b.dashT > 0 ? 40 : 18) / (2 * Math.PI) + b.i * 0.16,
-            alpha: b.ko ? 0.4 : 1, eyesClosed: b.ko,
+            face: b.face || 1, flap: clock * (b.ko ? 6 : b.dashT > 0 || into ? 40 : 18) / (2 * Math.PI) + b.i * 0.16,
+            alpha: (b.ko ? 0.4 : b.ghostT > 0 ? 0.5 : 1) * (1 - into * 0.5), eyesClosed: b.ko,
           });
         } catch { b.look = null; }
       } else if (!blink) {
         ctx.save();
         ctx.translate(x, y);
-        ctx.globalAlpha = b.ko ? 0.4 : 1;
+        ctx.globalAlpha = (b.ko ? 0.4 : b.ghostT > 0 ? 0.5 : 1) * (1 - into * 0.5);
         glow(0, 0, r * 3, b.rgb, b.dashT > 0 ? 0.5 : 0.28);
         const flap = Math.sin(clock * (b.ko ? 6 : b.dashT > 0 ? 40 : 18) + b.i);
         ctx.fillStyle = b.color;
@@ -2365,16 +3296,29 @@
   // Explore: where to go next. When the next unlit lantern (or, after the last one, the exit) is off
   // the screen, a small green marker at the edge points the way (as the crow flies)
   function drawWayMarker() {
-    const t = L.checkpoints[cpIndex + 1] || L.goal;
+    if (phase !== 'play' && phase !== 'count') return;
+    // Explore with keys: once they're all found it points straight at the exit; until then at the next
+    // lantern, and once the lanterns are all lit (or after a good long look round) at the nearest key
+    let t = L.checkpoints[cpIndex + 1] || L.goal, keyHint = false;
+    if (L.keys.length) {
+      const left = L.keys.filter((k) => !k.got);
+      if (!left.length) t = L.goal;
+      else if (!L.checkpoints[cpIndex + 1] || caveTime > 100) {
+        const me = bats.find((b) => (b.ctrl === 'local' || viewer === b.i) && !b.ko) || bats.find((b) => !b.ko) || bats[0];
+        t = left.reduce((a, k) => (Math.hypot(k.x - me.x, k.y - me.y) < Math.hypot(a.x - me.x, a.y - me.y) ? k : a));
+        keyHint = true;
+      }
+    }
     const x = X(t.x), y = Y(t.y), m = 30;
     if (x > m && x < W - m && y > m + 40 && y < H - m) return;
     const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 44, Math.min(H - m - 30, y)), a = Math.atan2(y - cy, x - cx);
-    const rgb = t === L.goal && !exitOpen() ? COL.owl : COL.exit, pulse = 0.65 + 0.25 * Math.sin(clock * 3);
+    const rgb = keyHint ? KEY_RGB : t === L.goal && !exitOpen() ? COL.owl : COL.exit, pulse = 0.65 + 0.25 * Math.sin(clock * 3);
     glow(cx, cy, 18, rgb, 0.35 * pulse);
     ctx.save();
     ctx.translate(cx, cy);
     ctx.fillStyle = `rgba(${rgb}, ${0.85 * pulse})`;
-    ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 0); ctx.lineTo(0, 7); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill();
+    if (keyHint) drawKey(0, 0, 6, KEY_RGB, 0.95);
+    else { ctx.beginPath(); ctx.moveTo(0, -7); ctx.lineTo(5, 0); ctx.lineTo(0, 7); ctx.lineTo(-5, 0); ctx.closePath(); ctx.fill(); }
     ctx.rotate(a);
     ctx.beginPath(); ctx.moveTo(16, 0); ctx.lineTo(9, -5); ctx.lineTo(9, 5); ctx.closePath(); ctx.fill();
     ctx.restore();
@@ -2532,18 +3476,39 @@
   // the level so far: a bar with lantern ticks, each bat's dot, and tries left
   function drawProgress() {
     const size = Math.max(13, Math.min(20, H / 26)), bh = size * 1.4, by = H - bh - 10;
-    const bw = Math.min(440, W * 0.5), bx = W / 2 - bw / 2;
+    // (Explore gets a little more room: the cave of the run, keys and the team's hearts sit in it too)
+    const bw = explore ? Math.min(500, W * 0.6) : Math.min(440, W * 0.5), bx = W / 2 - bw / 2;
     pill(bx, by, bw, bh, variant === 'escape' ? `rgba(${COL.danger}, 0.8)` : 'rgba(150, 130, 255, 0.75)', 8);
     const cy = by + bh / 2;
     ctx.font = `700 ${Math.round(size * 0.62)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    let lx = bx + bh * 0.5;
+    if (explore && stageCount() > 1) {
+      // which cave: "2/3" in the cave's own colour
+      const t = `${stage + 1}/${stageCount()}`;
+      ctx.fillStyle = `rgb(${wallRgb()})`; ctx.fillText(t, lx, cy + 1);
+      lx += ctx.measureText(t).width + size * 0.6;
+    }
     ctx.fillStyle = 'rgba(234, 230, 255, 0.85)';
     const label = 'TRIES', lw = ctx.measureText(label).width;
-    ctx.fillText(label, bx + bh * 0.5, cy + 1);
+    ctx.fillText(label, lx, cy + 1);
     for (let k = 0; k < TRIES; k++) {
-      ctx.beginPath(); ctx.arc(bx + bh * 0.5 + lw + 8 + k * size * 0.62, cy, size * 0.2, 0, Math.PI * 2);
+      ctx.beginPath(); ctx.arc(lx + lw + 8 + k * size * 0.62, cy, size * 0.2, 0, Math.PI * 2);
       ctx.fillStyle = k < tries ? `rgb(${COL.exit})` : 'rgba(214, 208, 255, 0.18)'; ctx.fill();
     }
-    const t0 = bx + bh * 0.5 + lw + 8 + TRIES * size * 0.62 + 6, t1 = bx + bw - bh * 0.7, tw = t1 - t0;
+    let t0 = lx + lw + 8 + TRIES * size * 0.62 + 6;
+    if (explore) {
+      // a key for each key in this cave (bright once found), then the team's hearts
+      for (let k = 0; k < L.keys.length; k++) {
+        drawKey(t0 + size * 0.55, cy, size * 0.36, L.keys[k].got ? KEY_RGB : '150, 140, 120', L.keys[k].got ? 1 : 0.55);
+        t0 += size * 1.05;
+      }
+      heart(t0 + size * 0.45, cy, size * 0.3, teamHearts > 0);
+      ctx.fillStyle = teamHearts > 0 ? `rgb(${HEART_RGB})` : 'rgba(255, 160, 180, 0.5)';
+      ctx.font = `700 ${Math.round(size * 0.66)}px ${FONT}`; ctx.textAlign = 'left';
+      ctx.fillText(String(teamHearts), t0 + size * 0.85, cy + 1);
+      t0 += size * 0.85 + ctx.measureText(String(teamHearts)).width + size * 0.5;
+    }
+    const t1 = bx + bw - bh * 0.7, tw = t1 - t0;
     // Explore: how far along by flying distance to the exit (the bar fills to the team's best so far)
     const at = explore ? (x, y) => t0 + tw * along(x, y) : (x) => t0 + tw * Math.max(0, Math.min(1, (x - L.start.x) / (L.goal.x - L.start.x)));
     ctx.fillStyle = 'rgba(214, 208, 255, 0.16)'; roundRect(t0, cy - 2, tw, 4, 2); ctx.fill();
@@ -2573,9 +3538,11 @@
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6 + 5);
       ctx.fillStyle = '#f4f1ff'; ctx.fillText(String(Math.ceil(countdown)), cx, mid - size * 1.6);
       const ht = Math.round(HUNT_TIME * (explore ? HUNT_EXPLORE : 1)), clockText = `${Math.floor(ht / 60)}:${String(ht % 60).padStart(2, '0')}`;
+      const nk = L.keys.length, keyLine = `Find ${nk === 1 ? 'the key' : `${nk} keys`} to unlock the cave mouth. Switches open gates.`;
+      const caveName = stageCount() > 1 ? `Cave ${stage + 1} of ${stageCount()}: ${L.def.stageName}${slipK() ? ' (slippery ice!)' : ''}` : '';
       const intro = explore ? {
-        classic: ['Explore the cave and find the green light!', 'Squeak to see. Bite (dash) or slash monsters to knock them out.'],
-        escape: ['ESCAPE: find the way out of the cave!', 'Monsters can\'t be beaten. Bite or slash to knock them back.'],
+        classic: [caveName || 'Explore the cave and find the way out!', keyLine],
+        escape: [`ESCAPE${caveName ? ' · ' + caveName : ': find the way out of the cave!'}`, keyLine + ' Monsters can\'t be beaten.'],
         hunt: [`HUNT: knock out ${huntGoal} monsters to open the exit! ${clockText} on the clock`, 'Quick kills in a row multiply. Get out early for a bonus.'],
       }[variant] : {
         classic: ['Fly together to the green light!', 'Squeak to see. Bite (dash) or slash monsters to knock them out.'],
@@ -2585,7 +3552,7 @@
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
         : [...intro,
-          'Reach a lantern to revive fallen teammates.',
+          explore ? 'Grab hearts: fly to a fallen teammate to revive them.' : 'Reach a lantern to revive fallen teammates.',
           localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash · keys: slash`
             : touchUsed ? 'Drag to fly · tap to squeak · DASH bites · SLASH swats' : 'WASD/arrows fly · F/Space squeak · G dash-bite · X/H wing slash · Esc pause'];
       lines.forEach((t, k) => {
@@ -2609,7 +3576,9 @@
     if (me && me.ko && phase === 'play' && !(banner && banner.t > 0)) {
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
-      ctx.fillText(bats.some((b) => !b.ko) ? 'You\'re a ghost. Your team revives you at the next lantern.' : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
+      const ghostTip = !explore ? 'You\'re a ghost. Your team revives you at the next lantern.'
+        : teamHearts > 0 ? 'You\'re a ghost. Fly to a teammate: they have a heart to revive you!' : 'You\'re a ghost. A teammate with a heart (or the next lantern) revives you.';
+      ctx.fillText(bats.some((b) => !b.ko) ? ghostTip : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
     }
   }
 
@@ -2662,6 +3631,55 @@
     window.EchoChomp?.icon(ctx, b.x, b.y - b.r * 0.2, b.r * 0.34, ready);
   }
 
+  // The POWER button (as in Battle): the held power's icon and name; a timed one drains its rim
+  let powerSeen = null, powerPopAt = 0;
+  function drawPowerButton() {
+    const me = localBat(0), bt = powerButton();
+    if (!me) return;
+    if (me.held !== powerSeen) { powerSeen = me.held; powerPopAt = clock; }
+    const type = me.held, pw = PW[type], ready = me.specialCd <= 0, rgb = pw.rgb, pulse = ready ? 0.5 + 0.5 * Math.sin(clock * 6) : 0;
+    const u = Math.min(1, (clock - powerPopAt) / 0.35), pop = u < 1 ? 1 + Math.sin(u * Math.PI) * 0.35 - (1 - u) * 0.6 : 1;
+    ctx.save();
+    ctx.translate(bt.x, bt.y); ctx.scale(pop, pop); ctx.translate(-bt.x, -bt.y);
+    if (ready) glow(bt.x, bt.y, bt.r * 2, rgb, 0.22 + 0.18 * pulse);
+    const g = ctx.createRadialGradient(bt.x - bt.r * 0.3, bt.y - bt.r * 0.4, bt.r * 0.1, bt.x, bt.y, bt.r);
+    g.addColorStop(0, `rgba(${rgb}, 0.5)`); g.addColorStop(1, 'rgba(20, 14, 52, 0.8)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r, 0, Math.PI * 2);
+    glowStroke(`rgba(${rgb}, 0.95)`, 3, ready ? `rgba(${rgb}, 1)` : null, 1 + pulse);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    drawIcon(type, bt.x, bt.y - bt.r * 0.14, bt.r * 0.42 * (1 + 0.06 * pulse), ready ? `rgb(${rgb})` : `rgba(${rgb}, 0.5)`);
+    const name = pw.name.toUpperCase();
+    ctx.font = `700 ${Math.round(bt.r * (name.length > 7 ? 0.22 : 0.27))}px ${FONT}`;
+    ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.5)';
+    ctx.fillText(name, bt.x, bt.y + bt.r * 0.52);
+    if (type !== 'ghost') {
+      const left = me.heldLeft > 0 ? Math.min(1, me.heldLeft / TIMED_LIFE) : 1, going = me.heldLeft > 0;
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(10, 8, 30, 0.75)'; ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r + 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = going && me.heldLeft < 2.5 && Math.sin(clock * 16) > 0 ? '#ffffff' : `rgb(${rgb})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(bt.x, bt.y, bt.r + 5, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left); ctx.stroke();
+      ctx.lineCap = 'butt';
+      const txt = going ? `${Math.ceil(me.heldLeft)}s` : `${TIMED_LIFE}s`, fs = Math.round(bt.r * 0.3);
+      ctx.font = `700 ${fs}px ${FONT}`;
+      const tw = ctx.measureText(txt).width + fs * 0.9, ty = bt.y - bt.r * 0.55, tx = bt.x - bt.r - 9 - tw / 2;
+      ctx.fillStyle = 'rgba(10, 8, 30, 0.8)';
+      roundRect(tx - tw / 2, ty - fs * 0.65, tw, fs * 1.3, fs * 0.65); ctx.fill();
+      ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.fillStyle = '#f4f1ff';
+      ctx.fillText(txt, tx, ty + 1);
+    }
+    if (!touchUsed) {
+      ctx.font = `700 ${Math.round(bt.r * 0.28)}px ${FONT}`;
+      ctx.fillStyle = 'rgba(244, 241, 255, 0.75)';
+      ctx.fillText('E', bt.x + bt.r * 0.78, bt.y + bt.r * 0.78);
+    }
+    ctx.restore();
+  }
+
   function drawSticks() {
     const rect = canvas.getBoundingClientRect();
     for (const s of sticks.values()) {
@@ -2709,14 +3727,16 @@
         lines,
       };
     }
+    const run = r.map === 'explore' && (r.stages || 1) > 1;
     const lines = r.players.map((p) => ({
-      text: `${who(p)}: ${s(p.moths, 'moth')} · ${v === 'classic' ? `${p.kills} knocked out` : `${p.stuns} knocked back`}${p.kos ? ` · down ${p.kos}×` : ''}`,
+      text: `${who(p)}: ${s(p.moths, 'moth')} · ${v === 'classic' ? `${p.kills} knocked out` : `${p.stuns} knocked back`}${p.keys ? ` · ${s(p.keys, 'key')}` : ''}${p.revives ? ` · revived ${p.revives}` : ''}${p.kos ? ` · down ${p.kos}×` : ''}`,
       got: p.alive && r.won, color: p.color,
     }));
-    lines.push({ text: `${where} · Team: ${r.team.moths} of ${r.mothsTotal} moths · ${v === 'classic' ? `${r.team.kills} knocked out` : `${r.team.stuns} knocked back`} · ${r.time}s`, got: r.won });
+    lines.push({ text: `${run ? '' : `${where} · `}Team: ${r.team.moths}${run ? '' : ` of ${r.mothsTotal}`} moths · ${v === 'classic' ? `${r.team.kills} knocked out` : `${r.team.stuns} knocked back`}${run ? ` · ${s(r.team.keys || 0, 'key')}` : ''} · ${r.time}s`, got: r.won });
     return {
-      title: v === 'escape' ? (r.won ? 'You escaped!' : 'Caught in the dark') : (r.won ? 'Out of the dark together!' : 'The monsters won'),
-      big: r.won ? `Try ${r.triesUsed} of ${r.triesTotal}` : `${Math.round(r.progress * 100)}% of the way · ${r.checkpoint}/${r.checkpoints} lanterns`,
+      title: v === 'escape' ? (r.won ? 'You escaped!' : 'Caught in the dark') : (r.won ? (run ? 'Free at last, together!' : 'Out of the dark together!') : 'The monsters won'),
+      big: run ? (r.won ? `All ${r.stages} caves!` : `Cave ${r.stage} of ${r.stages} · ${Math.round(r.progress * 100)}%`)
+        : r.won ? `Try ${r.triesUsed} of ${r.triesTotal}` : `${Math.round(r.progress * 100)}% of the way · ${r.checkpoint}/${r.checkpoints} lanterns`,
       lines,
     };
   }
@@ -2746,6 +3766,18 @@
     get rings() { return rings; },
     get bursts() { return bursts; },
     get result() { return result; },
+    // Explore extras
+    get stage() { return stage; },
+    get teamHearts() { return teamHearts; },
+    set teamHearts(n) { teamHearts = Math.max(0, Math.min(TEAM_HEARTS, n | 0)); },
+    get shots() { return shots; },
+    get exitClock() { return exitClock; },
+    PW, STAGES: () => window.COOP_STAGES,
+    give: (i, type) => { const b = bats[i]; if (b && PW[type]) grabPower(b, { x: b.x, y: b.y, type }); },
+    special: (i, dx, dy) => useSpecial(bats[i], dx, dy),
+    hitSwitch: (id, i = 0) => { const gt = L && L.gates[id]; if (gt) hitSwitch(gt, bats[i] || bats[0]); },
+    nextLevel: () => { if (mode !== 'client') nextLevel(); },
+    startExit: () => { if (mode !== 'client') startExit(); },
     VIEW_W,
     get view2screen() { return { PX, ox, oy }; },
     autopilot(i, on = true, skill = 'pro') {

@@ -203,8 +203,8 @@ window.makeRunLevel = function makeRunLevel(seed, length = 1200) {
 // `variant` ('classic', 'escape' or 'hunt'): Escape packs monsters tighter and
 // brings owls and ghost moths in a section earlier; Hunt has a few more to smash.
 // `map` 'explore' builds the big free-roaming Explore cave instead (makeCoopExplore below).
-window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', variant = 'classic', mapKind = 'scroll') {
-  if (mapKind === 'explore') return window.makeCoopExplore(seed, difficulty, variant);
+window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', variant = 'classic', mapKind = 'scroll', stage = 0) {
+  if (mapKind === 'explore') return window.makeCoopExplore(seed, difficulty, variant, stage);
   let s = seed >>> 0;
   const rand = () => {
     s = (s + 0x6d2b79f5) >>> 0;
@@ -342,11 +342,28 @@ window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', varia
 // (so host and guests build the same one), same tiles as the Co-op Run. A grid of
 // chambers joined by wide winding tunnels in every direction (a random spanning tree,
 // plus a few loops), so there are side branches and dead ends with moths in them.
-// The start is in the leftmost column of chambers; the green exit is in whichever chamber of
-// the three rightmost columns is the longest flight away, so the way winds; three lanterns sit along the way between them, in order. Monsters get denser, and
-// new kinds join in, the closer they are to the exit (the same four "sections").
-window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', variant = 'classic') {
-  let s = (seed ^ 0x5eed) >>> 0;
+// The start is in the leftmost column of chambers; the exit (a big cave mouth out to the
+// night sky) is in whichever chamber of the three rightmost columns is the longest flight
+// away, so the way winds; lanterns sit along the way between them, in order. Monsters get
+// denser, and new kinds join in, the closer they are to the exit (the same four "sections").
+//
+// Classic and Escape fly a run of three caves (`stage` 0, 1, 2: crystal, lava, ice, see
+// COOP_STAGES); Hunt is one crystal cave. Each cave also has, in the hard-to-reach spots:
+//   k  a key (stage + 1 of them; the exit stays locked until the team has them all; none in Hunt)
+//   h  a heart (the team keeps them to revive fallen bats)
+//   p  a power-up (its type in def.powers['x,y'])
+//   G  a gate: solid rock until its switch (w) is hit. def.gates: [{ tiles: [[x, y]...], sw: [x, y] }]
+// Hard-to-reach means: dead-end chambers (the farthest from the way through first), pockets
+// sealed off by a gate, and little nooks at the end of a one-tile-wide crawl into the rock.
+window.COOP_STAGES = [
+  { name: 'Crystal Cave', arena: 0 },
+  { name: 'Lava Cave', arena: 1 },
+  { name: 'Ice Cave', arena: 3 },
+];
+window.COOP_POWERS = ['speed', 'shield', 'fire', 'freeze', 'ghost', 'mega', 'frenzy'];
+window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', variant = 'classic', stage = 0) {
+  stage = Math.max(0, Math.min(2, stage | 0));
+  let s = (seed ^ 0x5eed ^ Math.imul(stage, 0x9e3779b1)) >>> 0;
   const rand = () => {
     s = (s + 0x6d2b79f5) >>> 0;
     let t = s;
@@ -356,12 +373,15 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
   };
   const pick = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
   const spread = ({ easy: 1.4, normal: 1, hard: 0.78 }[difficulty] || 1) * ({ escape: 0.85, hunt: 0.88 }[variant] || 1);
-
-  const CW = 12, CH = 10, NX = 12, NY = 5;
+  // a run of three caves keeps each one a little smaller (10 x 5 chambers, 122 x 52 tiles)
+  const run = variant !== 'hunt';
+  const CW = 12, CH = 10, NX = run ? 10 : 12, NY = 5;
   const W = NX * CW + 2, H = NY * CH + 2;
   const g = [];
   for (let y = 0; y < H; y++) g.push(new Array(W).fill('#'));
-  const open = (x, y) => x > 0 && y > 0 && x < W - 1 && y < H - 1 && g[y][x] !== '#';
+  // (a closed gate counts as rock)
+  const open = (x, y) => x > 0 && y > 0 && x < W - 1 && y < H - 1 && g[y][x] !== '#' && g[y][x] !== 'G';
+  const rock = (x, y) => x <= 0 || y <= 0 || x >= W - 1 || y >= H - 1 || g[y][x] === '#';
   const carve = (x, y) => { if (x > 0 && y > 0 && x < W - 1 && y < H - 1) g[y][x] = '.'; };
   const disk = (cx, cy, r) => {
     for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
@@ -416,10 +436,10 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     }
   }
 
-  // distance (in tiles flown) from one tile to every open tile
-  const flood = (fx, fy) => {
-    const d = new Int32Array(W * H).fill(-1), q = [fy * W + fx];
-    d[q[0]] = 0;
+  // distance (in tiles flown) from some tiles to every open tile
+  const flood = (...from) => {
+    const d = new Int32Array(W * H).fill(-1), q = [];
+    for (const [fx, fy] of from) { d[fy * W + fx] = 0; q.push(fy * W + fx); }
     for (let h = 0; h < q.length; h++) {
       const k = q[h], x = k % W, y = (k - x) / W;
       for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
@@ -429,16 +449,17 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     }
     return d;
   };
-  // start, and the exit: the farthest chamber (by flying) in the three rightmost columns
+  // start, and the exit: the farthest chamber (by flying) in the three rightmost columns.
+  // The exit chamber is roomy: the big cave mouth opens in its back wall.
   const S = cell(0, sj);
   const sx = Math.floor(S.cx), sy = Math.floor(S.cy);
   disk(sx + 0.5, sy + 0.5, 3.2);
-  const fromStart = flood(sx, sy);
+  const fromStart = flood([sx, sy]);
   let E = cell(NX - 1, 0);
   for (const c of cells) if (c.i >= NX - 3 && fromStart[Math.floor(c.cy) * W + Math.floor(c.cx)] > fromStart[Math.floor(E.cy) * W + Math.floor(E.cx)]) E = c;
   const ex = Math.floor(E.cx), ey = Math.floor(E.cy);
-  disk(ex + 0.5, ey + 0.5, 2.2);
-  const dist = flood(ex, ey);
+  disk(ex + 0.5, ey + 0.5, 3.1);
+  const dist = flood([ex, ey]);
   const total = dist[sy * W + sx];
   const D = (x, y) => (open(x, y) ? dist[y * W + x] : -1);
   // the way from the start to the exit, for the lanterns
@@ -449,7 +470,7 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     [x, y] = nxt; route.push([x, y]);
   }
   const lanterns = [];
-  for (const f of [0.27, 0.52, 0.76]) {
+  for (const f of run ? [0.34, 0.67] : [0.27, 0.52, 0.76]) {
     let [x, y] = route[Math.round(f * (route.length - 1))];
     // a little way down toward the floor, but still on the way through
     for (let k = 0; k < 2 && open(x, y + 1) && open(x, y + 2); k++) y++;
@@ -463,20 +484,142 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
   const free = (x, y) => open(x, y) && g[y][x] === '.';
   const openBelow = (x, y) => { let n = 0; while (open(x, y + n + 1)) n++; return n; };
   const roomy = (x, y, r) => { for (let b = y - r; b <= y + r; b++) for (let a = x - r; a <= x + r; a++) if (!open(a, b)) return false; return true; };
-
-  // pickups: extra moths tucked in dead-end chambers, the rest scattered
   const deg = cells.map(() => 0);
   for (const [a, b] of links) { deg[a]++; deg[b]++; }
+  const openTiles = [];
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if (open(x, y) && D(x, y) >= 0) openTiles.push([x, y]);
+  const any = () => openTiles[Math.floor(rand() * openTiles.length)];
+
+  // ---- keys, switch gates, power-ups and hearts, in the hard-to-reach spots ----
+  const routeSet = new Set(route.map(([x, y]) => y * W + x));
+  const fromRoute = flood(...route);
+  const items = [], gates = [], gateTiles = [], powers = {};
+  const inPocket = new Uint8Array(W * H);   // 1 + the gate's index, for tiles sealed behind a gate
+  const place = (x, y, ch, type) => { g[y][x] = ch; items.push([x, y]); if (type) powers[`${x},${y}`] = type; };
+  // dead-end chambers (one tunnel in), the farthest from the way through first
+  const leaves = cells.filter((c, k) => deg[k] === 1 && c !== S && c !== E && free(Math.floor(c.cx), Math.floor(c.cy)))
+    .sort((a, b) => fromRoute[Math.floor(b.cy) * W + Math.floor(b.cx)] - fromRoute[Math.floor(a.cy) * W + Math.floor(a.cx)]);
+  // seal a dead end with a gate across its tunnel, and put its switch somewhere outside.
+  // The gate is every tile exactly t steps from the chamber's middle: any way out has to cross it.
+  const reach = () => { const d = flood([sx, sy]); let n = 0; for (let k = 0; k < W * H; k++) if (d[k] >= 0) n++; return n; };
+  function makeGate(c) {
+    const cx = Math.floor(c.cx), cy = Math.floor(c.cy), d = flood([cx, cy]);
+    let best = null;
+    for (let t = Math.max(c.rw, c.rh) + 2; t <= 13; t++) {
+      const ring = [];
+      for (let k = 0; k < W * H && ring.length <= 7; k++) if (d[k] === t) ring.push(k);
+      if (ring.length < 2 || ring.length > 7) continue;
+      const mx = ring.reduce((a, k) => a + (k % W), 0) / ring.length, my = ring.reduce((a, k) => a + Math.floor(k / W), 0) / ring.length;
+      if (ring.some((k) => Math.hypot((k % W) - mx, Math.floor(k / W) - my) > 3.6)) continue;
+      // nothing that matters behind it: the way through, a lantern, another pocket
+      let inner = 0, clash = false;
+      for (let k = 0; k < W * H; k++) if (d[k] >= 0 && d[k] <= t) { if (d[k] < t) inner++; if (routeSet.has(k) || inPocket[k] || g[Math.floor(k / W)][k % W] !== '.') clash = true; }
+      if (clash || inner < 14) continue;
+      // and it only shuts off the pocket: the rest of the cave stays reachable from the start
+      const before = reach();
+      for (const k of ring) g[Math.floor(k / W)][k % W] = 'G';
+      const after = reach();
+      for (const k of ring) g[Math.floor(k / W)][k % W] = '.';
+      if (before - after !== inner + ring.length) continue;
+      if (!best || ring.length < best.ring.length) best = { t, ring };
+    }
+    if (!best) return null;
+    // the switch: on a floor out in the cave, a short flight from the gate
+    const cands = [];
+    for (let k = 0; k < W * H; k++) {
+      if (d[k] < best.t + 4 || d[k] > best.t + 16 || inPocket[k]) continue;
+      const x = k % W, y = (k - x) / W;
+      if (free(x, y) && rock(x, y + 1) && open(x, y - 1) && !near(x, y, items, 3) && !near(x, y, lanterns, 2)) cands.push([x, y]);
+    }
+    if (!cands.length) return null;
+    const sw = cands[Math.floor(rand() * cands.length)], id = gates.length;
+    for (let k = 0; k < W * H; k++) if (d[k] >= 0 && d[k] < best.t) inPocket[k] = id + 1;
+    const tiles = best.ring.map((k) => [k % W, Math.floor(k / W)]);
+    for (const [x, y] of tiles) { g[y][x] = 'G'; gateTiles.push([x, y]); }
+    g[sw[1]][sw[0]] = 'w'; items.push(sw);
+    gates.push({ tiles, sw });
+    return { id, x: cx, y: cy };
+  }
+  // a little nook at the end of a one-tile-wide crawl into the rock (it never breaks into another cave)
+  function makeNook() {
+    for (let tries = 0; tries < 400; tries++) {
+      const [x, y] = any();
+      if (safe(x, y) || inPocket[y * W + x] || g[y][x] !== '.' || near(x, y, items, 6)) continue;
+      const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(rand() * 4)], px = -dy, py = dx;
+      if (!rock(x + dx, y + dy)) continue;
+      const n = pick(3, 5), path = [], nook = [];
+      for (let i = 1; i <= n; i++) path.push([x + dx * i, y + dy * i]);
+      for (let i = n + 1; i <= n + 2; i++) for (let j = -1; j <= 1; j++) nook.push([x + dx * i + px * j, y + dy * i + py * j]);
+      const mine = new Set([...path, ...nook].map(([a, b]) => b * W + a));
+      let ok = true;
+      for (const [a, b] of [...path.slice(1), ...nook]) {
+        if (a < 2 || b < 2 || a > W - 3 || b > H - 3) { ok = false; break; }
+        for (let v = -1; v <= 1 && ok; v++) for (let u = -1; u <= 1 && ok; u++) {
+          const qa = a + u, qb = b + v;
+          if (!mine.has(qb * W + qa) && !rock(qa, qb)) ok = false;
+        }
+        if (!ok) break;
+      }
+      if (!ok) continue;
+      for (const [a, b] of [...path, ...nook]) carve(a, b);
+      return [x + dx * (n + 2), y + dy * (n + 2)];
+    }
+    return null;
+  }
+  const spare = [];
+  const leafSpot = () => {
+    const c = spare.shift() || leaves.shift();
+    return c ? [Math.floor(c.cx), Math.floor(c.cy)] : null;
+  };
+  // somewhere well off the way through, if the dead ends and nooks run out
+  const farSpot = () => {
+    for (let tries = 0; tries < 2000; tries++) {
+      const [x, y] = any();
+      if (!safe(x, y) && free(x, y) && !inPocket[y * W + x] && fromRoute[y * W + x] >= 5 - tries / 600 && !near(x, y, items, 5)) return [x, y];
+    }
+    return null;
+  };
+  // a second thing in a pocket goes a little way from the first
+  const besideIn = (pk) => {
+    for (let r = 1.5; r < 4; r += 0.5) {
+      for (let k = 0; k < 40; k++) {
+        const x = pk.x + pick(-3, 3), y = pk.y + pick(-2, 2);
+        if (free(x, y) && inPocket[y * W + x] === pk.id + 1 && !near(x, y, items, r)) return [x, y];
+      }
+    }
+    return null;
+  };
+  const K = run ? stage + 1 : 0;
+  const pockets = [];
+  for (let want = run ? [1, 2, 2][stage] : 1; pockets.length < want && leaves.length;) {
+    const c = leaves.shift(), pk = makeGate(c);
+    if (pk) pockets.push(pk); else spare.push(c);
+  }
+  const POOL = window.COOP_POWERS;
+  const powerType = () => POOL[Math.floor(rand() * POOL.length)];
+  const putAt = (spot, ch, type) => { if (spot) place(spot[0], spot[1], ch, type); return !!spot; };
+  // the first pocket hides a key (Hunt: a power-up) and a heart; the second a power-up and a heart
+  if (pockets[0]) { putAt([pockets[0].x, pockets[0].y], K ? 'k' : 'p', K ? null : powerType()); putAt(besideIn(pockets[0]), 'h'); }
+  if (pockets[1]) { putAt([pockets[1].x, pockets[1].y], 'p', powerType()); putAt(besideIn(pockets[1]), 'h'); }
+  // the other keys: the farthest dead ends, then nooks
+  for (let n = K - (pockets[0] ? 1 : 0); n > 0; n--) putAt(leafSpot() || makeNook() || farSpot(), 'k');
+  // power-ups: a nook, then dead ends
+  putAt(makeNook() || leafSpot() || farSpot(), 'p', powerType());
+  putAt(leafSpot() || makeNook() || farSpot(), 'p', powerType());
+  if (!pockets[1]) putAt(makeNook() || leafSpot() || farSpot(), 'p', powerType());
+  // hearts: a nook, a dead end, and one more tucked away
+  putAt(makeNook() || leafSpot() || farSpot(), 'h');
+  putAt(leafSpot() || farSpot(), 'h');
+  if (!pockets[0]) putAt(farSpot(), 'h');
+
+  // moths: extra ones tucked in dead-end chambers, the rest scattered
   cells.forEach((c, k) => {
     if (deg[k] !== 1 || c === S || c === E) return;
     for (let n = pick(2, 3), tries = 0; n > 0 && tries < 20; tries++) {
       const x = Math.floor(c.cx) + pick(-2, 2), y = Math.floor(c.cy) + pick(-1, 1);
-      if (free(x, y)) { g[y][x] = 'm'; n--; }
+      if (free(x, y) && !near(x, y, items, 1.5)) { g[y][x] = 'm'; n--; }
     }
   });
-  const openTiles = [];
-  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) if (open(x, y) && D(x, y) >= 0) openTiles.push([x, y]);
-  const any = () => openTiles[Math.floor(rand() * openTiles.length)];
   for (let n = Math.round(openTiles.length / 110); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'm'; n--; } }
   for (let n = Math.round(openTiles.length / 150); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'e'; n--; } }
 
@@ -486,19 +629,21 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     : [['s', 'c'], ['s', 'c', 'o'], ['s', 'c', 'o', 'g'], ['s', 'c', 'o', 'g']])[sec];
   const fits = {
     // a spider hangs from a ceiling with 4 to 8 tiles of air below to drop into
-    s: (x, y) => !open(x, y - 1) && free(x, y) && openBelow(x, y) >= 4 && openBelow(x, y) <= 8,
+    s: (x, y) => rock(x, y - 1) && free(x, y) && openBelow(x, y) >= 4 && openBelow(x, y) <= 8,
     // a crawler paces a flat stretch of floor
-    c: (x, y) => free(x, y) && !open(x, y + 1) && !open(x - 1, y + 1) && !open(x + 1, y + 1) && open(x - 1, y) && open(x + 1, y) && open(x, y - 1) && open(x, y - 2),
+    c: (x, y) => free(x, y) && rock(x, y + 1) && rock(x - 1, y + 1) && rock(x + 1, y + 1) && open(x - 1, y) && open(x + 1, y) && open(x, y - 1) && open(x, y - 2),
     // an owl perches in open air with room to swoop
     o: (x, y) => free(x, y) && roomy(x, y, 1) && open(x - 2, y) && open(x + 2, y) && open(x, y - 2) && open(x, y + 2),
     g: (x, y) => free(x, y) && roomy(x, y, 1),
   };
   const used = { s: 0, c: 0, o: 0, g: 0 }, placed = [];
   const gap = [12, 10, 8.5, 7.5];
+  // (stage by stage the caves get a little busier)
+  const busy = 1 - stage * 0.06;
   for (let tries = 0; tries < 5000; tries++) {
     let [x, y] = any();
     if (safe(x, y)) continue;
-    const sec = section(x, y), want = gap[sec] * spread;
+    const sec = section(x, y), want = gap[sec] * spread * busy;
     if (near(x, y, placed, want)) continue;
     const kinds = kindsFor(sec).map((k) => [k, used[k] + rand() * 1.5]).sort((a, b) => a[1] - b[1]).map((a) => a[0]);
     for (const k of kinds) {
@@ -506,28 +651,30 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
       let px = x, py = y;
       if (k === 's') while (open(px, py - 1)) py--;
       if (k === 'c') while (open(px, py + 1)) py++;
-      if (!fits[k](px, py) || safe(px, py) || near(px, py, placed, want)) continue;
+      if (!fits[k](px, py) || safe(px, py) || near(px, py, placed, want) || near(px, py, items, 2.5) || near(px, py, gateTiles, 2.5)) continue;
       g[py][px] = k; used[k]++; placed.push([px, py]);
       break;
     }
   }
 
-  // loose ceiling crystals, never near the start, a lantern, the exit or right beside a spider
+  // loose ceiling crystals, never near the start, a lantern, the exit, a gate or right beside a spider
   const shardGap = [20, 16, 13, 11], shardK = ({ easy: 1.4, normal: 1, hard: 0.78 }[difficulty] || 1) * ({ escape: 0.85, hunt: 0.95 }[variant] || 1);
   const shards = [];
   for (let tries = 0; tries < 4000; tries++) {
     let [x, y] = any();
     while (open(x, y - 1)) y--;
-    if (safe(x, y) || !free(x, y) || !free(x, y + 1) || openBelow(x, y) < 3) continue;
-    if (near(x, y, shards, shardGap[section(x, y)] * shardK) || [-1, 0, 1].some((k) => g[y][x + k] === 's')) continue;
+    if (safe(x, y) || !free(x, y) || !free(x, y + 1) || openBelow(x, y) < 3 || !rock(x, y - 1)) continue;
+    if (near(x, y, shards, shardGap[section(x, y)] * shardK) || near(x, y, gateTiles, 2) || [-1, 0, 1].some((k) => g[y][x + k] === 's')) continue;
     g[y][x] = 'v'; shards.push([x, y]);
   }
 
   g[sy][sx] = 'S';
   g[ey][ex] = 'E';
   for (const [x, y] of lanterns) g[y][x] = 'K';
+  const st = window.COOP_STAGES[stage];
   return {
     name: 'Co-op Explore', coop: true, explore: true, map: g.map((r) => r.join('')), echoes: 8,
     seed: seed >>> 0, difficulty, variant, mapKind: 'explore',
+    stage, stages: run ? 3 : 1, stageName: st.name, arena: st.arena, keys: K, gates, powers,
   };
 };
