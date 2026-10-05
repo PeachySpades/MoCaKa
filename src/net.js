@@ -11,13 +11,8 @@
   const $ = (id) => document.getElementById(id);
   const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
   const ID_PREFIX = 'mocaka-echo-';
-  const MAX_PLAYERS = 4;
-  const BATS = [
-    { name: 'Mo', color: 'var(--mo)' },
-    { name: 'Ka', color: 'var(--ka)' },
-    { name: 'Ca', color: 'var(--ca)' },
-    { name: 'Bo', color: 'var(--bo)' },
-  ];
+  // Battle rooms take up to 8 players (the host and 7 guests); Co-op Run up to 4
+  const MAX_PLAYERS = 8, MAX_COOP = 4;
   const params = new URLSearchParams(location.search);
   const useLocal = params.get('net') === 'local';
 
@@ -261,7 +256,7 @@
     const host = role === 'host';
     const people = host ? [{ slot: 0, me: true }, ...guests.map((g, k) => ({ slot: k + 1, look: g.look }))] : roster;
     lobby.setRoom({ role, code, people });
-    if (host) status(guests.length ? `${people.length} players in the room.` : 'Share the code with friends and keep this screen open while they join.');
+    if (host) status(guests.length ? '' : 'Share the code! Keep this screen open while friends join.');   // the seats show who's in
   }
 
   function lobbyMessage() {
@@ -308,7 +303,8 @@
 
   function onJoin(id) {
     if (playing) { link.send(id, { t: 'nope', why: 'started' }); return; }
-    if (guests.length + 1 >= MAX_PLAYERS) { link.send(id, { t: 'nope', why: 'full' }); return; }
+    const max = settings().rule === 'coop' ? MAX_COOP : MAX_PLAYERS;
+    if (guests.length + 1 >= max) { link.send(id, { t: 'nope', why: 'full' }); return; }
     guests.push({ id });
     renderRoom();     // may drop a CPU to make a seat
     sendLobby();

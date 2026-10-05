@@ -101,15 +101,10 @@
         <h2 class="logo">Multiplayer <span>Lobby</span></h2>
         <p class="tagline">Add players, customize your bats, and get ready!</p>
       </header>
-      <div class="headcount" aria-label="Players">
-        <span id="seat-dots" class="seat-dots"></span>
-        <b id="headcount">1</b><small>/4</small>
-      </div>
     </div>
     <div class="mode-tabs" role="group" aria-label="Game">
-      <button type="button" class="tab" data-rule="bites" style="--c: var(--echo)"><b>Bites</b><small>Free-for-all mayhem!</small></button>
-      <button type="button" class="tab" data-rule="survivor" style="--c: var(--ca)"><b>Last Bite</b><small>Last bat standing!</small></button>
-      <button type="button" class="tab" data-rule="coop" style="--c: var(--ka)"><b>Co-op Run</b><small>Fly together!</small></button>
+      <button type="button" class="tab" data-game="battle" style="--c: var(--echo)"><b id="battle-tab-name">Battle</b><small id="battle-tab-note">Bite your rivals!</small></button>
+      <button type="button" class="tab" data-game="coop" style="--c: var(--ka)"><b>Co-op Run</b><small id="coop-tab-note">Fly together!</small></button>
     </div>
     <div class="seats-wrap">
       <div id="seats" class="slots"></div>
@@ -117,77 +112,80 @@
     </div>
     <aside class="side">
       <h3 class="side-title">Rules</h3>
-      <div id="side-rules" class="side-pane settings">
+      <div id="side-rules" class="rules">
+        <div id="battle-mode" class="mode-switch" role="group" aria-label="Battle mode">
+          <button type="button" data-battle="bites" style="--c: var(--echo)"><b>Free-for-all</b><small>Most bites wins</small></button>
+          <button type="button" data-battle="survivor" style="--c: var(--ca)"><b>Rounds</b><small>Last bat flying</small></button>
+        </div>
         <div id="arena-pick" class="arena-pick">
+          <button id="arena-prev" type="button" class="step" aria-label="Previous arena">‹</button>
           <canvas id="arena-preview" width="170" height="76" aria-hidden="true"></canvas>
           <div class="arena-text"><b id="arena-name">Morphing</b><small id="arena-desc">The walls slowly reshape</small></div>
-          <div class="arrows">
-            <button id="arena-prev" type="button" class="round sm" aria-label="Previous arena">‹</button>
-            <button id="arena-next" type="button" class="round sm" aria-label="Next arena">›</button>
+          <button id="arena-next" type="button" class="step" aria-label="Next arena">›</button>
+        </div>
+        <div id="first-row" class="rule-row" style="--c: var(--yellow)" role="group" aria-label="To win">
+          <span id="first-label">Bites to win</span>
+          <div class="opts">
+            <button type="button" class="opt" data-first="3">3</button>
+            <button type="button" class="opt" data-first="5">5</button>
+            <button type="button" class="opt" data-first="7">7</button>
           </div>
         </div>
-        <div id="first-row" class="set-row" style="--c: var(--yellow)" role="group" aria-label="First to">
-          <span id="first-label">First to</span>
-          <div class="chips">
-            <button type="button" class="chip" data-first="3">3</button>
-            <button type="button" class="chip" data-first="5">5</button>
-            <button type="button" class="chip" data-first="7">7</button>
-          </div>
-        </div>
-        <div id="powers-row" class="set-row" style="--c: var(--yellow)">
+        <div id="powers-row" class="rule-row" style="--c: var(--yellow)">
           <span>Power-ups</span>
-          <button id="powers-open" type="button" class="chip on"><span id="powers-sum">All · Normal</span> ›</button>
+          <div class="opts">
+            <button id="powers-open" type="button" class="opt on more"><span id="powers-sum">All · Normal</span> ›</button>
+          </div>
         </div>
-        <div id="variant-row" class="set-row" style="--c: var(--ka)" role="group" aria-label="Goal">
+        <div id="variant-row" class="rule-row" style="--c: var(--ka)" role="group" aria-label="Goal">
           <span>Goal</span>
-          <div class="chips">
-            <button type="button" class="chip" data-variant="classic">Classic</button>
-            <button type="button" class="chip" data-variant="escape">Escape</button>
-            <button type="button" class="chip" data-variant="hunt">Hunt</button>
+          <div class="opts">
+            <button type="button" class="opt" data-variant="classic">Classic</button>
+            <button type="button" class="opt" data-variant="escape">Escape</button>
+            <button type="button" class="opt" data-variant="hunt">Hunt</button>
           </div>
         </div>
-        <p id="variant-desc" class="set-note"></p>
-        <div id="map-row" class="set-row" style="--c: #b79bff" role="group" aria-label="Map">
+        <p id="variant-desc" class="rule-note"></p>
+        <div id="map-row" class="rule-row" style="--c: #b79bff" role="group" aria-label="Map">
           <span>Map</span>
-          <div class="chips">
-            <button type="button" class="chip" data-map="scroll">Side-scroll</button>
-            <button type="button" class="chip" data-map="explore">Explore</button>
+          <div class="opts">
+            <button type="button" class="opt" data-map="scroll">Side-scroll</button>
+            <button type="button" class="opt" data-map="explore">Explore</button>
           </div>
         </div>
-        <p id="map-desc" class="set-note"></p>
-        <div class="set-pair">
-          <div id="monster-row" class="set-row" style="--c: var(--exit)" role="group" aria-label="Monsters">
-            <span>Monsters</span>
-            <div class="chips">
-              <button type="button" class="chip" data-level="easy">Easy</button>
-              <button type="button" class="chip" data-level="normal">Normal</button>
-              <button type="button" class="chip" data-level="hard">Hard</button>
-            </div>
+        <p id="map-desc" class="rule-note"></p>
+        <div id="monster-row" class="rule-row" style="--c: var(--exit)" role="group" aria-label="Monsters">
+          <span>Monsters</span>
+          <div class="opts">
+            <button type="button" class="opt" data-level="easy">Easy</button>
+            <button type="button" class="opt" data-level="normal">Normal</button>
+            <button type="button" class="opt" data-level="hard">Hard</button>
           </div>
-          <div id="view-row" class="set-row" style="--c: var(--echo)" role="group" aria-label="View">
-            <span>View</span>
-            <div class="chips">
-              <button type="button" class="chip" data-view="3d">3D</button>
-              <button type="button" class="chip" data-view="2d">2D</button>
-            </div>
+        </div>
+        <div id="view-row" class="rule-row" style="--c: var(--echo)" role="group" aria-label="View">
+          <span>View</span>
+          <div class="opts">
+            <button type="button" class="opt" data-view="3d">3D</button>
+            <button type="button" class="opt" data-view="2d">2D</button>
           </div>
         </div>
       </div>
     </aside>
     <div class="room-bar">
-      <div id="room-none" class="room-box">
-        <span class="room-label"><svg><use href="#i-globe"/></svg>Play online</span>
-        <button id="room-create" type="button" class="btn yellow sm">Create room</button>
-        <form id="join-form" class="join sm">
+      <button id="lobby-sound" type="button" class="round sm lobby-sound" aria-label="Sound" aria-pressed="true"><svg><use href="#i-note"/></svg></button>
+      <div id="room-none" class="online">
+        <button id="room-create" type="button" class="btn yellow sm create"><svg aria-hidden="true"><use href="#i-globe"/></svg><span>Create room</span></button>
+        <span class="or" aria-hidden="true">or</span>
+        <form id="join-form" class="join-field">
           <input id="join-code" type="text" inputmode="text" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="CODE" aria-label="Room code">
-          <button id="join-go" type="submit" class="btn violet sm">Join</button>
+          <button id="join-go" type="submit">Join</button>
         </form>
       </div>
-      <div id="room-box" class="room-box" hidden>
+      <div id="room-box" class="online in-room" hidden>
         <svg class="wifi" aria-hidden="true"><use href="#i-wifi"/></svg>
-        <div class="room-id"><small>Room code</small><div id="room-code" class="code-tiles" aria-live="polite"></div></div>
+        <div class="room-id"><small>Room</small><div id="room-code" class="code-tiles" aria-live="polite"></div></div>
         <button id="room-copy" type="button" class="round sm" aria-label="Copy invite link"><svg><use href="#i-copy"/></svg></button>
-        <button id="room-invite" type="button" class="btn invite sm"><svg><use href="#i-share"/></svg><span><b>Invite friends</b><small>Play together!</small></span></button>
+        <button id="room-invite" type="button" class="btn invite sm"><svg><use href="#i-share"/></svg><span><b>Invite</b></span></button>
       </div>
       <p id="online-status" class="small" role="status"></p>
     </div>

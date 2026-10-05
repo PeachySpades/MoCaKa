@@ -97,10 +97,12 @@
     muted = m;
     store.set('echo-muted', m);
     if (master) master.gain.setTargetAtTime(m ? 0 : 1, ac.currentTime, 0.03);
-    const b = $('sound-toggle');
-    b.classList.toggle('off', m);
-    b.setAttribute('aria-pressed', String(!m));
-    b.title = m ? 'Sound off' : 'Sound on';
+    for (const b of [$('sound-toggle'), $('lobby-sound')]) {   // the lobby has its own copy in its bottom row
+      if (!b) continue;
+      b.classList.toggle('off', m);
+      b.setAttribute('aria-pressed', String(!m));
+      b.title = m ? 'Sound off' : 'Sound on';
+    }
   }
   function tone(f0, f1, dur, type = 'sine', vol = 0.12, delay = 0, dest = sfxBus) {
     if (!ac) return;
@@ -160,6 +162,9 @@
     beep() { tone(880, 880, 0.12, 'square', 0.05); },
     go() { tone(1320, 1320, 0.3, 'square', 0.06); tone(660, 660, 0.3, 'square', 0.04); },
     charged() { tone(1200, 2400, 0.12, 'sine', 0.05); },
+    // a battle jump: a springy rising boing, then a soft flump on landing
+    jump() { tone(320, 760, 0.16, 'sine', 0.07); tone(480, 1100, 0.12, 'triangle', 0.03, 0.03); },
+    land() { tone(180, 90, 0.1, 'triangle', 0.07); hiss(0.08, 0.05, 700, undefined, sfxBus, 'lowpass'); },
     beam() { tone(2400, 300, 0.35, 'sawtooth', 0.07); tone(1600, 200, 0.3, 'square', 0.04, 0.02); hiss(0.25, 0.08, 3000); },
     warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
     // the dash-bite: a whoosh in, a hard snap of teeth, then a meaty crunch (duel.js)
@@ -1932,7 +1937,7 @@
     const unit = rule === 'survivor' ? 'round' : 'bite';
     if (!duelCfg.online && guest) return;
     sfx.win();
-    const me = duelCfg.online ? ['Mo', 'Ka', 'Ca', 'Bo'][duelCfg.mode === 'host' ? 0 : duelCfg.mySlot] : null;
+    const me = duelCfg.online ? ['Mo', 'Ka', 'Ca', 'Bo', 'Zu', 'Ri', 'Pi', 'Lu'][duelCfg.mode === 'host' ? 0 : duelCfg.mySlot] : null;
     $('end-title').textContent = me === winner ? 'You win!'
       : winnerCpu && (humans === 1 || duelCfg.online) ? `${winner} (CPU) ate everyone!` : `${winner} wins!`;
     $('end-stars').textContent = standings.map((p) => p.score).join(' – ');
@@ -1948,18 +1953,24 @@
   }
 
   $('sound-toggle').addEventListener('click', () => { unlockAudio(); setMuted(!muted); });
+  $('lobby-sound').addEventListener('click', () => { unlockAudio(); setMuted(!muted); });
   setMuted(muted);
   $('play-button').addEventListener('click', () => enterGame('cave'));
   $('run-button').addEventListener('click', () => enterGame('run'));
   $('end-button').addEventListener('click', primaryAction);
-  // Multiplayer: the title card opens the lobby; its tabs pick Bites, Last Bite or Co-op Run
+  // Multiplayer: the title card opens the lobby; its tabs pick Battle or Co-op Run
   $('battle-button').addEventListener('click', () => { unlockAudio(); openLobby(); });
   // The lobby: one screen for CPU matches and online rooms (net.js drives the room part).
   // Seats fill in order: the people in the room (just you when offline), then CPU bats.
+  // Battle takes up to 8 bats (seats 5-8 are the "Big Brawl" row); Co-op Run up to 4.
   const BAT_SEATS = [
     { name: 'Mo', c: 'var(--mo)' }, { name: 'Ka', c: 'var(--ka)' },
     { name: 'Ca', c: 'var(--ca)' }, { name: 'Bo', c: 'var(--bo)' },
+    { name: 'Zu', c: 'var(--zu)' }, { name: 'Ri', c: 'var(--ri)' },
+    { name: 'Pi', c: 'var(--pi)' }, { name: 'Lu', c: 'var(--lu)' },
   ];
+  const MAX_BATTLE = 8, MAX_COOP = 4;
+  const maxSeats = (rule = pick.rule) => (rule === 'coop' ? MAX_COOP : MAX_BATTLE);
   const LEVELS = ['easy', 'normal', 'hard'];
   const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
   // arenas: one that slowly reshapes, one of the four caves kept still, or open sky
@@ -1968,11 +1979,10 @@
     ...['Crystal Grotto', 'Lava Hollow', 'Mossy Den', 'Frozen Cavern'].map((name, i) => ({ id: `still-${i}`, name, desc: 'Stays the same all match', mode: 'still', arena: i })),
     { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night', mode: 'sky' },
   ];
-  const RULES = {
-    bites: { hint: (n) => `first to ${n} bites` },
-    survivor: { hint: (n) => `last bat standing · ${n} round wins` },
-    coop: { hint: () => 'co-op run' },
-  };
+  // the Battle tab's two modes (Free-for-all = 'bites', Rounds = 'survivor') and Co-op Run;
+  // pick.rule keeps these values, which is what EchoDuel/EchoCoop and online rooms use
+  const RULES = { bites: 'battle', survivor: 'battle', coop: 'coop' };
+  const oldRule = (r) => (r === 'lastbite' || r === 'last' ? 'survivor' : r === 'battle' ? 'bites' : r);
   const VARIANTS = {
     classic: 'Fly to the end together. Squeak to see, bite monsters, dodge bursting crystals.',
     escape: 'Run away! Monsters can’t be beaten: a bite only knocks them back. Reach the exit.',
@@ -2001,11 +2011,11 @@
     const lv = store.get('echo-cpu-levels');
     const p = {
       humans: 1,
-      cpus: Math.min(3, Math.max(0, store.get('echo-cpus') ?? 1)),
+      cpus: Math.min(MAX_BATTLE - 1, Math.max(0, store.get('echo-cpus') ?? 1)),
       level: store.get('echo-cpu-level') || 'normal',
-      cpuLevels: [0, 1, 2].map((k) => (Array.isArray(lv) && LEVEL_NAMES[lv[k]] ? lv[k] : 'normal')),
+      cpuLevels: [0, 1, 2, 3, 4, 5, 6].map((k) => (Array.isArray(lv) && LEVEL_NAMES[lv[k]] ? lv[k] : 'normal')),
       arenaId: store.get('echo-arena') || 'morph',
-      rule: store.get('echo-rule') || 'bites',
+      rule: oldRule(store.get('echo-rule')) || 'bites',
       firstTo: [3, 5, 7].includes(store.get('echo-first-to')) ? store.get('echo-first-to') : 3,
       variant: store.get('echo-coop-variant') || 'classic',
       coopMap: store.get('echo-coop-map') || 'scroll',
@@ -2013,6 +2023,8 @@
     };
     if (!ARENA_CHOICES.some((a) => a.id === p.arenaId)) p.arenaId = 'morph';
     if (!RULES[p.rule]) p.rule = 'bites';
+    // the last Battle mode, so the Battle tab comes back to it after a co-op run
+    p.battleRule = p.rule !== 'coop' ? p.rule : RULES[oldRule(store.get('echo-battle-rule'))] === 'battle' ? oldRule(store.get('echo-battle-rule')) : 'bites';
     if (!LEVEL_NAMES[p.level]) p.level = 'normal';
     if (!VARIANTS[p.variant]) p.variant = 'classic';
     if (!COOP_MAPS[p.coopMap]) p.coopMap = 'scroll';
@@ -2063,37 +2075,48 @@
   }
   function renderPickers() {
     const ppl = people(), n = ppl.length, edit = canEdit(), coop = pick.rule === 'coop';
-    pick.cpus = Math.max(0, Math.min(pick.cpus, 4 - n));
+    pick.cpus = Math.max(0, Math.min(pick.cpus, maxSeats() - n));
     const cpus = pick.cpus, total = n + cpus;
-    // seats: people, then CPU bats, then empty seats to add a CPU or invite a friend
-    const empties = 4 - total;
-    $('seats').innerHTML = BAT_SEATS.map((bat, k) => {
+    // four seats, or eight once a battle grows past four bats (the Big Brawl row)
+    const shown = total > 4 ? MAX_BATTLE : 4, big = shown > 4;
+    const empties = shown - total;
+    // a full four-bat battle offers to grow into a Big Brawl
+    const grow = !coop && edit && !big && total === 4;
+    $('seats').classList.toggle('big', big);
+    $('seats').classList.toggle('can-grow', grow);
+    $('seats').innerHTML = BAT_SEATS.slice(0, shown).map((bat, k) => {
       const p = ppl.find((q) => q.slot === k);
       const cpu = !p && k >= n && k < total;
       const num = `<span class="num">${k + 1}</span>`;
+      const xl = k >= 4 ? ' xl' : '';
       if (p) {
         const host = room && k === 0;
         const name = p.me ? `You${host || !room ? ' <svg aria-label="leader"><use href="#i-crown"/></svg>' : ''}` : 'Friend';
-        return `<div class="slot you" style="--c: ${bat.c}">${num}${host && !p.me ? '<span class="host-tag">Host</span>' : ''}`
+        return `<div class="slot you${xl}" style="--c: ${bat.c}">${num}${host && !p.me ? '<span class="host-tag">Host</span>' : ''}`
           + `<div class="seat-art"><canvas class="seat-bat" data-seat-bat="${k}"></canvas></div><b>${name}</b>`
-          + '<span class="pill ok ready"><svg><use href="#i-check"/></svg>Ready</span></div>';
+          + '<span class="pill ok ready"><svg><use href="#i-check"/></svg><span>Ready</span></span></div>';
       }
       if (cpu) {
         const lv = pick.cpuLevels[k - n] || 'normal', i = LEVELS.indexOf(lv);
         const steps = `<div class="stepper"><button type="button" data-lv="-1" data-seat="${k}" aria-label="Easier" ${!edit || i === 0 ? 'disabled' : ''}>‹</button>`
             + `<span>${LEVEL_NAMES[lv]}</span><button type="button" data-lv="1" data-seat="${k}" aria-label="Harder" ${!edit || i === 2 ? 'disabled' : ''}>›</button></div>`;
-        return `<div class="slot on" style="--c: ${bat.c}">${num}`
+        return `<div class="slot on${xl}" style="--c: ${bat.c}">${num}`
           + (edit ? `<button type="button" class="x" data-remove="${k}" aria-label="Remove CPU">✕</button>` : '')
           + `<div class="seat-art"><canvas class="seat-bat" data-seat-bat="${k}"></canvas></div><b>${coop ? 'Buddy' : 'CPU'}</b>${steps}</div>`;
       }
       // the last empty seat invites a friend (when there's room for one), the rest add CPU bats
-      const invite = room?.role !== 'guest' && empties >= 2 && k === 3;
-      if (!edit) return `<div class="slot open" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Open</b><small>Waiting for the host</small></div>`;
-      if (invite) return `<button type="button" class="slot add" data-invite style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Add Player</b><small>${room ? 'Share the code' : 'Invite online'}</small></button>`;
-      return `<button type="button" class="slot add" data-add="${k}" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>${coop ? 'Add Buddy' : 'Add CPU'}</b><small>${coop ? 'A CPU bat on your team' : 'Easy / Normal / Hard'}</small></button>`;
-    }).join('');
-    $('seat-dots').innerHTML = BAT_SEATS.map((bat, k) => `<i class="${k < n ? 'full' : k < total ? 'cpu' : ''}" style="--c: ${bat.c}"></i>`).join('');
-    $('headcount').textContent = n;
+      const invite = room?.role !== 'guest' && empties >= 2 && k === shown - 1;
+      if (!edit) return `<div class="slot open${xl}" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Open</b><small>Waiting for the host</small></div>`;
+      if (invite) return `<button type="button" class="slot add${xl}" data-invite style="--c: ${bat.c}">${num}<span class="plus">+</span><b>Add Player</b><small>${room ? 'Share the code' : 'Invite online'}</small></button>`;
+      return `<button type="button" class="slot add${xl}" data-add="${k}" style="--c: ${bat.c}">${num}<span class="plus">+</span><b>${coop ? 'Add Buddy' : 'Add CPU'}</b><small>${coop ? 'A CPU bat on your team' : 'Easy / Normal / Hard'}</small></button>`;
+    }).join('') + (grow ? '<button type="button" class="grow" data-add="4" aria-label="Add a fifth bat for a Big Brawl">'
+      + '<span class="dots" aria-hidden="true">' + BAT_SEATS.slice(4).map((b) => `<i style="--c: ${b.c}"></i>`).join('') + '</span>'
+      + '<b>+ Big Brawl</b><small>up to 8 bats</small></button>' : '');
+    // the Battle tab lights up as a Big Brawl once there are more than four bats
+    const battleTab = document.querySelector('[data-game="battle"]');
+    battleTab.classList.toggle('big', big && !coop);
+    $('battle-tab-name').textContent = big && !coop ? 'Big Brawl' : 'Battle';
+    $('battle-tab-note').textContent = big && !coop ? `${total} bats · bigger cave!` : 'Bite your rivals!';
     // settings
     const mark = (sel, key, val, lock = true) => document.querySelectorAll(sel).forEach((b) => {
       const on = String(b.dataset[key]) === String(val);
@@ -2103,11 +2126,16 @@
     });
     mark('[data-level]', 'level', pick.level);
     mark('[data-first]', 'first', pick.firstTo);
-    mark('[data-rule]', 'rule', pick.rule);
+    mark('[data-game]', 'game', RULES[pick.rule]);
+    mark('[data-battle]', 'battle', pick.rule);
     mark('[data-variant]', 'variant', pick.variant);
     mark('[data-map]', 'map', pick.coopMap);
-    $('first-label').textContent = pick.rule === 'survivor' ? 'Round wins' : 'First to';
-    $('arena-pick').hidden = $('first-row').hidden = $('powers-row').hidden = coop;
+    // Co-op Run is for up to four bats: with more people in the room it can't be picked
+    const coopTab = document.querySelector('[data-game="coop"]');
+    if (edit && !coop && n > MAX_COOP) coopTab.disabled = true;
+    $('coop-tab-note').textContent = !coop && n > MAX_COOP ? 'Up to 4 bats' : 'Fly together!';
+    $('first-label').textContent = pick.rule === 'survivor' ? 'Rounds to win' : 'Bites to win';
+    $('battle-mode').hidden = $('arena-pick').hidden = $('first-row').hidden = $('powers-row').hidden = coop;
     $('variant-row').hidden = $('variant-desc').hidden = $('monster-row').hidden = $('map-row').hidden = $('map-desc').hidden = !coop;
     $('variant-desc').innerHTML = note(VARIANTS[pick.variant], SHORT_NOTES[pick.variant]);
     $('map-desc').innerHTML = note(COOP_MAPS[pick.coopMap], SHORT_NOTES[pick.coopMap]);
@@ -2115,7 +2143,7 @@
     $('arena-prev').disabled = $('arena-next').disabled = !edit;
     const a = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
     $('arena-name').textContent = a.name;
-    $('arena-desc').textContent = a.desc;
+    $('arena-desc').textContent = big ? 'Bigger cave for a Big Brawl' : a.desc;
     drawArenaPreview();
     const list = powerList(), onCount = list.filter((p) => pick.powers.on[p.id] !== false).length;
     $('powers-sum').textContent = pick.powers.freq === 'off' || (list.length && !onCount) ? 'Off'
@@ -2131,8 +2159,9 @@
     const need = coop ? 1 : 2;
     $('start-text').textContent = coop ? "Let's Fly!" : "Let's Fight!";
     $('duel-start').disabled = total < need;
-    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend'
-      : coop ? `${total} bat${total > 1 ? 's' : ''} · ${pick.variant === 'classic' ? 'co-op run' : pick.variant}${pick.coopMap === 'explore' ? ' · explore' : ''}` : `${total} bats · ${RULES[pick.rule].hint(pick.firstTo)}`;
+    // only says something when there's something to do (or wait for)
+    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend' : '';
+    $('start-hint').hidden = !$('start-hint').textContent;
     paintBats();
   }
   // ---- the bats on the seat cards, drawn with EchoLooks
@@ -2220,14 +2249,22 @@
     levelsBySlot,
     setRoom(r) {
       const wasGuest = room?.role === 'guest';
+      // a friend joining a match of four or fewer takes a CPU's seat, so it only grows into a
+      // Big Brawl when the host adds bats on purpose
+      const before = people().length;
+      if (r?.role === 'host' && r.people.length > before && before + pick.cpus <= 4) {
+        pick.cpus = Math.max(0, Math.min(pick.cpus, 4 - r.people.length));
+      }
       room = r;
       if (!r && wasGuest) { Object.assign(pick, savedPick()); cpuSeed = Math.floor(Math.random() * 1e6); }   // back to your own settings
       renderPickers();
     },
     applyHost(s) {   // a guest mirrors the host's settings
+      if (s.rule) s = { ...s, rule: oldRule(s.rule) };
       for (const k of ['cpus', 'level', 'arenaId', 'rule', 'firstTo', 'variant', 'coopMap', 'cpuSeed']) if (s[k] != null) (k === 'cpuSeed' ? (cpuSeed = s[k]) : (pick[k] = s[k]));
       if (Array.isArray(s.cpuLevels)) pick.cpuLevels = s.cpuLevels.map((l) => (LEVEL_NAMES[l] ? l : 'normal'));
       if (!COOP_MAPS[pick.coopMap]) pick.coopMap = 'scroll';
+      if (!RULES[pick.rule]) pick.rule = 'bites';
       if (s.powers) pick.powers = cleanPowers(s.powers);
       renderPickers();
     },
@@ -2246,7 +2283,7 @@
     const n = people().length;
     const add = e.target.closest('[data-add]'), rm = e.target.closest('[data-remove]'), lv = e.target.closest('[data-lv]');
     if (e.target.closest('[data-invite]')) { if (room) window.EchoNet?.invite?.(); else window.EchoNet?.createRoom?.(); return; }
-    if (add) pick.cpus = Math.min(4 - n, pick.cpus + 1);
+    if (add) pick.cpus = Math.min(maxSeats() - n, pick.cpus + 1);
     else if (rm) {   // take that CPU out; the ones after it move up a seat
       const j = +rm.dataset.remove - n;
       pick.cpuLevels.splice(j, 1); pick.cpuLevels.push('normal');
@@ -2268,9 +2305,19 @@
     if (!canEdit()) return;
     pick.firstTo = +b.dataset.first; store.set('echo-first-to', pick.firstTo); changed();
   }));
-  document.querySelectorAll('[data-rule]').forEach((b) => b.addEventListener('click', () => {
+  // tabs: Battle (back to its last mode) or Co-op Run (four bats at most: extra CPUs step out)
+  document.querySelectorAll('[data-game]').forEach((b) => b.addEventListener('click', () => {
     if (!canEdit()) return;
-    pick.rule = b.dataset.rule; store.set('echo-rule', pick.rule); changed();
+    if (b.dataset.game === 'coop' && people().length > MAX_COOP) return;
+    pick.rule = b.dataset.game === 'coop' ? 'coop' : pick.battleRule;
+    store.set('echo-rule', pick.rule); changed();
+    store.set('echo-cpus', pick.cpus);
+  }));
+  // Battle's Free-for-all (first to N bites) or Rounds (last bat flying wins a round)
+  document.querySelectorAll('[data-battle]').forEach((b) => b.addEventListener('click', () => {
+    if (!canEdit()) return;
+    pick.rule = pick.battleRule = b.dataset.battle;
+    store.set('echo-rule', pick.rule); store.set('echo-battle-rule', pick.rule); changed();
   }));
   document.querySelectorAll('[data-variant]').forEach((b) => b.addEventListener('click', () => {
     if (!canEdit()) return;

@@ -1,13 +1,24 @@
 // Battle arenas. Same tile key as the caves, plus:
 //   A B C D  spawn points (one per bat)     e  crystal spot
-// Every arena is 34 x 15. The first four are caves: the lobby's arena pick
-// (0-3) is an index among them. 'Still' plays one cave all match, 'Morphing'
-// slowly reshapes one cave into the next, and Open Sky (open: true) is its own
-// mode; a morph now and then melts into it too.
+// Every arena is 34 x 15 (battles with more than 4 bats stretch it a little,
+// see duel.js). The first four are caves: the lobby's arena pick (0-3) is an
+// index among them. 'Still' plays one cave all match, 'Morphing' slowly
+// reshapes one cave into the next, and Open Sky (open: true) is its own mode;
+// a morph now and then melts into it too.
+//
+// theme: the 2D colours ('r, g, b' strings) and the ambient particles, plus
+//   title  the cave's theme, shown in the morph banner
+//   look   the 3D palette (0-1 floats): stone, floor, bg (only Open Sky uses its
+//          own bg in 3D), accA/accB the glowing crystals around the arena,
+//          mote, hemi [sky, ground] light, lava (glowing floor cracks) and
+//          ice (frosty sheen; bats slide around, see duel.js), vein (1: the
+//          stone's crystal veins glow in accA instead of cyan and violet)
+// Morphing blends smoothly from one cave's theme into the next.
 window.ECHO_ARENAS = [
   {
     name: 'Crystal Grotto',
-    theme: { wall: '74, 222, 255', fill: '18, 52, 80', bg: '#05060d', ambient: 'sparkle', ambientRgb: '150, 240, 255' },
+    theme: { wall: '74, 222, 255', fill: '18, 52, 80', bg: '#05060d', ambient: 'sparkle', ambientRgb: '150, 240, 255',
+      title: 'Crystal cave', look: { stone: [0.5, 0.52, 1.0], floor: [0.36, 0.37, 0.72], bg: [0.025, 0.028, 0.085], accA: [0.3, 0.9, 1.0], accB: [0.62, 0.4, 1.0], mote: [0.62, 0.86, 1.0], hemi: [[0.71, 0.72, 1.0], [0.16, 0.13, 0.38]], lava: 0, ice: 0 } },
     map: [
       '##################################',
       '#................................#',
@@ -28,7 +39,8 @@ window.ECHO_ARENAS = [
   },
   {
     name: 'Lava Hollow',
-    theme: { wall: '255, 140, 60', fill: '70, 24, 10', bg: '#0c0503', ambient: 'ember', ambientRgb: '255, 150, 70' },
+    theme: { wall: '255, 140, 60', fill: '70, 24, 10', bg: '#0c0503', ambient: 'ember', ambientRgb: '255, 150, 70',
+      title: 'Lava cave', look: { stone: [0.78, 0.36, 0.24], floor: [0.42, 0.16, 0.1], bg: [0.07, 0.018, 0.01], accA: [1.0, 0.42, 0.08], accB: [1.0, 0.72, 0.2], mote: [1.0, 0.55, 0.18], hemi: [[1.0, 0.68, 0.5], [0.36, 0.08, 0.02]], lava: 1, ice: 0, vein: 1 } },
     map: [
       '##################################',
       '#................................#',
@@ -49,7 +61,8 @@ window.ECHO_ARENAS = [
   },
   {
     name: 'Mossy Den',
-    theme: { wall: '130, 235, 120', fill: '16, 50, 24', bg: '#040a05', ambient: 'spore', ambientRgb: '170, 255, 140' },
+    theme: { wall: '130, 235, 120', fill: '16, 50, 24', bg: '#040a05', ambient: 'spore', ambientRgb: '170, 255, 140',
+      title: 'Moss cave', look: { stone: [0.42, 0.78, 0.46], floor: [0.2, 0.38, 0.22], bg: [0.012, 0.04, 0.02], accA: [0.5, 1.0, 0.42], accB: [0.85, 1.0, 0.4], mote: [0.7, 1.0, 0.55], hemi: [[0.74, 1.0, 0.74], [0.08, 0.24, 0.1]], lava: 0, ice: 0, vein: 1 } },
     map: [
       '##################################',
       '#.A.....#..............#......B..#',
@@ -70,7 +83,8 @@ window.ECHO_ARENAS = [
   },
   {
     name: 'Frozen Cavern',
-    theme: { wall: '200, 230, 255', fill: '30, 50, 80', bg: '#04070e', ambient: 'snow', ambientRgb: '230, 240, 255' },
+    theme: { wall: '200, 230, 255', fill: '30, 50, 80', bg: '#04070e', ambient: 'snow', ambientRgb: '230, 240, 255',
+      title: 'Ice cave', look: { stone: [0.8, 0.92, 1.12], floor: [0.56, 0.7, 0.98], bg: [0.02, 0.035, 0.075], accA: [0.75, 0.95, 1.0], accB: [0.55, 0.78, 1.0], mote: [0.95, 0.98, 1.0], hemi: [[0.86, 0.93, 1.0], [0.3, 0.4, 0.62]], lava: 0, ice: 1, vein: 1 } },
     map: [
       '##################################',
       '#................................#',
@@ -92,7 +106,8 @@ window.ECHO_ARENAS = [
   {
     name: 'Open Sky',
     open: true,
-    theme: { wall: '255, 236, 190', fill: '30, 26, 60', bg: '#070a1c', ambient: 'firefly', ambientRgb: '255, 240, 150' },
+    theme: { wall: '255, 236, 190', fill: '30, 26, 60', bg: '#070a1c', ambient: 'firefly', ambientRgb: '255, 240, 150',
+      title: 'Open sky', look: { stone: [0.5, 0.52, 1.0], floor: [0.36, 0.37, 0.72], bg: [0.027, 0.04, 0.11], accA: [0.3, 0.9, 1.0], accB: [0.62, 0.4, 1.0], mote: [1.0, 0.94, 0.6], hemi: [[0.71, 0.72, 1.0], [0.16, 0.13, 0.38]], lava: 0, ice: 0 } },
     map: [
       '##################################',
       '#................................#',

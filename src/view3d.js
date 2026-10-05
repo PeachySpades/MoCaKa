@@ -18,8 +18,9 @@
   let starField = null, moon = null;
   const target = { x: 0, y: 0, ready: false };
   const tmpM = new (T ? T.Matrix4 : Object)(), tmpC = new (T ? T.Color : Object)(), tmpV = new (T ? T.Vector3 : Object)();
-  let lastTiles = 0, lastClock = 0, W = 0, H = 0;
+  let lastTiles = 0, lastClock = 0, W = 0, H = 0, wallTop = new Float32Array(0);   // wallTop: how tall each tile's wall is drawn (0: none)
 
+  const floorHash = (k) => { const v = Math.sin(k * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
   const rgbOf = (s) => s.split(',').map((v) => +v / 255);
   const hexRgb = (h) => [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16) / 255);
   const rng = (seed) => () => (seed = (seed * 16807) % 2147483647) / 2147483647;
@@ -200,8 +201,15 @@
   // flipping it, from the block's position) or, in 'world' mode, lays rough rock
   // continuously across neighbouring blocks; and it scales the crystal glow by the
   // block's own echo light so dark stone never glows on its own.
-  function patch(mat, mode, glowK, key) {
+  // tint: the battle walls' veins can glow in the cave theme's colour instead
+  // (mat.userData.tint = { color, mix } uniforms, set each frame)
+  function patch(mat, mode, glowK, key, tint) {
+    if (tint) mat.userData.tint = { color: { value: new T.Color(1, 1, 1) }, mix: { value: 0 } };
     mat.onBeforeCompile = (s) => {
+      if (tint) {
+        s.uniforms.veinTint = mat.userData.tint.color; s.uniforms.veinMix = mat.userData.tint.mix;
+        s.fragmentShader = 'uniform vec3 veinTint;\nuniform float veinMix;\n' + s.fragmentShader;
+      }
       const hash = 'vec2 h2 = fract(sin(vec2(dot(tp.xz, vec2(12.99, 78.23)), dot(tp.xz, vec2(39.35, 11.13)))) * 43758.55);\n vec2 fl = step(0.5, h2);';
       const st = mode === 'world' ? 'vec2 st = (uv + tp.xy) * 0.25;'
         : mode === 'atlas' ? `${hash}\n vec2 st = ((mix(uv, 1.0 - uv, fl) * 0.97 + 0.015) + step(0.5, fract(h2 * 7.0))) * 0.5;`
@@ -220,12 +228,13 @@
       s.fragmentShader = s.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 #ifdef USE_COLOR
   totalEmissiveRadiance *= max(vColor.r, max(vColor.g, vColor.b)) * ${glowK.toFixed(2)};
-#endif`);
+#endif
+${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmissiveRadiance.r, max(totalEmissiveRadiance.g, totalEmissiveRadiance.b))) * veinTint, veinMix);' : ''}`);
     };
     mat.customProgramCacheKey = () => key;
     return mat;
   }
-  const stoneMat = (map, glow, mode, glowK, key) => patch(new T.MeshLambertMaterial(glow ? { map, emissive: 0xffffff, emissiveMap: glow } : { map }), mode, glowK, key);
+  const stoneMat = (map, glow, mode, glowK, key, tint) => patch(new T.MeshLambertMaterial(glow ? { map, emissive: 0xffffff, emissiveMap: glow } : { map }), mode, glowK, key, tint);
   // crystals glow in their own colour (instance colour), with flat-shaded facets on top
   function crystalMat() {
     const m = new T.MeshLambertMaterial({ vertexColors: true, flatShading: true });
@@ -317,7 +326,7 @@
     const n = arena.w * arena.h, tx = textures();
     const wg = new T.BoxGeometry(1, WALL_H, 1);
     wg.translate(0.5, WALL_H / 2, 0.5);
-    wallMat = wallMat || stoneMat(tx.block, tx.blockGlow, 'atlas', 0.9, 'stone-block');
+    wallMat = wallMat || stoneMat(tx.block, tx.blockGlow, 'atlas', 0.9, 'stone-block-tint', true);
     walls = new T.InstancedMesh(wg, wallMat, n);
     const fg = new T.PlaneGeometry(1, 1);
     fg.rotateX(-Math.PI / 2); fg.translate(0.5, 0, 0.5);
@@ -340,11 +349,12 @@
   // ---- Scenery outside the arena: crystals, mushrooms, rubble, floating motes ----
   // All of it sits beyond the border wall, so it never hides or hints at
   // anything inside the playable cave.
-  let decor = null, motes = null, senseRings = [];
+  let decor = null, motes = null, senseRings = [], decorTints = [], decorKey = '', decorGround = null;
   function buildDecor(w, h) {
     if (decor) { scene.remove(decor); decor.traverse((o) => o.isMesh && o.geometry.dispose()); }
     const tx = textures(), rnd = rng(1234);
     decor = new T.Group();
+    decorTints = []; decorKey = '';
     const spot = (minD, maxD) => {
       for (;;) {
         const x = -8 + rnd() * (w + 16), z = -8 + rnd() * (h + 12);
@@ -353,10 +363,12 @@
       }
     };
     const q = new T.Quaternion(), e = new T.Euler(), p = new T.Vector3(), s = new T.Vector3(), c = new T.Color();
-    const put = (mesh, k, x, y, z, rx, ry, rz, sx, sy, sz, rgb) => {
+    // tint: [0 or 1 (the theme's first or second accent), brightness], so a cave theme can recolour it
+    const put = (mesh, k, x, y, z, rx, ry, rz, sx, sy, sz, rgb, tint) => {
       p.set(x, y, z); q.setFromEuler(e.set(rx, ry, rz)); s.set(sx, sy, sz);
       mesh.setMatrixAt(k, tmpM.compose(p, q, s));
       mesh.setColorAt(k, c.setRGB(rgb[0], rgb[1], rgb[2]));
+      if (tint) decorTints.push({ mesh, k, kind: tint[0], f: tint[1] });
     };
     // soft glows face the camera (it only ever slides, never turns), pools lie on the ground
     const bbGeo = new T.PlaneGeometry(1, 1); bbGeo.rotateX(-PITCH);
@@ -370,26 +382,26 @@
     for (let k = 0; k < NC; k++) {
       // most clusters hug the outside of the border wall, a few stand farther back and taller
       const far = k % 3 === 0, o = spot(far ? 2.5 : 0.35, far ? 7.5 : 2.6);
-      const col = rnd() < 0.55 ? CYAN : VIOLET, n = 3 + Math.floor(rnd() * 4), big = far ? 1.7 : 1;
+      const col = rnd() < 0.55 ? CYAN : VIOLET, kind = col === CYAN ? 0 : 1, n = 3 + Math.floor(rnd() * 4), big = far ? 1.7 : 1;
       let top = 0;
       for (let j = 0; j < n; j++) {
         const a = rnd() * Math.PI * 2, r = j ? 0.12 + rnd() * 0.3 : 0, hh = (j ? 0.45 + rnd() * 0.7 : 0.9 + rnd() * 0.8) * big;
         const t = j ? 0.25 + rnd() * 0.45 : rnd() * 0.15, k2 = 0.85 + rnd() * 0.3;
         put(crystals, nc++, o.x + Math.cos(a) * r, -0.05, o.z + Math.sin(a) * r, Math.sin(a) * t, rnd() * 3, -Math.cos(a) * t,
-          (0.9 + rnd() * 0.6) * big, hh, (0.9 + rnd() * 0.6) * big, [col[0] * k2, col[1] * k2, col[2] * k2]);
+          (0.9 + rnd() * 0.6) * big, hh, (0.9 + rnd() * 0.6) * big, [col[0] * k2, col[1] * k2, col[2] * k2], [kind, k2]);
         top = Math.max(top, hh);
       }
-      put(glows, ng, o.x, top * 0.5, o.z, 0, 0, 0, 2.2 * big + top, 2.2 * big + top, 1, col.map((v) => v * 0.32));
-      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 3.2 * big, 1, 3.2 * big, col.map((v) => v * 0.3));
+      put(glows, ng, o.x, top * 0.5, o.z, 0, 0, 0, 2.2 * big + top, 2.2 * big + top, 1, col.map((v) => v * 0.32), [kind, 0.32]);
+      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 3.2 * big, 1, 3.2 * big, col.map((v) => v * 0.3), [kind, 0.3]);
     }
     for (let k = 0; k < NM; k++) {
       const o = spot(0.3, 4), n = 2 + Math.floor(rnd() * 4);
       for (let j = 0; j < n; j++) {
         const sc = 0.9 + rnd() * 1.1;
-        put(shrooms, ns++, o.x + (rnd() - 0.5) * 0.7, 0, o.z + (rnd() - 0.5) * 0.5, (rnd() - 0.5) * 0.3, rnd() * 3, (rnd() - 0.5) * 0.3, sc, sc, sc, CYAN);
+        put(shrooms, ns++, o.x + (rnd() - 0.5) * 0.7, 0, o.z + (rnd() - 0.5) * 0.5, (rnd() - 0.5) * 0.3, rnd() * 3, (rnd() - 0.5) * 0.3, sc, sc, sc, CYAN, [0, 1]);
       }
-      put(glows, ng, o.x, 0.25, o.z, 0, 0, 0, 1.1, 1.1, 1, CYAN.map((v) => v * 0.4));
-      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 1.6, 1, 1.6, CYAN.map((v) => v * 0.3));
+      put(glows, ng, o.x, 0.25, o.z, 0, 0, 0, 1.1, 1.1, 1, CYAN.map((v) => v * 0.4), [0, 0.4]);
+      put(pools, ng++, o.x, 0.01, o.z, 0, 0, 0, 1.6, 1, 1.6, CYAN.map((v) => v * 0.3), [0, 0.3]);
     }
     crystals.count = nc; shrooms.count = ns; glows.count = pools.count = ng;
     // dark rubble and stalagmites
@@ -409,6 +421,7 @@
     outer.holes.push(new T.Path([new T.Vector2(0, 0), new T.Vector2(0, h), new T.Vector2(w, h), new T.Vector2(w, 0)]));
     const ground = new T.Mesh(new T.ShapeGeometry(outer).rotateX(Math.PI / 2), new T.MeshLambertMaterial({ map: tx.ground, color: 0x2a2a58, side: T.DoubleSide }));
     ground.position.y = -0.04;
+    decorGround = ground;
     decor.add(ground, lumps, spikes, pools, crystals, shrooms, glows);
     scene.add(decor);
 
@@ -430,6 +443,22 @@
         m.visible = false; scene.add(m); senseRings.push(m);
       }
     }
+  }
+  // a cave theme recolours the crystals, mushrooms and glows around the arena, the ground and the motes
+  function tintDecor(th) {
+    if (!th || th.key === decorKey) return;
+    decorKey = th.key;
+    const touched = new Set();
+    for (const d of decorTints) {
+      const a = d.kind ? th.accB : th.accA;
+      d.mesh.setColorAt(d.k, tmpC.setRGB(a[0] * d.f, a[1] * d.f, a[2] * d.f));
+      touched.add(d.mesh);
+    }
+    for (const m of touched) m.instanceColor.needsUpdate = true;
+    if (decorGround) decorGround.material.color.setRGB(th.floor[0] * 0.45, th.floor[1] * 0.45, th.floor[2] * 0.45);
+    if (motes) motes.material.color.setRGB(th.mote[0], th.mote[1], th.mote[2]);
+    hemi.color.setRGB(...th.hemi[0]); hemi.groundColor.setRGB(...th.hemi[1]);
+    if (wallMat?.userData.tint) { wallMat.userData.tint.color.value.setRGB(...th.accA); wallMat.userData.tint.mix.value = th.vein || 0; }
   }
   function driftMotes(clock, on) {
     motes.visible = on;
@@ -505,6 +534,9 @@
     // the pool of light lies flat on the floor, so it lives outside the tilting bat
     glow.rotation.x = -Math.PI / 2;
     into.add(glow);
+    // a dark shadow on the floor while it jumps
+    const shadow = new T.Mesh(new T.CircleGeometry(0.34, 24).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false }));
+    shadow.visible = false; into.add(shadow);
     const shield = new T.Mesh(new T.SphereGeometry(0.62, 20, 14), new T.MeshBasicMaterial({ color: 0x96f0ff, transparent: true, opacity: 0.22, wireframe: true }));
     g.add(shield);
     const stars = [0, 1, 2].map(() => {
@@ -512,11 +544,12 @@
       g.add(s); return s;
     });
     into.add(g);
-    return { g, yaw: 0, wings: body.wings, eyes: body.eyes, glow, shield, stars, mats: [...body.mats, glow.material, ...stars.map((s) => s.material)], color: b.color, key: lookKey(b), into, tick: body.tick };
+    return { g, yaw: 0, wings: body.wings, eyes: body.eyes, glow, shadow, shield, stars, mats: [...body.mats, glow.material, ...stars.map((s) => s.material)], color: b.color, key: lookKey(b), into, tick: body.tick };
   }
   function dropRig(r) {
     if (!r) return;
     r.into.remove(r.g, r.glow);
+    if (r.shadow) { r.into.remove(r.shadow); r.shadow.geometry.dispose(); r.shadow.material.dispose(); }
     for (const m of r.mats) m.dispose();
   }
   // set every material's opacity (looks can be see-through, e.g. ghost bats)
@@ -577,7 +610,10 @@
     if (W !== v.W || H !== v.H) { W = v.W; H = v.H; renderer.setSize(W, H, false); camera.aspect = W / H; camera.updateProjectionMatrix(); }
     if (lastTiles !== arena.w * arena.h) buildTiles(arena);
 
-    const open = !!arena.def.open, bg = open ? hexRgb(arena.theme.bg) : CAVE_BG;
+    const open = !!arena.def.open, th = v.theme || null;
+    const bg = th ? th.bg : open ? hexRgb(arena.theme.bg) : CAVE_BG, stone = th ? th.stone : STONE, base = th ? th.floor : [0.36, 0.37, 0.72];
+    const lava = th ? th.lava : 0, ice = th ? th.ice : 0;
+    tintDecor(th);
     if (!scene.fog) { scene.background = new T.Color(); scene.fog = new T.Fog(0, 15, 36); }
     scene.background.setRGB(bg[0], bg[1], bg[2]);
     scene.fog.color.setRGB(bg[0], bg[1], bg[2]);
@@ -589,6 +625,7 @@
     // so the arena reads as a room; walls inside stay hidden until heard or sensed.
     // The floor is laid everywhere, under walls too, so its glow gives nothing away.
     const w = arena.w, h = arena.h;
+    if (wallTop.length !== w * h) wallTop = new Float32Array(w * h);
     for (let ty = 0; ty < h; ty++) {
       for (let tx = 0; tx < w; tx++) {
         const k = ty * w + tx, solid = arena.grid[k] === 1;
@@ -604,25 +641,34 @@
         // walls: blue-violet stone, washed with the colour of whoever's echo lit it
         if (solid && (a > 0.02 || border)) {
           const e = by ? Math.min(1, lit[k] * 1.3) * 0.75 : 0;
-          let r = STONE[0], g = STONE[1], b = STONE[2];
+          let r = stone[0], g = stone[1], b = stone[2];
           if (by) { r += (by[0] * 1.15 - r) * e; g += (by[1] * 1.15 - g) * e; b += (by[2] * 1.15 - b) * e; }
           let k2 = a;
           if (border) k2 = Math.max(a, open ? 0.3 : 0.62);
           // (lights in three are physically scaled, so stone needs a boost to read as bright blue-violet)
           k2 = Math.min(1, k2 * 1.05) * 1.75;
-          tmpM.makeScale(1, border ? 1 : 0.6 + 0.4 * Math.min(1, a * 1.6), 1).setPosition(tx, 0, ty);
+          const top = border ? 1 : 0.6 + 0.4 * Math.min(1, a * 1.6);
+          wallTop[k] = top * WALL_H;
+          tmpM.makeScale(1, top, 1).setPosition(tx, 0, ty);
           walls.setMatrixAt(k, tmpM);
           walls.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2));
         } else {
           tmpM.makeScale(0, 0, 0); walls.setMatrixAt(k, tmpM);
+          wallTop[k] = 0;
         }
         // floor: a dim base everywhere, brighter around your bat and where echoes pass
         if (!open) {
           const lf = Math.max(lit[k] * 0.75, pool * pool * 0.5);
-          const f = 0.1 + lf * 0.95;
-          let r = 0.36, g = 0.37, b = 0.72;
+          const f = 0.1 + lf * 0.95 + ice * 0.1;
+          let r = base[0], g = base[1], b = base[2];
           if (by) { const e = Math.min(1, lit[k]) * 0.5; r += (by[0] - r) * e; g += (by[1] - g) * e; b += (by[2] - b) * e; }
-          floor.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * f, bg[1] + (g - bg[1]) * f, bg[2] + (b - bg[2]) * f));
+          r = bg[0] + (r - bg[0]) * f; g = bg[1] + (g - bg[1]) * f; b = bg[2] + (b - bg[2]) * f;
+          // lava caves: some floor slabs are glowing lava, pulsing; ice caves: frost glints.
+          // (laid everywhere, under rock too, so they don't give the walls away)
+          const hsh = floorHash(k);
+          if (lava > 0.02 && hsh < 0.1) { const p = lava * (0.34 + 0.16 * Math.sin(clock * 1.7 + k)); r += 0.95 * p; g += 0.3 * p; b += 0.04 * p; }
+          if (ice > 0.02 && hsh > 0.86) { const p = ice * 0.2 * (0.45 + 0.55 * Math.sin(clock * 2.2 + k * 1.7)); r += p * 0.8; g += p * 0.95; b += p; }
+          floor.setColorAt(k, tmpC.setRGB(r, g, b));
         } else floor.setColorAt(k, tmpC.setRGB(0, 0, 0));
       }
     }
@@ -697,12 +743,21 @@
       } else if (!b || b.dead) alpha = 0;
       const blink = b && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0;
       rig.g.visible = rig.glow.visible = alpha > 0.03 && !blink;
+      const hop = b && v.jumpH ? v.jumpH(b) : 0;
+      rig.shadow.visible = rig.g.visible && hop > 0 && !open;
       if (!rig.g.visible) return;
       rig.glow.position.set(x, 0.03, y);
+      if (rig.shadow.visible) {
+        // on the floor, or on top of the wall it's hopping over
+        const tk = Math.floor(y) * arena.w + Math.floor(x);
+        rig.shadow.position.set(x, (wallTop[tk] || 0) + 0.035, y);
+        rig.shadow.scale.setScalar(1.3 - 0.3 * hop);
+        rig.shadow.material.opacity = alpha * (0.85 - 0.2 * hop);
+      }
       const stunned = b.stun > 0;
-      const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : 16) + b.i);
-      rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05, y);
-      rig.g.scale.setScalar(scale * 1.15);
+      const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : hop > 0 ? 28 : 16) + b.i);
+      rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05 + hop * (v.jumpLift || 1.1), y);
+      rig.g.scale.setScalar(scale * 1.15 * (1 + 0.2 * hop));
       // turn to face the way it's flying: toward the camera you see its face,
       // flying away you see its back
       const speed = Math.hypot(b.vx, b.vy);

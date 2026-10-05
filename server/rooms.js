@@ -1,6 +1,6 @@
 // Echo Caves room server (Cloudflare Worker + Durable Object).
 // Each 4-letter room code gets its own Durable Object that relays messages between the
-// host's browser (which runs the match) and up to three guests, over WebSockets.
+// host's browser (which runs the match) and up to seven guests, over WebSockets.
 // The same Worker also serves the game files, so the whole game lives at one address.
 //
 //   GET /room/CODE?role=host  -> WebSocket for the host (409-style error if the code is taken)
@@ -10,7 +10,7 @@
 // Guest -> server: msg                 Server -> guest: msg, or {ev: 'gone'} when the host leaves
 
 const CODE = /^[A-Z0-9]{4}$/;
-const MAX_GUESTS = 8;     // the game itself turns away extras with a friendly message
+const MAX_GUESTS = 9;     // 7 guests for 8-bat battles plus slack for a socket still closing; the game itself turns away extras (and a 5th co-op bat) with a friendly message
 
 export default {
   async fetch(req, env) {

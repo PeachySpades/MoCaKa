@@ -1,4 +1,4 @@
-// Bat Brawl: 2 to 4 bats in a pitch-dark arena. A squeak lights the walls
+// Bat Brawl: 2 to 8 bats in a pitch-dark arena. A squeak lights the walls
 // and stuns any rival it hits; dash into a rival to chomp it (stunned ones
 // can't dash away or parry). Bats can dash and grab power-ups.
 // Two match rules:
@@ -108,35 +108,116 @@
     { name: 'Ka', color: '#ff7ad9', rgb: '255, 122, 217' },
     { name: 'Ca', color: '#9dff6a', rgb: '157, 255, 106' },
     { name: 'Bo', color: '#ffb347', rgb: '255, 179, 71' },
+    // seats 5-8 (big battles: CPUs or friends online)
+    { name: 'Zu', color: '#3fe0ff', rgb: '63, 224, 255' },
+    { name: 'Ri', color: '#ff5257', rgb: '255, 82, 87' },
+    { name: 'Pi', color: '#fff04d', rgb: '255, 240, 77' },
+    { name: 'Lu', color: '#f4f1ff', rgb: '244, 241, 255' },
   ];
-  // what lit a tile (litBy): a bat's slot 0-3, or one of these lights
-  const LIGHT_FIRE = 4, LIGHT_ICE = 5, LIGHT_BOLT = 6;
+  const MAX_BATS = BATS.length, MAX_LOCAL = 4;
+  // Big battles (more than 4 bats) stretch the arena by BIG_COLS columns and
+  // BIG_ROWS rows of copies (about a third more room)
+  const BIG_COLS = 5, BIG_ROWS = 2;
+  // Jump: a hop up over walls, Stone Walls and other bats. Squeak rings,
+  // beams and fireballs pass underneath, nobody can bite you (or be bitten by
+  // you) up there. Land inside rock and you're nudged out to the nearest gap.
+  const JUMP_TIME = 0.72, JUMP_COOLDOWN = 1.5;
+  // what lit a tile (litBy): a bat's slot 0-7, or one of these lights
+  const LIGHT_FIRE = MAX_BATS, LIGHT_ICE = MAX_BATS + 1, LIGHT_BOLT = MAX_BATS + 2;
   const LIGHT_RGB = [...BATS.map((b) => b.rgb), '255, 140, 50', '140, 220, 255', '255, 250, 190'];
   // keys for each local player slot on a shared keyboard
   const KEYMAP = [
-    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], special: ['KeyE', 'KeyQ'] },
-    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], special: ['Quote', 'Comma'] },
-    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], special: ['KeyY'] },
-    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], special: ['NumpadSubtract'] },
+    { up: ['KeyW'], down: ['KeyS'], left: ['KeyA'], right: ['KeyD'], squeak: ['KeyF', 'Space'], dash: ['KeyG', 'ShiftLeft'], special: ['KeyE', 'KeyQ'], jump: ['KeyR', 'KeyC'] },
+    { up: ['ArrowUp'], down: ['ArrowDown'], left: ['ArrowLeft'], right: ['ArrowRight'], squeak: ['Enter', 'Slash'], dash: ['ShiftRight', 'Period'], special: ['Quote', 'Comma'], jump: ['KeyM', 'ControlRight'] },
+    { up: ['KeyI'], down: ['KeyK'], left: ['KeyJ'], right: ['KeyL'], squeak: ['KeyH'], dash: ['KeyU'], special: ['KeyY'], jump: ['KeyO'] },
+    { up: ['Numpad8'], down: ['Numpad5'], left: ['Numpad4'], right: ['Numpad6'], squeak: ['Numpad0', 'NumpadEnter'], dash: ['NumpadAdd'], special: ['NumpadSubtract'], jump: ['NumpadDecimal', 'Numpad9'] },
   ];
 
   // ---- Arena -------------------------------------------------------------
   // Morph mode: caves morph in order; now and then the walls melt away into the wall-less Open Sky instead.
   let arena, arenaIndex = 0, lastCave = 0;
   const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open ? i : -1)).filter((i) => i >= 0);
+  // the morph's theme cycle: crystal, lava, ice, moss, then round again
+  const MORPH_ORDER = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
   function nextArenaIndex() {
     const caves = arenaKinds(false), skies = arenaKinds(true);
     if (!arena.def.open && skies.length && Math.random() < OPEN_SKY_CHANCE) return skies[Math.floor(Math.random() * skies.length)];
-    return caves[(caves.indexOf(lastCave) + 1) % caves.length];
+    const order = MORPH_ORDER.map((n) => window.ECHO_ARENAS.findIndex((a) => a.name === n)).filter((i) => caves.includes(i));
+    for (const i of caves) if (!order.includes(i)) order.push(i);
+    return order[(order.indexOf(lastCave) + 1) % order.length];
   }
+  // Big battles (more than 4 bats) play on a stretched copy of each map: a few
+  // columns and rows inside it are doubled (the copies get no spawn or crystal
+  // spots). The same columns and rows for every map, so morphing still lines up.
+  let bigArena = false;
+  const bigMaps = new Map();
+  function stretchMap(map) {
+    const h = map.length, w = map[0].length;
+    const pick = (n, add) => new Set(Array.from({ length: add }, (_, k) => Math.round(2 + ((k + 0.5) * (n - 4)) / add)));
+    const cols = pick(w, BIG_COLS), rows = pick(h, BIG_ROWS), plain = (c) => (c === '#' ? '#' : '.');
+    const out = [];
+    map.forEach((row, y) => {
+      let r = '';
+      [...row].forEach((c, x) => { r += c; if (cols.has(x)) r += plain(c); });
+      out.push(r);
+      if (rows.has(y)) out.push([...r].map(plain).join(''));
+    });
+    return out;
+  }
+  function mapRows(i) {
+    const def = window.ECHO_ARENAS[i];
+    if (!bigArena) return def.map;
+    if (!bigMaps.has(i)) bigMaps.set(i, stretchMap(def.map));
+    return bigMaps.get(i);
+  }
+
+  // ---- Cave themes ---------------------------------------------------------
+  // The look follows the cave: crystal, lava, ice, moss (or open sky). While
+  // the cave morphs, its colours blend from the old theme into the new one as
+  // the walls change (themeK: 0 old .. 1 new); an icy cave is slippery.
+  let themeFrom = 0, themeTo = 0, themeK = 0, themeShow = 0, themeCache = null, themeKey = '';
+  function setTheme(from, to, k) {
+    if (from !== themeFrom || to !== themeTo) themeShow = k;
+    themeFrom = from; themeTo = to; themeK = Math.max(0, Math.min(1, k));
+  }
+  const mixN = (a, b, k) => a + (b - a) * k;
+  const mixA = (a, b, k) => a.map((v, j) => mixN(v, b[j], k));
+  const rgbNums = (c) => (c[0] === '#' ? [1, 3, 5].map((j) => parseInt(c.slice(j, j + 2), 16)) : c.split(',').map(Number));
+  const mixRgb = (a, b, k) => mixA(rgbNums(a), rgbNums(b), k).map(Math.round).join(', ');
+  // the theme being shown right now (cached while it doesn't change)
+  function TH() {
+    const k = Math.round(themeShow * 40) / 40, key = themeFrom + ',' + themeTo + ',' + k;
+    if (key === themeKey && themeCache) return themeCache;
+    const A = window.ECHO_ARENAS[themeFrom].theme, B = window.ECHO_ARENAS[themeTo].theme, la = A.look, lb = B.look;
+    themeKey = key;
+    themeCache = {
+      key, k, from: themeFrom, to: themeTo, title: (k < 0.5 ? A : B).title,
+      wall: mixRgb(A.wall, B.wall, k), fill: mixRgb(A.fill, B.fill, k), bg: `rgb(${mixRgb(A.bg, B.bg, k)})`,
+      ambient: (k < 0.5 ? A : B).ambient, ambientRgb: mixRgb(A.ambientRgb, B.ambientRgb, k),
+      look: la && lb ? {
+        key, stone: mixA(la.stone, lb.stone, k), floor: mixA(la.floor, lb.floor, k), bg: mixA(la.bg, lb.bg, k),
+        accA: mixA(la.accA, lb.accA, k), accB: mixA(la.accB, lb.accB, k), mote: mixA(la.mote, lb.mote, k),
+        hemi: [mixA(la.hemi[0], lb.hemi[0], k), mixA(la.hemi[1], lb.hemi[1], k)], lava: mixN(la.lava, lb.lava, k), ice: mixN(la.ice, lb.ice, k),
+        vein: mixN(la.vein || 0, lb.vein || 0, k),
+      } : null,
+    };
+    return themeCache;
+  }
+  // how icy the cave is right now (0..1): icy caves are slippery
+  function iceNow() {
+    const la = window.ECHO_ARENAS[themeFrom].theme.look, lb = window.ECHO_ARENAS[themeTo].theme.look;
+    return la && lb ? mixN(la.ice, lb.ice, themeK) : 0;
+  }
+
   function loadArena(i) {
     const n = window.ECHO_ARENAS.length;
     arenaIndex = ((i % n) + n) % n;
-    const def = window.ECHO_ARENAS[arenaIndex];
+    const def = window.ECHO_ARENAS[arenaIndex], rows = mapRows(arenaIndex);
     if (!def.open) lastCave = arenaIndex;
-    const h = def.map.length, w = def.map[0].length;
-    const a = { def, theme: def.theme, w, h, grid: new Uint8Array(w * h), spawns: [], crystalSpots: [], open: [] };
-    def.map.forEach((row, y) => [...row].forEach((c, x) => {
+    setTheme(arenaIndex, arenaIndex, 0);
+    const h = rows.length, w = rows[0].length;
+    const a = { def, rows, theme: def.theme, w, h, grid: new Uint8Array(w * h), spawns: [], crystalSpots: [], open: [] };
+    rows.forEach((row, y) => [...row].forEach((c, x) => {
       a.grid[y * w + x] = c === '#' ? 1 : 0;
       if (c !== '#') a.open.push({ x: x + 0.5, y: y + 0.5 });
       if ('ABCD'.includes(c)) a.spawns.push({ x: x + 0.5, y: y + 0.5, key: c });
@@ -149,7 +230,7 @@
     tileGlow = new Float32Array(w * h);
     crystals = a.crystalSpots.map((c) => ({ ...c, on: false, timer: 0.5 + Math.random() * 2.5, phase: Math.random() * 6 }));
     powerups = [];
-    ambient = Array.from({ length: 46 }, () => ({
+    ambient = Array.from({ length: Math.round((46 * w * h) / 510) }, () => ({
       x: Math.random() * w, y: Math.random() * h,
       v: 0.3 + Math.random() * 0.7, phase: Math.random() * 6, size: 0.04 + Math.random() * 0.06,
     }));
@@ -200,26 +281,39 @@
     return { label, sizes };
   }
   // Starting spots: one safe open tile near each corner (top-left, top-right,
-  // bottom-left, bottom-right), all in the cave's biggest open patch
-  function cornerSpots() {
+  // bottom-left, bottom-right), all in the cave's biggest open patch; with
+  // more than 4 bats also one near the middle of each edge (top, bottom, left, right)
+  function cornerSpots(n = 4) {
     const { w, h } = arena, { label, sizes } = openRegions();
     const big = sizes.indexOf(Math.max(...sizes));
     const ok = arena.open.filter((p) => label[Math.floor(p.y) * w + Math.floor(p.x)] === big && !hitsWall(p.x, p.y, R));
-    const pool = ok.length ? ok : arena.open;
-    return [[2.5, 2.5], [w - 2.5, 2.5], [2.5, h - 2.5], [w - 2.5, h - 2.5]].map(([cx, cy]) =>
-      pool.reduce((best, p) => (Math.hypot(p.x - cx, p.y - cy) < Math.hypot(best.x - cx, best.y - cy) ? p : best), pool[0]));
+    const pool = ok.length ? ok : arena.open, used = new Set();
+    const want = [[2.5, 2.5], [w - 2.5, 2.5], [2.5, h - 2.5], [w - 2.5, h - 2.5]];
+    if (n > 4) want.push([w / 2, 3.5], [w / 2, h - 3.5], [2.5, h / 2], [w - 2.5, h / 2]);   // (top and bottom a row in, clear of the HUD)
+    return want.map(([cx, cy]) => {
+      let best = null, bd = Infinity;
+      for (const p of pool) {
+        const d = Math.hypot(p.x - cx, p.y - cy);
+        if (d < bd && !used.has(p)) { bd = d; best = p; }
+      }
+      best = best || pool[0];
+      used.add(best);
+      return best;
+    });
   }
+  const shuffle = (a) => { for (let k = a.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [a[k], a[j]] = [a[j], a[k]]; } return a; };
   // Each bat gets its own corner, picked at random; two bats get opposite
-  // corners (a random diagonal), so they start as far apart as they can
+  // corners (a random diagonal), so they start as far apart as they can.
+  // Big battles fill the four corners first, then the middles of the edges.
   function cornerStarts() {
-    const spots = cornerSpots(), n = bats.length;
-    let order = [0, 1, 2, 3];
-    for (let k = order.length - 1; k > 0; k--) { const j = Math.floor(Math.random() * (k + 1)); [order[k], order[j]] = [order[j], order[k]]; }
+    const n = bats.length, spots = cornerSpots(n);
+    let order = shuffle([0, 1, 2, 3]);
     if (n === 2) order = [order[0], 3 - order[0]];
-    return bats.map((b, k) => spots[order[k % 4]]);
+    if (n > 4) order = shuffle([...order, ...shuffle([4, 5, 6, 7]).slice(0, n - 4)]);
+    return bats.map((b, k) => spots[order[k % order.length]]);
   }
   function updateAmbient(dt) {
-    const kind = arena.theme.ambient;
+    const kind = TH().ambient;
     for (const p of ambient) {
       p.phase += dt;
       if (kind === 'ember') { p.y -= p.v * 0.8 * dt; p.x += Math.sin(p.phase * 2) * 0.3 * dt; }
@@ -242,7 +336,7 @@
   let parries = [], parryCount = 0;                      // parry flashes being drawn: { x, y, ax, ay, rgb, t }
   // special powers in play: fireballs, twisters, Stone Wall segments, thunder strikes (rules, host)
   // and the purely visual lightning bolts and ice blasts (everyone)
-  let shots = [], twisters = [], blocks = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0;
+  let shots = [], twisters = [], blocks = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0, jumpCount = 0;
   let lit, litBy;
   let clock = 0, countdown = 0, over = false, banner = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, firstPower = true, snapTimer = 0, outbox = [], ringId = 0, ended = false;
@@ -254,12 +348,14 @@
       echoes: START_ECHOES, cooldown: 0, stun: 0, safe: 0, dead: 0, score: 0, seen: 0, mouth: 0, puff: 0,
       dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false, charging: false, charge: 0,
       parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0, out: false,
-      held: null, heldLeft: 0, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0, look: null,
+      held: null, heldLeft: 0, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0, look: null, jumpT: 0, jumpCd: 0,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
 
-  // o: { mode, humans, cpus, remotes, mySlot, net, onEnd }
+  // o: { mode, humans, cpus, remotes, mySlot, total, net, onEnd, ... }
+  // Up to MAX_BATS (8) bats in all; at most MAX_LOCAL (4) people on one device.
+  // A host's bats are: itself (slot 0), then o.remotes guests, then o.cpus CPUs.
   // '3d' draws the battle with three.js (duel3d.js); '2d' is the flat top-down view
   let view = '3d';
   const in3d = () => view === '3d' && window.EchoDuel3D && window.EchoDuel3D.supported;
@@ -279,8 +375,8 @@
     powerFreq = Object.prototype.hasOwnProperty.call(POWER_FREQ, pu.freq) ? POWER_FREQ[pu.freq] : POWER_FREQ.normal;
     bats = [];
     if (mode === 'local') {
-      localCount = Math.max(1, Math.min(4, o.humans || 1));
-      let cpus = Math.max(0, Math.min(4 - localCount, o.cpus ?? 1));
+      localCount = Math.max(1, Math.min(MAX_LOCAL, o.humans || 1));
+      let cpus = Math.max(0, Math.min(MAX_BATS - localCount, o.cpus ?? 1));
       if (localCount + cpus < 2) cpus = 1;
       for (let i = 0; i < localCount; i++) bats.push(makeBat(i, 'local', i));
       for (let k = 0; k < cpus; k++) bats.push(makeBat(bats.length, 'cpu'));
@@ -288,14 +384,16 @@
     } else if (mode === 'host') {
       localCount = 1;
       bats.push(makeBat(0, 'local', 0));
-      for (let k = 0; k < (o.remotes || 0); k++) bats.push(makeBat(bats.length, 'remote'));
-      for (let k = 0; k < (o.cpus || 0) && bats.length < 4; k++) bats.push(makeBat(bats.length, 'cpu'));
+      for (let k = 0; k < (o.remotes || 0) && bats.length < MAX_BATS; k++) bats.push(makeBat(bats.length, 'remote'));
+      for (let k = 0; k < (o.cpus || 0) && bats.length < MAX_BATS; k++) bats.push(makeBat(bats.length, 'cpu'));
       viewer = 0;
     } else {
       localCount = 1;
       viewer = o.mySlot;
-      for (let i = 0; i < (o.total || 2); i++) bats.push(makeBat(i, i === o.mySlot ? 'local' : 'remote', 0));
+      for (let i = 0; i < Math.min(MAX_BATS, o.total || 2); i++) bats.push(makeBat(i, i === o.mySlot ? 'local' : 'remote', 0));
     }
+    // more than 4 bats: a bigger arena (guests know from o.total)
+    bigArena = bats.length > 4;
     // o.arena picks the cave (0-3: Crystal Grotto, Lava Hollow, Mossy Den, Frozen Cavern)
     // for 'still', and the first cave for 'morph'; otherwise a random one. Guests
     // load whatever the host's snapshots say.
@@ -321,6 +419,8 @@
     round = 1; roundClock = 0; roundEnd = null; storm = false; stormWarned = false; matchWinner = null; watchI = -1;
     powerTimer = powerWait('first'); firstPower = true; snapTimer = 0;
     banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
+    // a big battle gets its own banner as the countdown ends (guests too)
+    if (bigArena) banner = { text: `${bats.length}-BAT BRAWL!`, rgb: '255, 226, 120', t: 5.2, big: true };
     keys.clear();
     sticks.clear();
     chargers.clear();
@@ -393,6 +493,7 @@
       if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'charge');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
       if (keysFor(slot, 'special').includes(e.code)) act(slot, 'special');
+      if (keysFor(slot, 'jump').includes(e.code)) act(slot, 'jump');
     }
   });
   addEventListener('keyup', (e) => {
@@ -424,6 +525,13 @@
     const rect = canvas.getBoundingClientRect(), b = powerButton();
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 6;
   };
+  // JUMP: a smaller button to the left of BITE·DASH, a little lower (thumb arc)
+  const jumpButton = () => { const b = dashButton(), r = 29; return { x: b.x - b.r - 16 - r, y: b.y + 22, r }; };
+  const inJumpButton = (cx, cy) => {
+    if (localCount !== 1) return false;
+    const rect = canvas.getBoundingClientRect(), b = jumpButton();
+    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 7;
+  };
   const buttonsShown = () => localCount === 1 && countdown <= 0 && !spectating();
   const specialShown = () => buttonsShown() && !!localBat(0)?.held;
   const biteShown = () => buttonsShown() && touchUsed;
@@ -445,6 +553,7 @@
     if (e.pointerType === 'touch') touchUsed = true;
     if (specialShown() && inPowerButton(e.clientX, e.clientY)) { act(0, 'special'); return; }
     if (biteShown() && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
+    if (biteShown() && inJumpButton(e.clientX, e.clientY)) { act(0, 'jump'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
     if ([...sticks.values()].some((s) => s.owner === owner)) { chargers.set(e.pointerId, owner); act(owner, 'charge'); return; }
     sticks.set(e.pointerId, { owner, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
@@ -510,6 +619,7 @@
     else if (a === 'release') tracked(b, () => releaseCharge(b));
     else if (a === 'dash') dash(b, dx, dy);
     else if (a === 'special') useSpecial(b, dx, dy);
+    else if (a === 'jump') jump(b);
   }
 
   // ---- Online hooks (host side) -----------------------------------------
@@ -517,7 +627,7 @@
     const b = bats[slot];
     if (!b || b.ctrl !== 'remote' || mode !== 'host') return;
     if (msg.t === 'in') remoteInput.set(slot, { ix: +msg.ix || 0, iy: +msg.iy || 0 });
-    else if (msg.t === 'act' && ['squeak', 'charge', 'release', 'dash', 'special'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
+    else if (msg.t === 'act' && ['squeak', 'charge', 'release', 'dash', 'special', 'jump'].includes(msg.a)) doAct(b, msg.a, +msg.dx || 0, +msg.dy || 0);
   }
   function dropRemote(slot) {
     const b = bats[slot];
@@ -557,9 +667,9 @@
   // bat's dizzy stars) or it's right next to them. Otherwise they hunt from
   // the last place they noticed it, or roam and squeak to look around.
   const CPU_LEVELS = {
-    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3, parry: 0, special: 0.3, waste: 0.05 },
-    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5, parry: 0.3, special: 0.55, waste: 0 },
-    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7, parry: 0.55, special: 0.85, waste: 0 },
+    easy: { speed: 0.72, think: 0.65, squeak: 0.22, beam: 0, aimErr: 0, dash: 0.25, sense: 1.6, memory: 1.5, search: 0.08, power: 3, parry: 0, special: 0.3, waste: 0.05, jump: 0.12 },
+    normal: { speed: 0.86, think: 0.42, squeak: 0.35, beam: 0.25, aimErr: 0.16, dash: 0.5, sense: 2.2, memory: 3, search: 0.15, power: 5, parry: 0.3, special: 0.55, waste: 0, jump: 0.3 },
+    hard: { speed: 1, think: 0.26, squeak: 0.5, beam: 0.5, aimErr: 0.06, dash: 0.75, sense: 2.8, memory: 4.5, search: 0.25, power: 7, parry: 0.55, special: 0.85, waste: 0, jump: 0.5 },
   };
   // cpuLevel is the level of the CPU being thought for (o.levels can set one per seat)
   let cpuLevel = CPU_LEVELS.normal, baseLevel = CPU_LEVELS.normal;
@@ -578,6 +688,7 @@
       if (noticed) ai.known.set(o.i, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, age: 0, bat: o });
     }
     cpuParry(b, foes);
+    cpuDodge(b);
     for (const [i, k] of ai.known) {
       k.age += dt;
       if (k.age > lv.memory || k.bat.dead) ai.known.delete(i);
@@ -603,8 +714,8 @@
     ai.repath -= dt;
     if (ai.repath <= 0) { ai.path = bfsPath(b.x, b.y, target.x, target.y); ai.repath = 0.25; }
     while (ai.path.length && Math.hypot(ai.path[0].x - b.x, ai.path[0].y - b.y) < 0.35) ai.path.shift();
-    // a ghost flies straight at its target, through the rock
-    const next = (b.ghostT > 0.4 ? null : ai.path[0]) || target;
+    // a ghost flies straight at its target, through the rock (and so does a bat hopping a wall)
+    const next = (b.ghostT > 0.4 || b.jumpT > 0 ? null : ai.path[0]) || target;
     const dx = next.x - b.x, dy = next.y - b.y, len = Math.hypot(dx, dy) || 1;
 
     // a charged beam fires where the target was last noticed (or fizzles into a squeak if it's gone)
@@ -647,6 +758,7 @@
         }
       }
       if (b.held && b.specialCd <= 0 && !b.charging) cpuSpecial(b, fresh, known, target);
+      cpuHop(b, target);
     }
     const speed = (snack ? 1 : 0.85) * lv.speed;
     return { ix: (dx / len) * speed, iy: (dy / len) * speed };
@@ -685,6 +797,44 @@
         if ((goal > 2.5 && b.ai.path.length > goal * 1.6 + 2) || (b.heldT > 10 && known.length)) useSpecial(b);
         break;
       }
+    }
+  }
+
+  // CPUs jump now and then to let an echo ring or a fireball pass underneath
+  // (each one gets one chance per ring or fireball, better CPUs more often)
+  function cpuDodge(b) {
+    const lv = cpuLevel, ai = b.ai;
+    if (!lv.jump || b.jumpT > 0 || b.jumpCd > 0 || b.stun > 0 || b.parryT > 0 || b.dashT > 0) return;
+    ai.dodged = ai.dodged || new Set();
+    if (ai.dodged.size > 60) ai.dodged.clear();
+    for (const g of rings) {
+      if (g.owner === b.i || g.hit.has(b.i) || ai.dodged.has('r' + g.id)) continue;
+      const d = dist(g, b), tti = (d - R - g.r) / RING_SPEED;
+      if (d > g.max + R || tti > 0.16 || tti < 0) continue;
+      ai.dodged.add('r' + g.id);
+      if (Math.random() < lv.jump) { jump(b); return; }
+    }
+    for (const m of shots) {
+      if (m.owner === b.i || ai.dodged.has('f' + m.id)) continue;
+      const rx = b.x - m.x, ry = b.y - m.y, sp = Math.hypot(m.vx, m.vy) || 1, along = (rx * m.vx + ry * m.vy) / sp;
+      if (along < 0 || along / sp > 0.25 || Math.abs(rx * m.vy - ry * m.vx) / sp > R + FIRE_R + 0.15) continue;
+      ai.dodged.add('f' + m.id);
+      if (Math.random() < lv.jump * 1.3) { jump(b); return; }
+    }
+  }
+  // ...and to hop a thin wall when the way round it is long: the wall must be
+  // right ahead, with open cave again within a jump's reach
+  function cpuHop(b, target) {
+    const lv = cpuLevel, ai = b.ai;
+    if (!lv.jump || !target || b.jumpT > 0 || b.jumpCd > 0 || b.ghostT > 0 || b.charging) return;
+    const dx = target.x - b.x, dy = target.y - b.y, d = Math.hypot(dx, dy);
+    if (d < 2.2 || d > 8 || ai.path.length < d * 1.6 + 2) return;
+    const ux = dx / d, uy = dy / d, free = castRay(b.x, b.y, ux, uy, d);
+    if (free > 0.9) return;
+    for (let t = free + 0.4; t < Math.min(d, 2.6); t += 0.2) {
+      if (hitsWall(b.x + ux * t, b.y + uy * t, R)) continue;
+      if (Math.random() < lv.jump) jump(b);
+      return;
     }
   }
 
@@ -868,7 +1018,7 @@
     fx({ k: 'sfx', n: 'beam' });
     fx({ k: 'shake', v: 0.12 });
     for (const foe of bats) {
-      if (foe === b || foe.dead || foe.safe > 0) continue;
+      if (foe === b || foe.dead || foe.safe > 0 || airborne(foe)) continue;   // a jumping bat lets it pass underneath
       const rx = foe.x - b.x, ry = foe.y - b.y, along = rx * ux + ry * uy;
       if (along < 0 || along > len + R) continue;
       if (Math.abs(rx * uy - ry * ux) > BEAM_WIDTH + R) continue;
@@ -904,7 +1054,7 @@
   }
 
   function dash(b, dx, dy) {
-    if (!canAct(b) || b.dashCd > 0) return;
+    if (!canAct(b) || b.dashCd > 0 || airborne(b)) return;
     let ux = dx, uy = dy;
     if (!(Math.hypot(ux || 0, uy || 0) > 0.1)) {
       const sp = Math.hypot(b.vx, b.vy);
@@ -919,6 +1069,30 @@
     b.dashCd = DASH_COOLDOWN;
     b.seen = Math.max(b.seen, 0.5);
     fx({ k: 'sfx', n: 'dash' });
+  }
+
+  // Jump: up over walls and echoes for JUMP_TIME seconds (see JUMP_TIME)
+  const airborne = (b) => b.jumpT > 0;
+  // 0 on the ground, up to 1 at the top of a jump
+  const jumpH = (b) => (b && b.jumpT > 0 ? Math.sin(Math.PI * Math.min(1, 1 - b.jumpT / JUMP_TIME)) : 0);
+  function jump(b) {
+    if (!canAct(b) || b.jumpT > 0 || b.jumpCd > 0) return false;
+    b.jumpT = JUMP_TIME; b.jumpCd = JUMP_TIME + JUMP_COOLDOWN;
+    jumpCount++;
+    b.seen = Math.max(b.seen, 0.35);
+    fx({ k: 'burst', x: r2(b.x), y: r2(b.y + 0.2), rgb: TH().wall, n: 8, sp: 2, sz: 3 });
+    fx({ k: 'sfx', n: 'jump', alt: 'charged' });
+    return true;
+  }
+  // touching down: anyone who'd land in rock is nudged out to the nearest gap
+  function land(b) {
+    b.jumpT = 0;
+    if (b.ghostT <= 0 && hitsWall(b.x, b.y, R)) {
+      const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
+      if (spot) { b.x = spot.x; b.y = spot.y; b.vx *= 0.3; b.vy *= 0.3; }
+    }
+    fx({ k: 'burst', x: r2(b.x), y: r2(b.y + 0.25), rgb: TH().wall, n: 6, sp: 1.6, sz: 3 });
+    fx({ k: 'sfx', n: 'land', alt: 'thud' });
   }
 
   // ---- Special powers (held, used with the POWER button) --------------------
@@ -1011,7 +1185,7 @@
         if (solid(Math.floor(nx), Math.floor(ny))) { explode(s, null); break; }
         s.x = nx; s.y = ny;
         for (const foe of bats) {
-          if (foe.i === s.owner || foe.dead || foe.safe > 0 || Math.hypot(foe.x - s.x, foe.y - s.y) > R + FIRE_R) continue;
+          if (foe.i === s.owner || foe.dead || foe.safe > 0 || airborne(foe) || Math.hypot(foe.x - s.x, foe.y - s.y) > R + FIRE_R) continue;
           if (foe.parryT > 0 && foe.stun <= 0) { deflect(s, foe); break; }
           const sp = Math.hypot(s.vx, s.vy) || 1;
           if (powerStun(foe, s.owner, FIRE_STUN, (s.vx / sp) * FIRE_KNOCK, (s.vy / sp) * FIRE_KNOCK, 'BURNED!', POWERS.fire.rgb, s)) foe.burn = 1.4;
@@ -1029,7 +1203,7 @@
     fx({ k: 'sfx', n: 'boom', alt: 'crash' });
     fx({ k: 'shake', v: 0.16 });
     for (const foe of bats) {
-      if (foe === hit || foe.i === s.owner || foe.dead || foe.safe > 0 || foe.stun > 0) continue;
+      if (foe === hit || foe.i === s.owner || foe.dead || foe.safe > 0 || foe.stun > 0 || airborne(foe)) continue;
       const d = Math.hypot(foe.x - s.x, foe.y - s.y);
       if (d > FIRE_SPLASH + R || castRay(s.x, s.y, (foe.x - s.x) / (d || 1), (foe.y - s.y) / (d || 1), d) < d - 0.3) continue;
       if (powerStun(foe, s.owner, SPLASH_STUN, ((foe.x - s.x) / (d || 1)) * 4, ((foe.y - s.y) / (d || 1)) * 4, 'SCORCHED!', POWERS.fire.rgb, s)) foe.burn = 1;
@@ -1089,7 +1263,7 @@
     fx({ k: 'sfx', n: 'freeze', alt: 'crystal' });
     fx({ k: 'shake', v: 0.12 });
     for (const foe of bats) {
-      if (foe === b || foe.dead || foe.safe > 0) continue;
+      if (foe === b || foe.dead || foe.safe > 0 || airborne(foe)) continue;
       const d = dist(foe, b);
       if (d > FREEZE_R + R || blockerBetween(b.x, b.y, foe.x, foe.y)) continue;
       if (foe.parryT > 0 && foe.stun <= 0) { parrySucceed(foe, b, b.x, b.y); continue; }
@@ -1145,10 +1319,11 @@
   // Ghost: fly through cave walls (not the outer wall) for GHOST_TIME seconds,
   // half see-through. If it wears off inside rock, you pop out at the nearest gap.
   const inBorder = (x, y) => x < 1 + R || y < 1 + R || x > arena.w - 1 - R || y > arena.h - 1 - R;
-  const batBlocked = (b, x, y) => (b.ghostT > 0 ? inBorder(x, y) : hitsWall(x, y, R));
+  // ghosts and jumping bats only stop at the outer wall
+  const batBlocked = (b, x, y) => (b.ghostT > 0 || b.jumpT > 0 ? inBorder(x, y) : hitsWall(x, y, R));
   function unGhost(b) {
     b.ghostT = 0;
-    if (!hitsWall(b.x, b.y, R)) return;
+    if (b.jumpT > 0 || !hitsWall(b.x, b.y, R)) return;   // (a jump lands on its own)
     const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
     if (spot) { b.x = spot.x; b.y = spot.y; b.vx = 0; b.vy = 0; }
     fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.ghost.rgb, n: 12 });
@@ -1239,7 +1414,7 @@
     food.dead = RESPAWN_DELAY + EAT_TIME;
     food.stun = 0;
     food.power = null; food.mega = false; food.shield = false; food.charging = false; food.charge = 0;
-    food.held = null; food.heldLeft = 0; food.ghostT = 0; food.ice = 0; food.burn = 0; food.revealT = 0;
+    food.held = null; food.heldLeft = 0; food.ghostT = 0; food.ice = 0; food.burn = 0; food.revealT = 0; food.jumpT = 0;
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
     if (rule === 'bites' && eater.score >= winScore) { over = true; matchWinner = eater; }
@@ -1307,7 +1482,7 @@
         echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, cooldown: 0, dashCd: 0, dashT: 0, biteT: 0,
         parryT: 0, parryCd: 0, parryRing: null, hitBy: null, power: null, powerT: 0, mega: false, shield: false,
         charging: false, charge: 0, mouth: 0, puff: 0, seen: 0,
-        held: null, heldLeft: 0, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0,
+        held: null, heldLeft: 0, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0, jumpT: 0, jumpCd: 0,
       });
       if (b.ai) { b.ai.path = []; b.ai.roam = null; b.ai.known = null; b.ai.beamAt = null; }
     });
@@ -1358,15 +1533,30 @@
   function updateMorph(dt) {
     if (!morph) return;
     checkTrapped(dt);
-    if (morph.pause > 0) { morph.pause -= dt; if (morph.pause <= 0) morph.target = nextArenaIndex(); return; }
+    if (morph.pause > 0) {
+      morph.pause -= dt;
+      if (morph.pause <= 0) {
+        morph.target = morph.next ?? nextArenaIndex();
+        morph.next = null; morph.total = 0;
+        setTheme(arenaIndex, morph.target, 0);
+        // the new cave's theme starts creeping in: say which
+        const th = window.ECHO_ARENAS[morph.target].theme;
+        fx({ k: 'banner', text: `Morphing: ${th.title}${th.look?.ice ? ' · slippery!' : th.look?.lava ? ' · hot!' : ''}`, rgb: th.wall, t: 2.2 });
+        fx({ k: 'sfx', n: 'warn' });
+      }
+      return;
+    }
     morph.timer -= dt;
     if (morph.timer > 0) return;
     morph.timer = morph.rescue ? RESCUE_STEP : MORPH_STEP;
-    const def = window.ECHO_ARENAS[morph.target], { w, h, grid } = arena, diff = [];
+    const rows = mapRows(morph.target), { w, h, grid } = arena, diff = [];
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
       // (Stone Wall blocks are left alone; they crumble on their own)
-      if (grid[y * w + x] !== 2 && grid[y * w + x] !== (def.map[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
+      if (grid[y * w + x] !== 2 && grid[y * w + x] !== (rows[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
     }
+    // the colours blend into the new theme as the walls change
+    morph.total = Math.max(morph.total || 0, diff.length);
+    setTheme(themeFrom, morph.target, morph.total ? 1 - diff.length / morph.total : 1);
     if (!diff.length) {
       const keepLit = lit, keepBy = litBy, keepPowers = powerups;
       loadArena(morph.target);
@@ -1409,7 +1599,7 @@
     const { label, sizes } = openRegions(), total = sizes.reduce((a, n) => a + n, 0) || 1;
     const stuck = [];
     for (const b of bats) {
-      if (b.dead || b.out || b.ghostT > 0) { b.trapT = 0; continue; }
+      if (b.dead || b.out || b.ghostT > 0 || b.jumpT > 0) { b.trapT = 0; continue; }
       const tx = Math.floor(b.x), ty = Math.floor(b.y), id = tx >= 0 && ty >= 0 && tx < arena.w && ty < arena.h ? label[ty * arena.w + tx] : -1;
       const room = id >= 0 && !hitsWall(b.x, b.y, R) ? sizes[id] : 0;   // wedged into rock counts as trapped too
       b.trapT = room < total * TRAP_SHARE ? (b.trapT || 0) + TRAP_CHECK : 0;
@@ -1420,7 +1610,8 @@
     // morph early, straight into Open Sky (or, with no sky about, the next cave)
     const skies = arenaKinds(true);
     morph.target = skies.length ? skies[Math.floor(Math.random() * skies.length)] : morph.target >= 0 ? morph.target : nextArenaIndex();
-    morph.pause = 0; morph.timer = 0; morph.rescue = stuck;
+    morph.pause = 0; morph.timer = 0; morph.rescue = stuck; morph.total = 0;
+    setTheme(themeK > 0.5 ? themeTo : themeFrom, morph.target, 0);
     fx({ k: 'banner', text: 'Opening up!', rgb: '190, 255, 235', t: 1.6 });
     fx({ k: 'shake', v: 0.3 });
     fx({ k: 'sfx', n: 'crash', alt: 'warn' });
@@ -1431,7 +1622,7 @@
     const score = (s) => foes.length ? Math.min(...foes.map((o) => Math.hypot(o.x - s.x, o.y - s.y))) : 0;
     const free = arena.spawns.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
     const s = (free.length ? free : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
-    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null, ghostT: 0, ice: 0, burn: 0 });
+    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null, ghostT: 0, ice: 0, burn: 0, jumpT: 0, jumpCd: 0 });
   }
 
   function spawnPowerup(force) {
@@ -1469,6 +1660,7 @@
 
     if (!over) updateMorph(rawDt);
     updateRound(rawDt);
+    const slip = iceNow(), bounce = 0.4 + 0.3 * slip;   // icy caves: slippery, and walls bounce harder
 
     for (const b of bats) {
       b.cooldown = Math.max(0, b.cooldown - dt);
@@ -1491,14 +1683,16 @@
       b.burn = Math.max(0, b.burn - dt);
       if (b.revealT > 0) { b.revealT = Math.max(0, b.revealT - dt); b.seen = 1; }
       if (b.ghostT > 0) { b.ghostT -= dt; if (b.ghostT <= 0) unGhost(b); }
+      b.jumpCd = Math.max(0, b.jumpCd - dt);
+      if (b.jumpT > 0) { b.jumpT -= dt; if (b.jumpT <= 0) land(b); }
       if (b.dead > 0) { if (b.out) continue; b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
       b.ice = b.stun > 0 ? Math.max(0, b.ice - dt) : 0;
       if (b.ice > 0) { b.vx = 0; b.vy = 0; }   // frozen solid
       else if (b.stun > 0) {
-        // stunned bats can't steer: the hit's knockback dies off fast and they hang still
-        const k = Math.exp(-STUN_DRAG * dt);
+        // stunned bats can't steer: the hit's knockback dies off fast and they hang still (they slide on ice)
+        const k = Math.exp(-STUN_DRAG * (1 - 0.6 * slip) * dt);
         b.dashT = 0;
         b.vx *= k; b.vy *= k;
       } else if (!over) {
@@ -1518,18 +1712,19 @@
         b.dashT -= dt;
         if (Math.random() < 0.6) particles.push({ x: b.x, y: b.y, vx: 0, vy: 0, life: 0.3, rgb: b.rgb, size: 5 });
       } else if (ix || iy) {
-        const acc = ACCEL * (fast ? 1.3 : 1);
+        // on ice there's less grip: turning and stopping take longer, so bats slide
+        const acc = ACCEL * (fast ? 1.3 : 1) * (1 - 0.62 * slip);
         b.vx += ix * acc * dt; b.vy += iy * acc * dt;
-      } else if (b.stun <= 0) { b.vx -= b.vx * DRAG * dt; b.vy -= b.vy * DRAG * dt; }
+      } else if (b.stun <= 0) { const dr = DRAG * (1 - 0.82 * slip); b.vx -= b.vx * dr * dt; b.vy -= b.vy * dr * dt; }
       if (b.ctrl === 'cpu') cpuLevel = b.lv || baseLevel;
       const max = b.dashT > 0 ? DASH_SPEED : b.stun > 0 ? 7 : MAX_SPEED * (fast ? 1.45 : 1) * (b.charging && b.charge > 0.2 ? CHARGE_SLOW : 1) * (b.ctrl === 'cpu' ? cpuLevel.speed : 1);
       const sp = Math.hypot(b.vx, b.vy);
       if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
       const nx = b.x + b.vx * dt;
-      if (!batBlocked(b, nx, b.y)) b.x = nx; else b.vx *= -0.4;
+      if (!batBlocked(b, nx, b.y)) b.x = nx; else b.vx *= -bounce;
       const ny = b.y + b.vy * dt;
-      if (!batBlocked(b, b.x, ny)) b.y = ny; else b.vy *= -0.4;
+      if (!batBlocked(b, b.x, ny)) b.y = ny; else b.vy *= -bounce;
     }
 
     advanceRings(dt, true);
@@ -1542,9 +1737,9 @@
     // unless the rival parries, blocks with a shield, or is dashing too (a clash)
     if (!over && !roundEnd) {
       outer: for (const a of bats) {
-        if (a.dead || a.stun > 0 || a.biteT <= 0) continue;
+        if (a.dead || a.stun > 0 || a.biteT <= 0 || airborne(a)) continue;
         for (const b of bats) {
-          if (b === a || b.dead || b.safe > 0 || Math.hypot(a.x - b.x, a.y - b.y) >= BITE_REACH) continue;
+          if (b === a || b.dead || b.safe > 0 || airborne(b) || Math.hypot(a.x - b.x, a.y - b.y) >= BITE_REACH) continue;
           const d = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / d, uy = (b.y - a.y) / d;
           if (b.biteT > 0 && b.stun <= 0) { clash(a, b, ux, uy); continue outer; }
           if (b.parryT > 0 && b.stun <= 0) { parrySucceed(b, a, a.x, a.y, true); continue outer; }
@@ -1616,7 +1811,7 @@
       }
       if (!simulate) continue;
       for (const foe of bats) {
-        if (foe.i === ring.owner || foe.dead || foe.safe > 0 || ring.hit.has(foe.i)) continue;
+        if (foe.i === ring.owner || foe.dead || foe.safe > 0 || ring.hit.has(foe.i) || airborne(foe)) continue;   // passes under a jumping bat
         const d = Math.hypot(foe.x - ring.x, foe.y - ring.y);
         if (d < r + R && d >= prev - R) {
           ring.hit.add(foe.i);
@@ -1649,6 +1844,7 @@
 
   function tickCosmetics(dt) {
     shake = Math.max(0, shake - dt);
+    themeShow += (themeK - themeShow) * Math.min(1, dt * 3);
     if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
     updateAmbient(dt);
     if (tileGlow) for (let k = 0; k < tileGlow.length; k++) if (tileGlow[k] > 0) tileGlow[k] = Math.max(0, tileGlow[k] - dt * 0.6);
@@ -1687,7 +1883,7 @@
       if (Math.random() < 0.7) {
         const a = Math.random() * Math.PI * 2, r = 0.4 + Math.random() * 1.4;
         particles.push({ x: tw.x + Math.cos(a) * r, y: tw.y + Math.sin(a) * r, vx: -Math.sin(a) * 4 - Math.cos(a) * 1.5, vy: Math.cos(a) * 4 - Math.sin(a) * 1.5,
-          life: 0.4 + Math.random() * 0.3, rgb: Math.random() < 0.5 ? POWERS.tornado.rgb : arena.theme.wall, size: 2.5 + Math.random() * 2 });
+          life: 0.4 + Math.random() * 0.3, rgb: Math.random() < 0.5 ? POWERS.tornado.rgb : TH().wall, size: 2.5 + Math.random() * 2 });
       }
     }
     for (const bt of bolts) {
@@ -1731,7 +1927,7 @@
       t: 's', a: arenaIndex, am: arenaMode, cd: r2(countdown), over,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
         r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), b.charging ? r2(b.charge) : -1, r2(b.parryT), b.out ? 1 : 0,
-        b.held || 0, r2(b.ghostT), r2(b.ice), r2(b.burn), r2(b.heldLeft), r2(b.specialCd)]),
+        b.held || 0, r2(b.ghostT), r2(b.ice), r2(b.burn), r2(b.heldLeft), r2(b.specialCd), r2(b.jumpT), r2(b.jumpCd)]),
       bm: beams.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.len), m.owner, r2(m.t)]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
@@ -1739,6 +1935,7 @@
       e: eats.map((e) => [e.eater.i, e.food.i, r2(e.food.x), r2(e.food.y), r2(e.t), r2(e.ang)]),
       fx: outbox,
       ft: winScore,
+      tm: [themeFrom, themeTo, r2(themeK)],   // the cave theme: from, to, how far it has blended
     };
     // special powers in play (only sent while there are some)
     if (shots.length) s.sh = shots.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.vx), r2(m.vy), m.owner]);
@@ -1758,6 +1955,7 @@
     if (s.a !== arenaIndex) loadArena(s.a);
     if (s.am) arenaMode = s.am;
     if (s.ft) winScore = s.ft;
+    if (s.tm) setTheme(s.tm[0], s.tm[1], s.tm[2]);
     rule = s.ru ? 'survivor' : 'bites';
     if (s.ru) { round = s.ru[0]; roundClock = s.ru[1]; storm = !!s.ru[2]; roundEnd = s.ru[3] ? roundEnd || { t: 0, w: -1 } : null; }
     countdown = s.cd;
@@ -1772,6 +1970,12 @@
       b.parryT = v[21] || 0;
       b.out = !!v[22];
       b.held = v[23] || null; b.heldLeft = v[27] || 0; b.specialCd = v[28] || 0; b.ghostT = v[24] || 0; b.ice = v[25] || 0; b.burn = v[26] || 0;
+      // a jump: keep the smoothly running clock unless it's off by a lot
+      const jt = v[29] || 0;
+      if (jt <= 0) b.jumpT = 0;
+      else if (b.jumpT > 0) { if (Math.abs(b.jumpT - jt) > 0.12) b.jumpT = jt; }
+      else if (jt > JUMP_TIME * 0.5) b.jumpT = jt;   // (not the tail end of one that just landed here)
+      b.jumpCd = v[30] || 0;
       if (s.lk && s.lk[i] && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch (e) { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
@@ -1845,7 +2049,11 @@
       if (m.tx !== undefined) { m.tx += m.ux * TORNADO_SPEED * dt; m.ty += m.uy * TORNADO_SPEED * dt; m.x += (m.tx - m.x) * k; m.y += (m.ty - m.y) * k; }
     }
     for (const m of blocks) m.t += dt;
-    for (const b of bats) if (b.ghostT > 0) b.ghostT = Math.max(0, b.ghostT - dt);
+    for (const b of bats) {
+      if (b.ghostT > 0) b.ghostT = Math.max(0, b.ghostT - dt);
+      if (b.jumpT > 0) b.jumpT = Math.max(0, b.jumpT - dt);
+      if (b.jumpCd > 0) b.jumpCd = Math.max(0, b.jumpCd - dt);
+    }
     advanceRings(dt, false);
     inputTimer -= dt;
     if (inputTimer <= 0) {
@@ -1928,7 +2136,7 @@
     ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.clip();
     ctx.fillStyle = 'rgba(255, 244, 214, 0.6)';
     ctx.fillRect(mx - mr, my - mr, mr * 2, mr * 2);
-    ctx.fillStyle = arena.theme.bg;
+    ctx.fillStyle = TH().bg;
     ctx.beginPath(); ctx.arc(mx + mr * 0.55, my - mr * 0.3, mr * 0.85, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
     // a faint edge so players know where the sky ends
@@ -1937,6 +2145,43 @@
     ctx.setLineDash([4, 8]);
     ctx.strokeRect(X(1), Y(1), (arena.w - 2) * PX, (arena.h - 2) * PX);
     ctx.setLineDash([]);
+  }
+
+  // Lava and ice caves, top-down: glowing cracks in the floor, or a frosty
+  // sheen with glints. Drawn the same under rock and open floor, so they
+  // give nothing away about where the walls are.
+  function drawFloorTheme2D(th) {
+    const L = th.look;
+    if (!L || (L.lava < 0.02 && L.ice < 0.02)) return;
+    const { w, h } = arena;
+    ctx.save();
+    if (L.ice > 0.02) {
+      ctx.fillStyle = `rgba(150, 200, 255, ${0.06 * L.ice})`;
+      ctx.fillRect(X(0), Y(0), w * PX, h * PX);
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    for (let k = 0; k < w * h; k++) {
+      const r = hash(k * 13.7 + 5);
+      const tx = k % w, ty = (k - tx) / w, x = X(tx), y = Y(ty);
+      if (L.lava > 0.02 && r < 0.09) {
+        const a = L.lava * (0.24 + 0.14 * Math.sin(clock * 1.7 + k));
+        ctx.strokeStyle = `rgba(255, 110, 30, ${a * 0.45})`; ctx.lineWidth = Math.max(2.5, PX * 0.18);
+        ctx.beginPath();
+        let px = x + PX * hash(k + 1), py = y + PX * hash(k + 2);
+        ctx.moveTo(px, py);
+        for (let j = 0; j < 3; j++) { px += (hash(k * 3 + j) - 0.5) * PX * 0.8; py += (hash(k * 5 + j) - 0.5) * PX * 0.8; ctx.lineTo(px, py); }
+        ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 200, 90, ${a})`; ctx.lineWidth = Math.max(1, PX * 0.05); ctx.stroke();
+      }
+      if (L.ice > 0.02 && r > 0.93) {
+        // a glint: a little four-point star, twinkling
+        const a = L.ice * 0.18 * (0.4 + 0.6 * Math.sin(clock * 2.2 + k * 1.7)), cx = x + PX * hash(k + 3), cy = y + PX * hash(k + 4), s = PX * 0.18;
+        ctx.strokeStyle = `rgba(225, 245, 255, ${a})`; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cx - s, cy); ctx.lineTo(cx + s, cy); ctx.moveTo(cx, cy - s); ctx.lineTo(cx, cy + s); ctx.stroke();
+      }
+    }
+    ctx.restore();
   }
 
   // crystals and power-ups stay hidden too, until sound or a bat's senses find them
@@ -1956,11 +2201,12 @@
       const ok = window.EchoDuel3D.render({
         W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams, crystals, powerups, eats, shake, follow,
         batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE, EAT_PULL, extra: extras3d,
+        theme: TH().look, jumpH, jumpLift: JUMP_LIFT, big: bigArena,
       });
       if (ok) { render3dOverlay(follow); return; }
     }
     window.EchoDuel3D?.hide();
-    const th = arena.theme;
+    const th = TH();
     ctx.fillStyle = th.bg;
     ctx.fillRect(0, 0, W, H);
     // the map fills the screen; the scoreboard and arena info float over its border walls
@@ -1972,6 +2218,7 @@
     const near = senses();
 
     if (arena.def.open) drawSky();
+    else drawFloorTheme2D(th);
 
     // ambient particles only show where sound has lit the cave
     for (const p of ambient) {
@@ -2104,7 +2351,7 @@
     const c = P(follow ? follow.x : arena.w / 2, follow ? follow.y : arena.h / 2);
     PX = c.s;
     ox = 0; oy = H / 2 - (arena.h * PX) / 2;
-    const th = arena.theme;
+    const th = TH();
     for (const p of ambient) {
       const l = litAt(p.x, p.y);
       if (l < 0.05) continue;
@@ -2139,7 +2386,7 @@
       if (b.dead) continue;
       const v = batVisible(b);
       if (v < 0.03 || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)) continue;
-      const q = P(b.x, b.y), s = q.s;
+      const q = P(b.x, b.y, FLY_Y + JUMP_LIFT * jumpH(b)), s = q.s;
       if (q.off) continue;
       ctx.globalAlpha = b.ctrl === 'local' || viewer === b.i ? 1 : v;
       if (b.charging && b.charge > 0.12) {
@@ -2496,7 +2743,7 @@
   function drawActionButton() {
     const me = localBat(0);
     if (!me) return;
-    if (biteShown()) drawBiteButton(dashButton(), me);
+    if (biteShown()) { drawBiteButton(dashButton(), me); drawJumpButton(jumpButton(), me); }
     if (me.held !== specialSeen) { specialSeen = me.held; specialPopAt = clock; }
     if (!specialShown()) return;
     const bt = powerButton();
@@ -2559,7 +2806,7 @@
   // ---- Special power effects in 3D -------------------------------------------
   // view3d.js calls this (as v.extra) just before it draws each frame. Arena
   // (x, y) is the 3D point (x, height, y); bats fly at height 0.55.
-  const FLY_Y = 0.55;
+  const FLY_Y = 0.55, JUMP_LIFT = 1.1;   // (a jump lifts a bat this high in 3D, over the 1-high walls)
   let x3 = null;
   function build3d(T, scene) {
     const add = (o) => { scene.add(o); return o; };
@@ -2602,14 +2849,14 @@
       return { g, ring, spikes };
     });
     const iceGeo = new T.BoxGeometry(0.95, 0.95, 0.95);
-    const ices = [0, 1, 2, 3].map(() => {
+    const ices = BATS.map(() => {
       const g = new T.Group();
       const box = new T.Mesh(iceGeo, new T.MeshLambertMaterial({ color: 0xaee6ff, emissive: 0x2a6a90, transparent: true, opacity: 0.45, depthWrite: false }));
       const edges = new T.LineSegments(new T.EdgesGeometry(iceGeo), new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
       g.add(box, edges); g.visible = false; add(g);
       return { g, box, edges };
     });
-    const ghosts = [0, 1, 2, 3].map(() => { const m = add(new T.Mesh(ball, glowMat(0xd6c4ff, 0.18))); m.visible = false; return m; });
+    const ghosts = BATS.map(() => { const m = add(new T.Mesh(ball, glowMat(0xd6c4ff, 0.18))); m.visible = false; return m; });
     return { scene, blockMesh, rimMesh, MAXB, fires, fireLights, flashLight, twists, novas3, ices, ghosts, M: new T.Matrix4(), Q: new T.Quaternion(), E: new T.Euler(), V: new T.Vector3(), S: new T.Vector3(), C: new T.Color() };
   }
   function extras3d(T, scene) {
@@ -2705,7 +2952,7 @@
       ic.g.visible = vis > 0.03;
       if (!ic.g.visible) return;
       const pop = Math.min(1, b.ice / 0.3);
-      ic.g.position.set(b.x, FLY_Y, b.y);
+      ic.g.position.set(b.x, FLY_Y + JUMP_LIFT * jumpH(b), b.y);
       ic.g.rotation.set(0.15, 0.4 + k, 0.1);
       ic.g.scale.setScalar(0.9 + 0.1 * pop);
       ic.box.material.opacity = 0.45 * vis * pop; ic.edges.material.opacity = 0.9 * vis * pop;
@@ -2714,7 +2961,7 @@
       const b = bats[k], vis = b && !b.dead && b.ghostT > 0 ? batVisible(b) : 0;
       m.visible = vis > 0.03;
       if (!m.visible) return;
-      m.position.set(b.x, FLY_Y, b.y);
+      m.position.set(b.x, FLY_Y + JUMP_LIFT * jumpH(b), b.y);
       m.scale.setScalar(0.55 + 0.05 * Math.sin(clock * 6));
       m.material.opacity = 0.35 * Math.min(1, vis * 2);
     });
@@ -2722,7 +2969,6 @@
 
   // Screen-space layer shared by both views: warnings, HUD, touch controls, fades
   function drawScreen() {
-    const th = arena.theme;
     // the echo storm pulses the screen edge
     if (storm && !over && !roundEnd) {
       const a = 0.22 + 0.22 * Math.sin(clock * 10);
@@ -2842,7 +3088,17 @@
     const scale = o.scale ?? (1 + (b.puff > 0 ? 0.4 * b.puff * (0.8 + 0.2 * Math.sin(clock * 30)) : 0));
     const stunned = o.stunned ?? b.stun > 0;
     if (!o.rot && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0) return;
-    const r = PX * R * scale, flap = stunned ? 0.2 : Math.sin(clock * (b.dashT > 0 ? 40 : 18) + b.i);
+    // jumping: a shadow stays on the floor while the bat rises and grows toward you
+    const hj = o.rot ? 0 : jumpH(b);
+    if (hj > 0) {
+      const sr = PX * (0.62 - 0.17 * hj), a = (o.alpha ?? 1) * (0.8 - 0.3 * hj);
+      ctx.fillStyle = `rgba(0, 0, 0, ${a})`;
+      ctx.beginPath(); ctx.ellipse(x, y + PX * 0.12, sr, sr * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(${b.rgb}, ${a * 0.8})`; ctx.lineWidth = Math.max(1.5, PX * 0.06);
+      ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+      y -= hj * PX * 0.95;
+    }
+    const r = PX * R * scale * (1 + 0.6 * hj), flap = stunned ? 0.2 : Math.sin(clock * (b.dashT > 0 ? 40 : 18) + b.i);
     // a ghost is half see-through (rivals' alpha already has it, via batVisible)
     const alpha = o.alpha ?? (b.ghostT > 0 && !o.rot ? ghostAlpha(b) : 1);
     ctx.save();
@@ -2854,7 +3110,7 @@
     if (b.burn > 0) glow(0, 0, r * 3.4, '255, 120, 40', 0.45 * Math.min(1, b.burn) * (0.8 + 0.2 * Math.sin(clock * 30)));
     if (b.ghostT > 0 && !o.rot) glow(0, 0, r * 3.6, POWERS.ghost.rgb, 0.35);
     // a soft ring in the slot colour under the bat, so you can tell bats apart whatever they look like
-    if (!o.rot) {
+    if (!o.rot && !hj) {   // (mid-jump, the dashed shadow on the floor does this)
       ctx.strokeStyle = `rgba(${b.rgb}, 0.55)`; ctx.lineWidth = Math.max(1.5, r * 0.14);
       ctx.beginPath(); ctx.ellipse(0, r * 1.05, r * 1.55, r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
     }
@@ -2997,6 +3253,37 @@
     ctx.fillStyle = ready ? '#f4f1ff' : 'rgba(244, 241, 255, 0.45)';
     ctx.fillText('BITE·DASH', b.x, b.y + b.r * 0.5);
   }
+  // JUMP: a smaller glassy disc with a hop arc over a little wall; the rim
+  // fills up again while the jump recharges, and it lights up mid-air
+  function drawJumpButton(b, me) {
+    const up = me.jumpT > 0, ready = !up && me.jumpCd <= 0, k = ready || up ? 1 : 0.55;
+    if (up) glow(b.x, b.y, b.r * 1.9, '150, 230, 255', 0.3);
+    const g = ctx.createRadialGradient(b.x - b.r * 0.3, b.y - b.r * 0.4, b.r * 0.1, b.x, b.y, b.r);
+    g.addColorStop(0, `rgba(90, 170, 235, ${0.5 * k})`);
+    g.addColorStop(1, `rgba(20, 40, 92, ${0.72 * k})`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2);
+    glowStroke('rgba(60, 120, 170, 0.7)', 3, ready ? 'rgba(130, 220, 255, 1)' : null);
+    const full = JUMP_TIME + JUMP_COOLDOWN;
+    ctx.strokeStyle = '#8fdcff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, 1 - me.jumpCd / full)); ctx.stroke();
+    // the picture: a dashed hop arc over a little block, an arrow at its end
+    const c = ready || up ? 'rgba(244, 241, 255, 0.9)' : 'rgba(244, 241, 255, 0.4)', s = b.r;
+    ctx.fillStyle = c;
+    roundRect(b.x - s * 0.14, b.y - s * 0.02, s * 0.28, s * 0.26, s * 0.05); ctx.fill();
+    ctx.strokeStyle = c; ctx.lineWidth = Math.max(1.5, s * 0.08); ctx.lineCap = 'round';
+    ctx.setLineDash([s * 0.12, s * 0.1]);
+    ctx.beginPath(); ctx.arc(b.x, b.y + s * 0.2, s * 0.46, Math.PI * 1.08, Math.PI * 1.85); ctx.stroke();
+    ctx.setLineDash([]);
+    const ax = b.x + Math.cos(Math.PI * 1.9) * s * 0.46, ay = b.y + s * 0.2 + Math.sin(Math.PI * 1.9) * s * 0.46;
+    ctx.beginPath(); ctx.moveTo(ax - s * 0.16, ay - s * 0.06); ctx.lineTo(ax + s * 0.02, ay + s * 0.02); ctx.lineTo(ax - s * 0.04, ay - s * 0.2); ctx.stroke();
+    ctx.lineCap = 'butt';
+    ctx.font = `800 ${Math.round(s * 0.3)}px ${FONT}`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = c;
+    ctx.fillText('JUMP', b.x, b.y + s * 0.58);
+  }
   function drawIceBlock(r, k) {
     const s = r * 2.5 * (0.9 + 0.1 * k);
     ctx.save();
@@ -3055,11 +3342,12 @@
   // drawn into a cached layer and stamped each frame (much cheaper on phones)
   let hudLayer = null;
   const stormIn = () => Math.max(0, Math.ceil(ROUND_LIMIT - roundClock));
-  const infoText = () => {
+  const infoText = (cut = 0) => {
     const parts = [arena.def.name];
+    if (bigArena && cut < 3) parts.unshift(`${bats.length} bats`);
     // (shorter in Last Bat Standing, which has more to say)
-    if (arenaMode === 'morph') parts.push(rule === 'survivor' ? 'morphing' : 'the cave keeps changing');
-    else if (arenaMode === 'sky' && rule !== 'survivor') parts.push('no cave tonight');
+    if (arenaMode === 'morph' && cut < 2) parts.push(rule === 'survivor' || bigArena || cut ? 'morphing' : 'the cave keeps changing');
+    else if (arenaMode === 'sky' && rule !== 'survivor' && !cut) parts.push('no cave tonight');
     if (rule === 'survivor') {
       parts.push(`round ${round}`);
       if (storm) parts.push('echo storm');
@@ -3092,18 +3380,21 @@
     drawHudMiddle(size);
   }
 
-  // Scoreboard: one pill per bat along the top, split around the pause button
+  // Scoreboard: one pill per bat along the top, split around the pause button.
+  // When they get narrow (big battles) they turn compact: score, name and echo pips only.
   function drawHudPills(ph, size) {
     const n = bats.length, pad = 10, centerGap = 34;
     const left = Math.ceil(n / 2);
     // each side's pills must stay clear of the pause button in the middle
-    const pw = Math.min(250, (W / 2 - pad - centerGap) / left - 8);
+    const compact = (W / 2 - pad - centerGap) / left - 8 < 118, pgap = compact ? 5 : 8;
+    const pw = Math.min(250, (W / 2 - pad - centerGap) / left - pgap);
     ctx.textBaseline = 'middle';
     bats.forEach((b, k) => {
-      const x = k < left ? pad + k * (pw + 8) : W - pad - (n - k) * (pw + 8) + 8;
+      const x = k < left ? pad + k * (pw + pgap) : W - pad - (n - k) * (pw + pgap) + pgap;
       const y = 8;
       const mine = viewer === b.i || (b.ctrl === 'local' && localCount === 1);
       pill(x, y, pw, ph, mine ? b.color : `rgba(${b.rgb}, 0.6)`, mine ? 12 : 6);
+      if (compact) { drawCompactPill(b, x, y, pw, ph, mine); return; }
       // the score in a coloured lozenge at the left
       // the score out of the match length, e.g. 2/5
       const sh = ph * 0.66, sw = sh * 2.05, sx = x + ph * 0.2, cy = y + ph / 2;
@@ -3163,12 +3454,15 @@
     });
 
     // arena info pill along the bottom, with thin lines reaching out from both sides
-    const info = infoText();
+    let info = infoText();
+    ctx.font = `600 ${Math.round(size * 0.7)}px ${FONT}`;
+    // (on a narrow screen, drop the least useful bits until it fits between the buttons)
+    for (let cut = 1; ctx.measureText(info).width + 40 > W - 140 && cut < 4; cut++) info = infoText(cut);
     ctx.font = `600 ${Math.round(size * 0.7)}px ${FONT}`;
     const iw = ctx.measureText(info).width + 40, ih = size * 1.55, iy = H - ih - 10;
     const urgent = infoUrgent();
-    const edge = urgent ? `rgb(${arena.theme.wall})` : 'rgba(150, 130, 255, 0.75)';
-    ctx.strokeStyle = urgent ? `rgba(${arena.theme.wall}, 0.6)` : 'rgba(150, 130, 255, 0.45)';
+    const edge = urgent ? `rgb(${TH().wall})` : 'rgba(150, 130, 255, 0.75)';
+    ctx.strokeStyle = urgent ? `rgba(${TH().wall}, 0.6)` : 'rgba(150, 130, 255, 0.45)';
     ctx.lineWidth = 1.5;
     const ly = iy + ih / 2, ll = Math.min(48, W * 0.05);
     ctx.beginPath();
@@ -3177,14 +3471,72 @@
     ctx.stroke();
     pill(W / 2 - iw / 2, iy, iw, ih, edge, 8);
     ctx.textAlign = 'center';
-    ctx.fillStyle = urgent ? `rgb(${arena.theme.wall})` : 'rgba(234, 230, 255, 0.88)';
+    ctx.fillStyle = urgent ? `rgb(${TH().wall})` : 'rgba(234, 230, 255, 0.88)';
     ctx.fillText(info, W / 2, ly + 1);
+  }
+
+  // A compact score pill: the score in a coloured lozenge, the name and the echo pips beside it
+  function drawCompactPill(b, x, y, pw, ph, mine) {
+    const sh = ph * 0.64, sw = sh * 1.6, sx = x + ph * 0.16, cy = y + ph / 2;
+    roundRect(sx, cy - sh / 2, sw, sh, sh / 2);
+    ctx.fillStyle = b.color; ctx.fill();
+    ctx.fillStyle = '#16123a'; ctx.textAlign = 'left';
+    ctx.font = `700 ${Math.round(sh * 0.74)}px ${HEAD}`;
+    const sc = String(b.score), w1 = ctx.measureText(sc).width;
+    ctx.font = `600 ${Math.round(sh * 0.44)}px ${HEAD}`;
+    const tot = `/${winScore}`, w2 = ctx.measureText(tot).width, x1 = sx + sw / 2 - (w1 + w2) / 2;
+    ctx.fillStyle = 'rgba(22, 18, 58, 0.62)'; ctx.fillText(tot, x1 + w1, cy + 2);
+    ctx.fillStyle = '#16123a'; ctx.font = `700 ${Math.round(sh * 0.74)}px ${HEAD}`; ctx.fillText(sc, x1, cy + 1);
+    // the name (and a little power dot) on top, echo pips under it
+    const nx = sx + sw + ph * 0.16, room = x + pw - ph * 0.3 - nx;
+    ctx.fillStyle = b.color;
+    ctx.font = `700 ${Math.round(ph * 0.36)}px ${HEAD}`;
+    ctx.fillText(b.name, nx, cy - ph * 0.15);
+    // holding or running a power: a little badge in its colour on the score's corner
+    const pw2 = b.held || b.power || (b.mega && 'mega') || (b.shield && 'shield');
+    if (pw2) {
+      ctx.beginPath(); ctx.arc(sx + sw - sh * 0.12, cy - sh * 0.42, ph * 0.13, 0, Math.PI * 2);
+      ctx.fillStyle = `rgb(${POWERS[pw2].rgb})`; ctx.fill();
+      ctx.strokeStyle = 'rgba(10, 8, 30, 0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+    }
+    const pr = Math.max(1.4, Math.min(ph * 0.065, room / 16)), gap = Math.min(pr * 2.9, (room - pr * 2) / (MAX_ECHOES - 1));
+    for (let e = 0; e < MAX_ECHOES; e++) {
+      ctx.beginPath(); ctx.arc(nx + pr + e * gap, cy + ph * 0.2, pr, 0, Math.PI * 2);
+      ctx.fillStyle = b.power === 'frenzy' || e < b.echoes ? b.color : 'rgba(214, 208, 255, 0.16)'; ctx.fill();
+    }
+    if (mine) {
+      // your own: a little arrow under the pill
+      youMarker(x + pw / 2, y + ph + 1, 4, b.rgb);
+    }
+    if (b.out) {
+      ctx.font = `700 ${Math.round(ph * 0.36)}px ${HEAD}`;
+      const nw = ctx.measureText(b.name).width;
+      ctx.strokeStyle = '#f4f1ff'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(nx - 2, cy - ph * 0.15); ctx.lineTo(nx + nw + 2, cy - ph * 0.15); ctx.stroke();
+      roundRect(x, y, pw, ph, ph / 2);
+      ctx.fillStyle = 'rgba(6, 5, 20, 0.55)'; ctx.fill();
+    }
   }
 
   // countdown, banners and split-screen lines over the middle of the screen
   function drawHudMiddle(size) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const mid = oy + (arena.h * PX) / 2;
+    if (countdown > 0 && bigArena) {
+      // a big battle: a title over the countdown with every bat's colour along it
+      const ty = mid - size * 4.75, fs = size * 1.25;
+      ctx.font = `700 ${fs}px ${HEAD}`;
+      const text = `${bats.length}-BAT BRAWL`, tw = ctx.measureText(text).width;
+      ctx.fillStyle = 'rgba(5, 6, 15, 0.9)'; ctx.fillText(text, W / 2, ty + 3);
+      ctx.fillStyle = '#ffe278'; ctx.fillText(text, W / 2, ty);
+      const half = Math.ceil(bats.length / 2);
+      bats.forEach((b, k) => {
+        const side = k < half ? -1 : 1, j = k < half ? half - 1 - k : k - half;
+        const cx = W / 2 + side * (tw / 2 + fs * 0.6 + j * fs * 0.75), r = fs * 0.24 * (1 + 0.15 * Math.sin(clock * 6 + k));
+        glow(cx, ty, r * 3, b.rgb, 0.35);
+        ctx.fillStyle = b.color; ctx.beginPath(); ctx.arc(cx, ty, r, 0, Math.PI * 2); ctx.fill();
+      });
+    }
     if (countdown > 0) {
       ctx.font = `700 ${size * 4.5}px ${HEAD}`;
       ctx.fillStyle = 'rgba(5, 6, 15, 0.9)';
@@ -3199,18 +3551,21 @@
       ctx.fillStyle = 'rgba(232, 236, 255, 0.65)';
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       const how = localCount === 1
-        ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger, let go: beam · flick or BITE·DASH to bite'
-          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to bite·dash · E to use a power · Esc to pause')
+        ? (touchUsed ? 'Drag to fly · tap to squeak · hold a 2nd finger: beam · BITE·DASH to bite · JUMP over walls and echoes'
+          : 'WASD or arrows to fly · F to squeak, hold F for a beam · G to bite·dash · R to jump · E to use a power · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · hold a 2nd finger to charge a beam · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
       ctx.fillText(powerFreq && powerOn.some((t) => POWERS[t].special)
-        ? 'Squeak just before a rival\'s echo hits you to PARRY it · grab power-ups, special ones turn BITE·DASH into the power'
+        ? 'Squeak just before a rival\'s echo hits you to PARRY it · special power-ups get their own POWER button'
         : 'Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
     } else if (banner) {
-      ctx.font = `700 ${size * 2}px ${HEAD}`;
+      const pop = banner.big ? 1 + 0.25 * Math.max(0, 1 - (5.2 - 3 - banner.t) * 4) : 1;
+      ctx.font = `700 ${size * 2 * pop}px ${HEAD}`;
       ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid + 4);
-      ctx.fillStyle = `rgba(${banner.rgb}, ${Math.min(1, banner.t * 2)})`;
+      // a big battle's banner flashes through every bat's colour
+      const rgb = banner.big ? bats[Math.floor(clock * 8) % bats.length].rgb : banner.rgb;
+      ctx.fillStyle = `rgba(${rgb}, ${Math.min(1, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid);
     }
     // out of this round: say so, and whose flight we're following
@@ -3305,7 +3660,17 @@
     get banner() { return banner; },
     get morph() { return morph; },
     get ringMax() { return RING_MAX; },
-    cornerSpots: () => cornerSpots(),
+    cornerSpots: () => cornerSpots(bats.length),
     dash: (i, dx, dy) => dash(bats[i], dx, dy),
+    jump: (i) => jump(bats[i]),
+    get jumpCount() { return jumpCount; },
+    get big() { return bigArena; },
+    MAX_BATS,
+    // seat colours and names, slot 0-7
+    SEATS: BATS.map((b) => ({ name: b.name, color: b.color })),
+    // the cave theme on show: { from, to, k (0..1 blended into 'to'), title, ice (how slippery) }
+    get theme() { return { from: themeFrom, to: themeTo, k: themeK, title: TH().title, ice: iceNow(), lava: TH().look?.lava || 0 }; },
+    // tests: morph into arena i as soon as possible (morph mode only)
+    morphTo: (i) => { if (morph) { morph.next = i; morph.pause = Math.min(morph.pause, 0.01); } },
   };
 })();
