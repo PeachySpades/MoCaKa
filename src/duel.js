@@ -1878,7 +1878,7 @@
     if (!over) { updateMorph(rawDt); updateLava(rawDt); }
     updateRegrow(dt);
     updateRound(rawDt);
-    const slip = iceNow(), bounce = 0.4 + 0.3 * slip;   // icy caves: slippery, and walls bounce harder
+    const caveSlip = iceNow(), bounce = 0.4 + 0.3 * caveSlip;   // icy caves: slippery, and walls bounce harder
 
     for (const b of bats) {
       b.cooldown = Math.max(0, b.cooldown - dt);
@@ -1909,6 +1909,8 @@
       if (b.jumpQ && b.jumpCd <= 0 && !b.dead) jump(b);
       if (b.dead > 0) { if (b.out) continue; b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
+      // only the floor is icy: standing up on a block gives full grip
+      const slip = b.top && b.jumpT <= 0 ? 0 : caveSlip;
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
       const wasIce = b.ice > 0;
       b.ice = b.stun > 0 ? Math.max(0, b.ice - dt) : 0;
