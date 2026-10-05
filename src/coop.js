@@ -161,7 +161,7 @@
   let novas = [], revives = [];   // freeze blasts and revive rings (cosmetic)
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
-  let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '';
+  let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '', fogT = 0;
   const remoteInput = new Map();
 
   // ---- Level -------------------------------------------------------------
@@ -249,6 +249,9 @@
   }
   const buildLevel = () => {
     const lv = loadLevel(window.makeCoopLevel(seed, difficulty, variant, mapKind, explore ? stage : 0));
+    // Explore: the team's map of this cave (game.js draws it), every tile anyone has seen
+    lv.fog = explore && window.EchoMap ? window.EchoMap.make(lv.w, lv.h) : null;
+    fogT = 0;
     const a = explore && window.ECHO_ARENAS ? window.ECHO_ARENAS[lv.def.arena | 0] : null;
     TH = a ? a.theme : null;
     caveTime = 0; amb = [];
@@ -259,6 +262,7 @@
   const wallRgb = () => (explore && TH ? TH.wall : COL.wall);
   const slipK = () => (explore && TH && TH.look && TH.look.ice ? TH.look.ice : 0);
   const keysLeft = () => (L ? L.keys.reduce((n, k) => n + (k.got ? 0 : 1), 0) : 0);
+  const switchSeen = (gt) => !!(L.fog && window.EchoMap.has(L.fog, Math.floor(gt.sw.y) * L.w + Math.floor(gt.sw.x)));
   function setMap(m) { mapKind = MAPS.includes(m) ? m : 'scroll'; explore = mapKind === 'explore'; }
   function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#' && ch(x, b + 1) !== 'G') b++; return b + 1; }
   // a loose ceiling crystal: y is the ceiling line it hangs from (its tip is at y + SHARD_LEN)
@@ -466,7 +470,8 @@
   let W = 0, H = 0;
   const localBat = (slot) => bats.find((b) => b.ctrl === 'local' && b.local === slot);
   // one player on a keyboard gets both key sets (and H slashes too, as in Explore)
-  const keysFor = (slot, what) => (localCount === 1 && slot === 0) ? [...KEYMAP[0][what], ...KEYMAP[1][what], ...(what === 'slash' ? ['KeyH'] : [])] : (KEYMAP[slot] || {})[what] || [];
+  // (M is player 2's POWER key, but alone on a keyboard it opens the Explore map instead: POWER is E or Q)
+  const keysFor = (slot, what) => (localCount === 1 && slot === 0) ? [...KEYMAP[0][what], ...KEYMAP[1][what].filter((k) => k !== 'KeyM'), ...(what === 'slash' ? ['KeyH'] : [])] : (KEYMAP[slot] || {})[what] || [];
 
   addEventListener('keydown', (e) => {
     if (!active || paused) return;
@@ -1995,6 +2000,14 @@
   let flown = false;
   function tickCosmetics(dt) {
     shake = Math.max(0, shake - dt);
+    // Explore's map: every device marks what its bats fly past and what echoes light; the host's
+    // marks (the whole team's) also go out to guests in small diffs (see snapshot)
+    if (L && L.fog && (fogT -= dt) <= 0) {
+      fogT = 0.1;
+      window.EchoMap.mark(L.fog, L.lit, bats.filter((b) => mode !== 'client' || b.tx !== undefined).map((b) => [b.x, b.y]));
+    }
+    // a switch shows once someone has seen it (it sits in a dark side cavern)
+    if (L && L.gates) for (const gt of L.gates) if (gt.open || switchSeen(gt)) gt.fa = Math.min(1, (gt.fa || 0) + dt * 2.5);
     // the fly-off's own clock (every device runs it from the phase)
     if (phase === 'exit') { exitClock += dt; flown = true; } else if (phase === 'win' && flown) exitClock += dt; else { exitClock = 0; flown = false; }
     for (const n of novas) n.t += dt;
@@ -2056,6 +2069,11 @@
       const fz = L.monsters.filter((m) => m.ice > 0 && !m.dead).map((m) => [m.id, r2(m.ice)]);
       if (fz.length) s.fz = fz;
     }
+    // the team's map: what's newly seen a few times a second, everything seen every 3 s (for late joiners)
+    if (explore && L.fog) {
+      if (snapCount <= 3 || snapCount % 60 === 0) s.fga = window.EchoMap.diff(L.fog, true);
+      else if (snapCount % 5 === 0 && L.fog.dirty.size) s.fg = window.EchoMap.diff(L.fog);
+    }
     // everyone's look, now and then (they never change during a run)
     if (snapCount <= 5 || snapCount % 100 === 0) s.lk = bats.map((b) => b.look);
     // which moths and crystals are gone: when it changes, and once a second anyway
@@ -2097,6 +2115,7 @@
       const fz = new Map((s.fz || []).map(([id, t]) => [id, t]));
       for (const m of L.monsters) m.ice = fz.get(m.id) || 0;
       if (s.gt) L.gates.forEach((gt, k) => { if (s.gt[k] === '1' && !gt.open) { applyGateOpen(gt); gt.t = 2; } });
+      if (L.fog) { if (s.fga) window.EchoMap.merge(L.fog, s.fga); if (s.fg) window.EchoMap.merge(L.fog, s.fg); }
     }
     if (s.hl != null) { hunt.left = s.hl; hunt.wave = s.hw | 0; }
     if (s.hg != null) { huntGoal = s.hg; hunt.kills = s.hk | 0; }
@@ -2684,7 +2703,7 @@
   function drawExploreThings(visX, threeD) {
     if (L.mouth && visX(L.mouth.x, L.mouth.y)) drawMouthFrame();
     for (const gt of L.gates) {
-      if (visX(gt.sw.x, gt.sw.y)) drawSwitch(gt);
+      if (visX(gt.sw.x, gt.sw.y) && gt.fa > 0) { ctx.globalAlpha = gt.fa; drawSwitch(gt); ctx.globalAlpha = 1; }
       if (gt.tiles.some(([x, y]) => visX(x, y))) drawGate(gt);
     }
     for (const k of L.keys) {
@@ -3311,7 +3330,7 @@
     }
     const x = X(t.x), y = Y(t.y), m = 30;
     if (x > m && x < W - m && y > m + 40 && y < H - m) return;
-    const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 44, Math.min(H - m - 30, y)), a = Math.atan2(y - cy, x - cx);
+    const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 44, Math.min(H - m - (explore ? 50 : 30), y)), a = Math.atan2(y - cy, x - cx);   // (Explore: clear of the MAP button)
     const rgb = keyHint ? KEY_RGB : t === L.goal && !exitOpen() ? COL.owl : COL.exit, pulse = 0.65 + 0.25 * Math.sin(clock * 3);
     glow(cx, cy, 18, rgb, 0.35 * pulse);
     ctx.save();
@@ -3741,6 +3760,39 @@
     };
   }
 
+  // what the map shows: the team's explored cave, every bat (yours blinks), and, once seen, the
+  // lanterns, the exit, keys, switches and their gates, hearts and power-ups (taken ones are gone)
+  function mapInfo() {
+    if (!L || !L.fog) return null;
+    const mine = (b) => (mode === 'local' ? b.ctrl === 'local' || b.was === 'local' : b.i === viewer);
+    const me = bats.find(mine), nk = L.keys.length, got = nk - keysLeft();
+    const items = [
+      ...L.checkpoints.map((cp, k) => ({ k: 'lantern', x: cp.x, y: cp.y, on: k <= cpIndex, rgb: k <= cpIndex ? COL.exit : COL.crystal })),
+      { k: 'exit', x: L.goal.x, y: L.goal.y, open: exitOpen() },
+      ...L.gates.map((gt) => ({ k: 'switch', x: gt.sw.x, y: gt.sw.y, on: gt.open, rgb: GATE_COLS[gt.id % GATE_COLS.length] })),
+      ...L.hearts.filter((o) => !o.got).map((o) => ({ k: 'heart', x: o.x, y: o.y })),
+      ...L.powers.filter((o) => !o.got).map((o) => ({ k: 'power', x: o.x, y: o.y, rgb: PW[o.type].rgb })),
+      ...L.keys.filter((o) => !o.got).map((o) => ({ k: 'key', x: o.x, y: o.y })),
+    ];
+    const legend = [{ k: 'me', rgb: me ? me.rgb : BATS[0].rgb }];
+    if (bats.length > 1) legend.push({ k: 'mate', rgb: (bats.find((b) => b !== me) || bats[0]).rgb });
+    legend.push({ k: 'lantern', on: true, rgb: COL.exit }, { k: 'exit', open: true });
+    if (nk) legend.push({ k: 'key' });
+    if (L.gates.length) legend.push({ k: 'switch', rgb: GATE_COLS[0] });
+    legend.push({ k: 'heart' }, { k: 'power', rgb: PW.speed.rgb, label: 'Power' });
+    return {
+      fog: L.fog, grid: L.grid, w: L.w, h: L.h, wall: wallRgb(), coop: true,
+      title: L.def.stageName || 'Explore',
+      sub: [stageCount() > 1 ? `Cave ${stage + 1} of ${stageCount()}` : '', nk ? `Keys ${got}/${nk}` : ''].filter(Boolean).join(' · '),
+      hint: touchUsed ? 'Tap to close' : mode === 'local' && localCount > 1 ? 'Tab to close' : 'M to close',
+      danger: !!(me && !me.ko && me.hurt > 0),
+      gateKey: L.gates.map((gt) => (gt.open ? 1 : 0)).join(''),
+      tint: (k) => { const id = L.gateAt[k]; return id >= 0 && !L.gates[id].open ? GATE_COLS[id % GATE_COLS.length] : null; },
+      bats: bats.map((b) => ({ x: b.x, y: b.y, rgb: b.rgb, me: !!me && b === me, ko: b.ko })),
+      items, legend,
+    };
+  }
+
   window.EchoCoop = {
     start, stop, frame, applySnapshot, remote, dropRemote, describe,
     get active() { return active; },
@@ -3755,6 +3807,10 @@
     get view() { return view; },
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide?.(); },
     setPaused: (p) => { paused = !!p; if (paused) { keys.clear(); sticks.clear(); } },
+    // Explore's map (game.js shows it): open while the team is in a cave, never in Side-scroll
+    get mapReady() { return active && explore && !!L?.fog && !over && (phase === 'play' || phase === 'count' || phase === 'wipe'); },
+    get localPlayers() { return mode === 'local' ? localCount : 1; },
+    mapInfo,
     // for automated tests
     get bats() { return bats; },
     get cave() { return L; },

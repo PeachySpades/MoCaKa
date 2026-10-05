@@ -165,6 +165,8 @@
     // a battle jump: a springy rising boing, then a soft flump on landing
     jump() { tone(320, 760, 0.16, 'sine', 0.07); tone(480, 1100, 0.12, 'triangle', 0.03, 0.03); },
     land() { tone(180, 90, 0.1, 'triangle', 0.07); hiss(0.08, 0.05, 700, undefined, sfxBus, 'lowpass'); },
+    // a bite that snaps on empty air: a fast swish and a hollow clack
+    whiff() { hiss(0.14, 0.08, 2600, undefined, sfxBus, 'bandpass'); tone(520, 300, 0.06, 'square', 0.03, 0.1); },
     beam() { tone(2400, 300, 0.35, 'sawtooth', 0.07); tone(1600, 200, 0.3, 'square', 0.04, 0.02); hiss(0.25, 0.08, 3000); },
     warn() { tone(90, 60, 1.2, 'sawtooth', 0.05); hiss(1.2, 0.05, 300, undefined, sfxBus, 'lowpass'); },
     // the dash-bite: a whoosh in, a hard snap of teeth, then a meaty crunch (duel.js)
@@ -272,6 +274,8 @@
   let moka, rings, particles, bits = [], chomps = [], cam, stats, shake, hintTimer, clock, scroll, endReason;
   // Explore: the last checkpoint passed (what to restore), and floating "Checkpoint!" / "+1" pops
   let checkpoint = null, pops = [];
+  // Explore: which tiles of this cave Moka has seen, for the map (kept through a checkpoint restart)
+  let fog = null, fogT = 0;
 
   function startGame(newMode, i = 0) {
     mode = newMode;
@@ -292,6 +296,8 @@
     stats = { moths: 0, squeaks: 0, time: 0, retries: 0, kos: 0 };
     checkpoint = null;
     pops = [];
+    fog = mode === 'cave' ? window.EchoMap.make(L.w, L.h) : null;
+    fogT = 0;
     endReason = '';
     shake = 0;
     hintTimer = 6;
@@ -358,8 +364,13 @@
 
   addEventListener('keydown', (e) => {
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    // the map: M or Tab (in Co-op with several players on one keyboard M is player 2's POWER, so Tab)
+    const mapKey = e.code === 'Tab' || (e.code === 'KeyM' && !(coopMap() && window.EchoCoop.localPlayers > 1));
+    if (mapKey && (mapOpen || mapAvailable())) { e.preventDefault(); if (!e.repeat) setMapOpen(!mapOpen); return; }
+    if (mapOpen && e.code === 'Escape') { if (!e.repeat) setMapOpen(false); return; }
     if ((e.code === 'Escape' || e.code === 'KeyP') && !e.repeat && inMatch()) { pauseOpen ? resume() : openPause(); return; }
     if (pauseOpen) return;
+    if (mapOpen && mode === 'cave') return;   // Explore waits under its map
     if (state === 'duel' || mode === 'duel') return;   // the battle handles its own keys
     if (state !== 'play') {
       if ((e.code === 'Space' || e.code === 'Enter') && !e.repeat) primaryAction();
@@ -724,6 +735,8 @@
     moka.noEcho = Math.max(0, moka.noEcho - dt);
     hintTimer -= dt;
     shake = Math.max(0, shake - dt);
+    // the map: what Moka has flown past, and what echoes have lit
+    if (fog && (fogT -= dt) <= 0) { fogT = 0.1; window.EchoMap.mark(fog, L.lit, [[moka.x, moka.y]]); }
 
     // Moka
     const { ix, iy } = readInput();
@@ -1842,6 +1855,410 @@
     ctx.beginPath(); ctx.arc(bx + dx, by + dy, 20, 0, Math.PI * 2); ctx.fill();
   }
 
+  // ---- The cave map (Explore and Co-op Explore) -----------------------------------
+  // An old-school dungeon map of the cave, but only the parts that have been seen: the tiles
+  // around the bat as it flies and the tiles an echo lights up (in Co-op, the whole team's).
+  // The fog is a bitset, 32 tiles a word, so Co-op can send it to guests in small diffs.
+  // The minimap in the bottom-right corner (it is the MAP button), M or Tab open the big map;
+  // a tap anywhere, M, Tab or Escape close it. Solo Explore pauses under it; Co-op keeps going (others are playing),
+  // so its map is see-through and its edge flashes red if your bat gets hurt.
+  window.EchoMap = (() => {
+    // (fresh: tiles newly seen since the map's picture was last brought up to date)
+    const make = (w, h) => ({ w, h, bits: new Uint32Array(Math.ceil((w * h) / 32)), ver: 1, dirty: new Set(), fresh: [], tc: null });
+    const fresh = (f, k) => { if (f.fresh.length < 6000) f.fresh.push(k); else if (f.tc) f.tc.key = ''; };
+    const has = (f, k) => k >= 0 && k < f.w * f.h && ((f.bits[k >> 5] >>> (k & 31)) & 1) === 1;
+    const set = (f, k) => {
+      const i = k >> 5, m = 1 << (k & 31);
+      if (!(f.bits[i] & m)) { f.bits[i] |= m; f.ver++; f.dirty.add(i); fresh(f, k); }
+    };
+    // seen: everything within r of each point, and every tile an echo has lit
+    function mark(f, lit, pts, r = 2.2) {
+      const { w, h } = f;
+      for (const [x, y] of pts) {
+        for (let ty = Math.max(0, Math.floor(y - r)); ty <= Math.min(h - 1, Math.floor(y + r)); ty++) {
+          for (let tx = Math.max(0, Math.floor(x - r)); tx <= Math.min(w - 1, Math.floor(x + r)); tx++) {
+            if (Math.hypot(tx + 0.5 - x, ty + 0.5 - y) < r) set(f, ty * w + tx);
+          }
+        }
+      }
+      if (lit) for (let k = 0; k < lit.length; k++) if (lit[k] > 0.45) set(f, k);
+    }
+    // [word, bits, word, bits, ...]: the words changed since last time (or all that aren't empty)
+    function diff(f, all = false) {
+      const out = [];
+      for (const i of all ? f.bits.keys() : f.dirty) if (f.bits[i]) out.push(i, f.bits[i] | 0);
+      f.dirty.clear();
+      return out;
+    }
+    function merge(f, flat) {
+      if (!Array.isArray(flat)) return;
+      for (let j = 0; j + 1 < flat.length; j += 2) {
+        const i = flat[j] | 0, v = (f.bits[i] | flat[j + 1]) >>> 0;
+        if (i < 0 || i >= f.bits.length || v === f.bits[i]) continue;
+        const add = (v & ~f.bits[i]) >>> 0;
+        f.bits[i] = v; f.ver++;
+        for (let b = 0; b < 32; b++) if ((add >>> b) & 1) fresh(f, i * 32 + b);
+      }
+    }
+
+    // the explored cave as one pixel per tile, kept on the fog: floor tinted with the cave's colour,
+    // walls bright, and a copy of just the walls for the glow. Newly seen tiles (and their
+    // neighbours, whose walls may now show) are painted in as they come; a gate opening or a new
+    // cave look redraws the lot.
+    function terrain(info) {
+      const { fog: f, grid, w, h } = info, key = `${w}x${h}|${info.gateKey || ''}|${info.wall}`;
+      let t = f.tc;
+      const full = !t || t.key !== key;
+      if (full) {
+        const c = t?.c || Object.assign(document.createElement('canvas'), { width: w, height: h });
+        const e = t?.e || Object.assign(document.createElement('canvas'), { width: w, height: h });
+        const g = c.getContext('2d'), ge = e.getContext('2d');
+        g.clearRect(0, 0, w, h); ge.clearRect(0, 0, w, h);
+        t = f.tc = { key, c, e, g, ge, img: g.createImageData(w, h), eimg: ge.createImageData(w, h), x0: w, y0: h, x1: -1, y1: -1 };
+      } else if (!f.fresh.length) return t;
+      const d = t.img.data, ed = t.eimg.data, [wr, wg, wb] = info.wall.split(',').map(Number);
+      const put = (a, p, r, gg, b, al = 255) => { a[p] = r; a[p + 1] = gg; a[p + 2] = b; a[p + 3] = al; };
+      const open = (n) => n >= 0 && n < w * h && !grid[n] && has(f, n);
+      let dx0 = w, dy0 = h, dx1 = -1, dy1 = -1;
+      const paint = (k) => {
+        if (k < 0 || k >= w * h || !has(f, k)) return;
+        const x = k % w, y = (k - x) / w, p = k * 4, tint = info.tint && info.tint(k);
+        if (x < t.x0) t.x0 = x; if (x > t.x1) t.x1 = x; if (y < t.y0) t.y0 = y; if (y > t.y1) t.y1 = y;
+        if (x < dx0) dx0 = x; if (x > dx1) dx1 = x; if (y < dy0) dy0 = y; if (y > dy1) dy1 = y;
+        put(ed, p, 0, 0, 0, 0);
+        if (tint) { const [r, gg, b] = tint.split(',').map(Number); put(d, p, r, gg, b); put(ed, p, r, gg, b); }
+        else if (!grid[k]) put(d, p, 16 + wr * 0.17, 18 + wg * 0.17, 46 + wb * 0.17);
+        else if ((x > 0 && open(k - 1)) || (x < w - 1 && open(k + 1)) || open(k - w) || open(k + w)) {
+          put(d, p, 40 + wr * 0.8, 40 + wg * 0.8, 50 + wb * 0.8); put(ed, p, wr, wg, wb);
+        } else put(d, p, 14 + wr * 0.07, 14 + wg * 0.07, 36 + wb * 0.07, 210);
+      };
+      if (full) for (let k = 0; k < w * h; k++) paint(k);
+      else for (const k of f.fresh) { paint(k); if (k % w) paint(k - 1); if (k % w < w - 1) paint(k + 1); paint(k - w); paint(k + w); }
+      f.fresh = [];
+      if (dx1 >= 0) {
+        t.g.putImageData(t.img, 0, 0, dx0, dy0, dx1 - dx0 + 1, dy1 - dy0 + 1);
+        t.ge.putImageData(t.eimg, 0, 0, dx0, dy0, dx1 - dx0 + 1, dy1 - dy0 + 1);
+      }
+      return t;
+    }
+
+    const FONT = '"Fredoka", "Nunito", system-ui, sans-serif';
+    function rr(g, x, y, w, h, r) {
+      g.beginPath();
+      g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+      g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+    }
+    function halo(g, x, y, r, rgb, a) {
+      const gr = g.createRadialGradient(x, y, 0, x, y, r);
+      gr.addColorStop(0, `rgba(${rgb}, ${a})`); gr.addColorStop(1, `rgba(${rgb}, 0)`);
+      g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    // the little map marks, s is about half their size in px
+    function icon(g, o, x, y, s, now) {
+      g.lineJoin = 'round'; g.lineCap = 'round';
+      switch (o.k) {
+        case 'me': case 'mate': {
+          const me = o.k === 'me', blink = !me || (now * 2.4) % 1 < 0.6;
+          if (me) {
+            const ring = (now * 1.2) % 1;
+            g.strokeStyle = `rgba(${o.rgb}, ${0.7 * (1 - ring)})`; g.lineWidth = 1.5;
+            g.beginPath(); g.arc(x, y, s * (1.2 + ring * 2.2), 0, Math.PI * 2); g.stroke();
+          }
+          if (!blink) return;
+          halo(g, x, y, s * 2.6, o.rgb, o.ko ? 0.2 : 0.55);
+          // a tiny bat: body and two wings
+          g.fillStyle = o.ko ? `rgba(${o.rgb}, 0.35)` : `rgb(${o.rgb})`;
+          g.beginPath();
+          g.moveTo(x, y - s * 0.55);
+          g.quadraticCurveTo(x - s * 0.9, y - s * 1.1, x - s * 1.6, y - s * 0.5);
+          g.quadraticCurveTo(x - s * 1.0, y - s * 0.15, x - s * 0.9, y + s * 0.35);
+          g.quadraticCurveTo(x - s * 0.5, y + s * 0.1, x, y + s * 0.7);
+          g.quadraticCurveTo(x + s * 0.5, y + s * 0.1, x + s * 0.9, y + s * 0.35);
+          g.quadraticCurveTo(x + s * 1.0, y - s * 0.15, x + s * 1.6, y - s * 0.5);
+          g.quadraticCurveTo(x + s * 0.9, y - s * 1.1, x, y - s * 0.55);
+          g.fill();
+          g.strokeStyle = me ? '#ffffff' : 'rgba(6, 6, 20, 0.9)'; g.lineWidth = me ? 1.4 : 1; g.stroke();
+          return;
+        }
+        case 'lantern': {
+          if (o.on) halo(g, x, y, s * 2.4, o.rgb, 0.6);
+          g.beginPath(); g.moveTo(x, y - s); g.lineTo(x + s * 0.65, y); g.lineTo(x, y + s); g.lineTo(x - s * 0.65, y); g.closePath();
+          g.fillStyle = o.on ? `rgb(${o.rgb})` : 'rgba(10, 10, 30, 0.9)'; g.fill();
+          g.strokeStyle = `rgba(${o.rgb}, ${o.on ? 1 : 0.75})`; g.lineWidth = 1.4; g.stroke();
+          return;
+        }
+        case 'exit': {
+          const rgb = '120, 255, 170', a = o.open ? 1 : 0.6;
+          halo(g, x, y, s * 2.8, rgb, o.open ? 0.55 : 0.25);
+          g.beginPath(); g.moveTo(x - s, y + s); g.lineTo(x - s, y - s * 0.1); g.arc(x, y - s * 0.1, s, Math.PI, 0); g.lineTo(x + s, y + s); g.closePath();
+          g.fillStyle = `rgba(${rgb}, ${0.85 * a})`; g.fill();
+          g.strokeStyle = `rgba(255, 255, 255, ${0.8 * a})`; g.lineWidth = 1.2; g.stroke();
+          if (!o.open) { g.fillStyle = 'rgba(8, 20, 14, 0.95)'; g.beginPath(); g.arc(x, y - s * 0.05, s * 0.3, 0, Math.PI * 2); g.fill(); g.fillRect(x - s * 0.12, y, s * 0.24, s * 0.5); }
+          return;
+        }
+        case 'key': {
+          const rgb = '255, 214, 90';
+          halo(g, x, y, s * 2.2, rgb, 0.5);
+          g.strokeStyle = `rgb(${rgb})`; g.lineWidth = Math.max(1.6, s * 0.38);
+          g.beginPath(); g.arc(x - s * 0.45, y, s * 0.42, 0, Math.PI * 2); g.stroke();
+          g.beginPath(); g.moveTo(x, y); g.lineTo(x + s * 1.05, y); g.moveTo(x + s * 0.75, y); g.lineTo(x + s * 0.75, y + s * 0.4); g.stroke();
+          return;
+        }
+        case 'switch': {
+          const a = o.on ? 0.5 : 1;
+          if (!o.on) halo(g, x, y, s * 2.2, o.rgb, 0.45 + 0.2 * Math.sin(now * 5));
+          const ang = o.on ? 0.7 : -0.7;
+          g.strokeStyle = `rgba(230, 230, 245, ${a})`; g.lineWidth = Math.max(1.4, s * 0.25);
+          g.beginPath(); g.moveTo(x, y + s * 0.45); g.lineTo(x + Math.sin(ang) * s * 1.1, y + s * 0.45 - Math.cos(ang) * s * 1.1); g.stroke();
+          g.fillStyle = `rgba(${o.rgb}, ${a})`;
+          g.beginPath(); g.arc(x + Math.sin(ang) * s * 1.1, y + s * 0.45 - Math.cos(ang) * s * 1.1, s * 0.36, 0, Math.PI * 2); g.fill();
+          rr(g, x - s * 0.7, y + s * 0.35, s * 1.4, s * 0.5, s * 0.15); g.fill();
+          return;
+        }
+        case 'gate': {
+          g.strokeStyle = `rgb(${o.rgb})`; g.lineWidth = Math.max(1.2, s * 0.24);
+          g.beginPath();
+          for (let j = -1; j <= 1; j++) { g.moveTo(x + j * s * 0.55, y - s * 0.8); g.lineTo(x + j * s * 0.55, y + s * 0.8); }
+          g.moveTo(x - s * 0.9, y - s * 0.8); g.lineTo(x + s * 0.9, y - s * 0.8); g.moveTo(x - s * 0.9, y + s * 0.8); g.lineTo(x + s * 0.9, y + s * 0.8);
+          g.stroke();
+          return;
+        }
+        case 'heart': {
+          const rgb = '255, 107, 138';
+          halo(g, x, y, s * 2, rgb, 0.45);
+          g.beginPath();
+          g.moveTo(x, y + s * 0.85);
+          g.bezierCurveTo(x - s * 1.3, y - s * 0.1, x - s * 0.65, y - s * 1.15, x, y - s * 0.35);
+          g.bezierCurveTo(x + s * 0.65, y - s * 1.15, x + s * 1.3, y - s * 0.1, x, y + s * 0.85);
+          g.fillStyle = `rgb(${rgb})`; g.fill();
+          return;
+        }
+        case 'power': {
+          halo(g, x, y, s * 2.2, o.rgb, 0.5);
+          g.beginPath(); g.arc(x, y, s * 0.8, 0, Math.PI * 2);
+          g.fillStyle = `rgb(${o.rgb})`; g.fill();
+          g.strokeStyle = 'rgba(255, 255, 255, 0.9)'; g.lineWidth = 1.2; g.stroke();
+          g.fillStyle = 'rgba(255, 255, 255, 0.95)';
+          g.beginPath(); g.moveTo(x, y - s * 0.45); g.lineTo(x + s * 0.3, y); g.lineTo(x, y + s * 0.45); g.lineTo(x - s * 0.3, y); g.closePath(); g.fill();
+          return;
+        }
+        case 'moth': {
+          const rgb = '255, 226, 120';
+          halo(g, x, y, s * 1.6, rgb, 0.45);
+          g.fillStyle = `rgb(${rgb})`;
+          g.beginPath(); g.ellipse(x - s * 0.35, y, s * 0.45, s * 0.3, -0.5, 0, Math.PI * 2); g.ellipse(x + s * 0.35, y, s * 0.45, s * 0.3, 0.5, 0, Math.PI * 2); g.fill();
+          return;
+        }
+        default:
+      }
+    }
+    const LABELS = { me: 'You', mate: 'Team', lantern: 'Lantern', exit: 'Exit', key: 'Key', switch: 'Switch', gate: 'Gate', heart: 'Heart', power: 'Power-up', moth: 'Moth' };
+
+    // info: { fog, grid (1 = rock), w, h, wall ('r, g, b'), title, sub, coop, danger, hint,
+    //         tint (tile -> 'r, g, b' for a closed gate), gateKey, bats: [{ x, y, rgb, me, ko }],
+    //         items: [{ k, x, y, ... }] (only drawn once their tile is seen), legend: [{ k, rgb, on }] }
+    function draw(g, W, H, info, now) {
+      const u = Math.max(0.9, Math.min(1.5, Math.min(W / 667, H / 308)));
+      const f = info.fog, wall = info.wall;
+      g.clearRect(0, 0, W, H);
+      g.fillStyle = `rgba(3, 4, 14, ${info.coop ? 0.25 : 0.55})`;
+      g.fillRect(0, 0, W, H);
+      // the glass card
+      const cx0 = 8, cy0 = 6, cw = W - 16, ch = H - 12, cr = 16 * u;
+      const bg = g.createLinearGradient(0, cy0, 0, cy0 + ch);
+      const al = info.coop ? 0.8 : 0.92;
+      bg.addColorStop(0, `rgba(22, 20, 62, ${al})`); bg.addColorStop(1, `rgba(7, 7, 24, ${al + 0.04})`);
+      rr(g, cx0, cy0, cw, ch, cr); g.fillStyle = bg; g.fill();
+      const edge = info.danger && Math.floor(now * 6) % 2 === 0 ? '255, 84, 104' : wall;
+      g.strokeStyle = `rgb(${edge})`;
+      g.globalAlpha = 0.1; g.lineWidth = 12; g.stroke();
+      g.globalAlpha = 0.22; g.lineWidth = 6; g.stroke();
+      g.globalAlpha = 0.9; g.lineWidth = 2; g.stroke();
+      g.globalAlpha = 1;
+
+      // title, and how to close it
+      const hy = cy0 + 17 * u;
+      g.textBaseline = 'middle'; g.textAlign = 'left';
+      g.font = `700 ${Math.round(10 * u)}px ${FONT}`;
+      const chip = 'MAP', chw = g.measureText(chip).width + 14 * u, chx = cx0 + 14 * u;
+      rr(g, chx, hy - 8 * u, chw, 16 * u, 8 * u); g.fillStyle = `rgb(${wall})`; g.fill();
+      g.fillStyle = '#0c1430'; g.fillText(chip, chx + 7 * u, hy + 0.5);
+      g.font = `700 ${Math.round(15 * u)}px ${FONT}`; g.fillStyle = '#f2efff';
+      const tx = chx + chw + 8 * u;
+      g.fillText(info.title || 'Cave', tx, hy + 0.5);
+      let sx = tx + g.measureText(info.title || 'Cave').width + 10 * u;
+      if (info.sub) { g.font = `600 ${Math.round(11 * u)}px ${FONT}`; g.fillStyle = 'rgba(214, 208, 255, 0.75)'; g.fillText(info.sub, sx, hy + 1); sx += g.measureText(info.sub).width; }
+      g.textAlign = 'right'; g.font = `600 ${Math.round(10.5 * u)}px ${FONT}`; g.fillStyle = 'rgba(214, 208, 255, 0.6)';
+      if (cx0 + cw - 14 * u - g.measureText(info.hint || '').width > sx + 12) g.fillText(info.hint || '', cx0 + cw - 14 * u, hy + 1);
+
+      // the map: zoomed to what has been seen (and where the bats are), never closer than 9px a tile
+      const area = { x: cx0 + 12 * u, y: cy0 + 32 * u, w: cw - 24 * u, h: ch - 32 * u - 26 * u };
+      const t = terrain(info), { w, h } = info;
+      let bx0 = t.x1 >= 0 ? t.x0 : w / 2, by0 = t.x1 >= 0 ? t.y0 : h / 2, bx1 = t.x1 >= 0 ? t.x1 + 1 : w / 2, by1 = t.x1 >= 0 ? t.y1 + 1 : h / 2;
+      for (const b of info.bats) { bx0 = Math.min(bx0, b.x - 1); bx1 = Math.max(bx1, b.x + 1); by0 = Math.min(by0, b.y - 1); by1 = Math.max(by1, b.y + 1); }
+      const spanW = Math.min(w, Math.max(28, bx1 - bx0 + 8)), spanH = Math.min(h, Math.max(12, by1 - by0 + 6));
+      const s = Math.min(area.w / spanW, area.h / spanH, 9 * u);
+      const vw = area.w / s, vh = area.h / s;
+      const fit = (c, v, n) => (v >= n ? (n - v) / 2 : Math.max(0, Math.min(n - v, c - v / 2)));
+      const rx = fit((bx0 + bx1) / 2, vw, w), ry = fit((by0 + by1) / 2, vh, h);
+      const X = (x) => area.x + (x - rx) * s, Y = (y) => area.y + (y - ry) * s;
+      g.save();
+      rr(g, area.x, area.y, area.w, area.h, 10 * u); g.clip();
+      g.fillStyle = 'rgba(4, 5, 16, 0.35)'; g.fillRect(area.x, area.y, area.w, area.h);
+      // graph-paper rooms over the whole cave, so the unexplored part reads as unknown
+      g.strokeStyle = `rgba(${wall}, 0.07)`; g.lineWidth = 1;
+      g.beginPath();
+      for (let x = 0; x <= w; x += 8) { g.moveTo(Math.round(X(x)) + 0.5, Y(0)); g.lineTo(Math.round(X(x)) + 0.5, Y(h)); }
+      for (let y = 0; y <= h; y += 8) { g.moveTo(X(0), Math.round(Y(y)) + 0.5); g.lineTo(X(w), Math.round(Y(y)) + 0.5); }
+      g.stroke();
+      // the walls' glow (a blurry copy), then the crisp blocky map on top
+      g.imageSmoothingEnabled = true;
+      g.globalAlpha = 0.5; g.drawImage(t.e, X(0) - s * 0.7, Y(0) - s * 0.7, w * s + s * 1.4, h * s + s * 1.4);
+      g.globalAlpha = 1;
+      g.imageSmoothingEnabled = false;
+      g.drawImage(t.c, X(0), Y(0), w * s, h * s);
+      g.imageSmoothingEnabled = true;
+      // marks, once their tile has been seen; the bats always
+      const ms = Math.max(3, Math.min(6.5, s * 0.85)) * u;
+      const seen = (x, y) => has(f, Math.floor(y) * w + Math.floor(x));
+      for (const o of info.items) if (seen(o.x, o.y)) icon(g, o, X(o.x), Y(o.y), o.k === 'moth' ? ms * 0.7 : ms, now);
+      const order = info.bats.slice().sort((a, b) => (a.me ? 1 : 0) - (b.me ? 1 : 0));
+      for (const b of order) icon(g, { k: b.me ? 'me' : 'mate', rgb: b.rgb, ko: b.ko }, X(b.x), Y(b.y), ms * (b.me ? 1.3 : 1), now);
+      g.restore();
+      g.strokeStyle = `rgba(${wall}, 0.25)`; g.lineWidth = 1;
+      rr(g, area.x, area.y, area.w, area.h, 10 * u); g.stroke();
+
+      // the legend along the bottom (clear of the MAP button in the corner)
+      const ly = cy0 + ch - 13 * u, lmax = W - 64;
+      g.font = `600 ${Math.round(10 * u)}px ${FONT}`; g.textAlign = 'left';
+      const legend = info.legend || [];
+      const iw = 7 * u, gap = 12 * u;
+      const widths = legend.map((o) => iw * 2 + 5 * u + g.measureText(o.label || LABELS[o.k]).width);
+      const total = widths.reduce((a, b) => a + b, 0) + gap * Math.max(0, legend.length - 1);
+      let lx = Math.max(cx0 + 14 * u, Math.min((W - total) / 2, lmax - total));
+      legend.forEach((o, i) => {
+        icon(g, o, lx + iw, ly, o.k === 'moth' ? iw * 0.75 : iw * 0.8, o.k === 'me' ? 0.1 : now);
+        g.fillStyle = 'rgba(226, 222, 255, 0.85)';
+        g.fillText(o.label || LABELS[o.k], lx + iw * 2 + 5 * u, ly + 1);
+        lx += widths[i] + gap;
+      });
+    }
+    // the minimap: a small window on the explored cave around your bat (the same cached picture),
+    // your bat blinking in the middle, teammates, and the lanterns, exit, keys and switches seen so far
+    function mini(g, mw, mh, info, now) {
+      const t = terrain(info), { w, h } = info, f = info.fog;
+      g.clearRect(0, 0, mw, mh);
+      g.fillStyle = 'rgba(6, 7, 22, 0.82)'; g.fillRect(0, 0, mw, mh);
+      const me = info.bats.find((b) => b.me) || info.bats[0];
+      const s = Math.max(2.5, Math.min(4, mh / 18));
+      const cx = me ? me.x : w / 2, cy = me ? me.y : h / 2;
+      const X = (x) => mw / 2 + (x - cx) * s, Y = (y) => mh / 2 + (y - cy) * s;
+      g.imageSmoothingEnabled = true;
+      g.globalAlpha = 0.45; g.drawImage(t.e, X(0) - s * 0.6, Y(0) - s * 0.6, w * s + s * 1.2, h * s + s * 1.2);
+      g.globalAlpha = 1;
+      g.imageSmoothingEnabled = false;
+      g.drawImage(t.c, X(0), Y(0), w * s, h * s);
+      g.imageSmoothingEnabled = true;
+      const inView = (x, y) => X(x) > -4 && X(x) < mw + 4 && Y(y) > -4 && Y(y) < mh + 4;
+      const ms = Math.max(2.2, s * 0.75);
+      for (const o of info.items) {
+        if (o.k === 'moth' || o.k === 'heart' || o.k === 'power' || !inView(o.x, o.y) || !has(f, Math.floor(o.y) * w + Math.floor(o.x))) continue;
+        icon(g, o, X(o.x), Y(o.y), ms, now);
+      }
+      for (const b of info.bats.slice().sort((a, c) => (a.me ? 1 : 0) - (c.me ? 1 : 0))) {
+        if (!inView(b.x, b.y)) continue;
+        icon(g, { k: b.me ? 'me' : 'mate', rgb: b.rgb, ko: b.ko }, X(b.x), Y(b.y), ms * (b.me ? 1.35 : 1.1), now);
+      }
+      // a little label so it reads as a button
+      g.font = `700 ${Math.round(Math.max(8, mh * 0.15))}px ${FONT}`; g.textBaseline = 'top'; g.textAlign = 'left';
+      const lw = g.measureText('MAP').width, lh = Math.max(8, mh * 0.15);
+      rr(g, 2, 2, lw + 7, lh + 4, 4); g.fillStyle = 'rgba(6, 7, 22, 0.75)'; g.fill();
+      g.fillStyle = `rgba(${info.wall}, 0.9)`; g.fillText('MAP', 5.5, 4);
+    }
+    return { make, has, mark, diff, merge, draw, mini };
+  })();
+
+  // ---- The minimap (the MAP button) and the big map ---------------------------------
+  // a small live map in the bottom-right corner, under DASH and clear of BITE and POWER: a glass
+  // button with a canvas in it. Tapping it opens the big map, a canvas over the whole game. Both
+  // are made here so the page needs no extra markup.
+  const mapButton = document.createElement('button');
+  mapButton.id = 'map-button'; mapButton.type = 'button'; mapButton.hidden = true;
+  mapButton.setAttribute('aria-label', 'Map'); mapButton.setAttribute('aria-pressed', 'false');
+  Object.assign(mapButton.style, {
+    position: 'fixed', zIndex: 22, padding: 0, overflow: 'hidden', borderRadius: '12px', cursor: 'pointer',
+    border: '2px solid rgba(74, 222, 255, 0.7)', background: 'rgba(6, 7, 22, 0.8)',
+    boxShadow: '0 0 12px rgba(74, 222, 255, 0.35), inset 0 0 10px rgba(74, 222, 255, 0.15)', touchAction: 'manipulation',
+  });
+  const miniCanvas = document.createElement('canvas');
+  Object.assign(miniCanvas.style, { display: 'block', width: '100%', height: '100%' });
+  mapButton.append(miniCanvas);
+  // where it goes: right under DASH's touch zone, as wide as fits left of the corner
+  function miniRect() {
+    const dy = H - Math.max(124, H * 0.3), top = dy + 42 + 8 + 8;   // DASH's middle, radius, touch margin, a gap
+    const h = Math.round(Math.max(40, Math.min(90, H - 8 - top))), w = Math.round(Math.min(150, Math.max(90, h * 1.7)));
+    return { x: W - 8 - w, y: H - 8 - h, w, h };
+  }
+  function drawMini(now) {
+    const r = miniRect(), st = mapButton.style;
+    if (st.width !== r.w + 'px' || st.height !== r.h + 'px' || st.left !== r.x + 'px' || st.top !== r.y + 'px') Object.assign(st, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    const iw = r.w - 4, ih = r.h - 4, cw = Math.round(iw * DPR), ch = Math.round(ih * DPR);
+    if (miniCanvas.width !== cw || miniCanvas.height !== ch) { miniCanvas.width = cw; miniCanvas.height = ch; }
+    const info = mapInfo();
+    if (!info) return;
+    mapButton.style.borderColor = `rgba(${info.danger && Math.floor(now / 160) % 2 === 0 ? '255, 84, 104' : info.wall}, 0.75)`;
+    const g = miniCanvas.getContext('2d');
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    window.EchoMap.mini(g, iw, ih, info, now / 1000);
+  }
+  const mapCanvas = document.createElement('canvas');
+  mapCanvas.id = 'map-screen'; mapCanvas.hidden = true; mapCanvas.setAttribute('aria-label', 'Cave map');
+  Object.assign(mapCanvas.style, { position: 'fixed', left: 0, top: 0, width: '100%', height: '100%', zIndex: 21, touchAction: 'none' });
+  document.body.append(mapCanvas, mapButton);
+  let mapOpen = false;
+  const coopMap = () => mode === 'duel' && state === 'duel' && duelCfg.coop && !!window.EchoCoop?.active && !!window.EchoCoop.mapReady;
+  const mapAvailable = () => !pauseOpen && !portrait.matches && ((mode === 'cave' && state === 'play' && !!fog) || coopMap());
+  function setMapOpen(on) {
+    on = !!on && mapAvailable();
+    if (on === mapOpen) return;
+    mapOpen = on;
+    mapCanvas.hidden = !on;
+    mapButton.setAttribute('aria-pressed', String(on));
+    mapButton.hidden = on;   // (the big map closes with a tap anywhere)
+    // Explore stops under the map: let go of the controls so Moka doesn't fly off after
+    if (on && mode === 'cave') { keys.clear(); stick = null; }
+    if (on) drawMap(performance.now());
+  }
+  mapButton.addEventListener('click', () => { unlockAudio(); setMapOpen(!mapOpen); });
+  // a tap anywhere on the map closes it
+  mapCanvas.addEventListener('pointerdown', (e) => { e.preventDefault(); setMapOpen(false); });
+  mapCanvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  function mapInfo() {
+    if (coopMap()) return window.EchoCoop.mapInfo();
+    const rgb = '139, 108, 255', got = L.moths.filter((m) => m.got).length;
+    return {
+      fog, grid: L.grid, w: L.w, h: L.h, wall: COL.wall, coop: false,
+      title: L.def.name || 'Explore', sub: `${got} / ${L.moths.length} moths`,
+      hint: touchUsed ? 'Tap to close' : 'M to close',
+      bats: [{ x: moka.x, y: moka.y, rgb, me: true }],
+      items: [
+        ...L.moths.filter((m) => !m.got).map((m) => ({ k: 'moth', x: m.x, y: m.y })),
+        ...L.hearts.filter((o) => !o.got).map((o) => ({ k: 'heart', x: o.x, y: o.y })),
+        ...L.checkpoints.map((cp) => ({ k: 'lantern', x: cp.x, y: cp.y, on: cp.on, rgb: COL.checkpoint })),
+        { k: 'exit', x: L.exit.x, y: L.exit.y, open: true },
+      ],
+      legend: [{ k: 'me', rgb }, { k: 'lantern', on: true, rgb: COL.checkpoint, label: 'Lantern' }, { k: 'exit', open: true }, { k: 'moth' }, { k: 'heart' }],
+    };
+  }
+  function drawMap(now) {
+    const w = Math.round(W * DPR), h = Math.round(H * DPR);
+    if (mapCanvas.width !== w || mapCanvas.height !== h) { mapCanvas.width = w; mapCanvas.height = h; }
+    const g = mapCanvas.getContext('2d');
+    g.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const info = mapInfo();
+    if (info) window.EchoMap.draw(g, W, H, info, now / 1000);
+  }
+
   // ---- Screens -----------------------------------------------------------
   function showOverlay(which) {
     $('title-screen').hidden = which !== 'title';
@@ -1861,6 +2278,7 @@
   const online = () => mode === 'duel' && duelCfg.online;
   function openPause() {
     if (!inMatch()) return;
+    setMapOpen(false);
     showOverlay('pause');
     pauseOpen = true;
     paused = !online();
@@ -2409,10 +2827,14 @@
     if (portrait.matches || document.hidden) music.set(false);
     else music.set(state === 'play' ? (mode === 'run' ? 'run' : 'explore') : fighting ? (duelCfg.coop ? 'run' : 'battle') : 'lobby');
     $('pause-button').hidden = !inMatch() || pauseOpen;
-    const frozen = paused || portrait.matches || document.hidden;
+    mapButton.hidden = !mapAvailable() || mapOpen;
+    if (mapOpen && !mapAvailable()) setMapOpen(false);
+    const frozen = paused || portrait.matches || document.hidden || (mapOpen && mode === 'cave');
     if (mode === 'duel' && state === 'duel') {
       ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
       if (!portrait.matches && !document.hidden) engine().frame(frozen ? 0 : dt, ctx, W, H);
+      // (re-check: the match may have just left its map-able phase inside frame())
+      if (mapAvailable()) { if (mapOpen) drawMap(now); else if (!mapButton.hidden) drawMini(now); }
       requestAnimationFrame(frame);
       return;
     }
@@ -2422,6 +2844,7 @@
       for (const p of particles) { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
     }
     render();
+    if (mapAvailable()) { if (mapOpen) drawMap(now); else if (!mapButton.hidden) drawMini(now); }
     requestAnimationFrame(frame);
   }
 
@@ -2450,5 +2873,11 @@
     get view3d() { return view3d; },
     restartFromCheckpoint,
     primary: primaryAction,
+    // the cave map
+    get fog() { return fog; },
+    get mapOpen() { return mapOpen; },
+    get mapAvailable() { return mapAvailable(); },
+    setMapOpen,
+    mapInfo: () => mapInfo(),
   };
 })();

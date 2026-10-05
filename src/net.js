@@ -21,8 +21,11 @@
 
   // ---- Transports ----------------------------------------------------------
   // Both expose the same shape:
-  //   host(code, { onJoin(id), onData(id, msg), onLeave(id) }) -> Promise<{ send(id, msg), close() }>
-  //   join(code, { onData(msg), onClose() })                   -> Promise<{ send(msg), close() }>
+  //   host(code, { onJoin(id), onData(id, msg), onLeave(id), onVoice? }) -> Promise<{ send(id, msg), close(), voice? }>
+  //   join(code, { onData(msg), onClose(), onVoice? })                   -> Promise<{ send(msg), close(), voice? }>
+  // voice (optional): a direct path for voice-chat audio frames (voice.js) that skips the host:
+  //   voice.send(bytes) -> bool (false = dropped), voice.listen(on); frames arrive as onVoice(fromId, bytes).
+  //   Without it, frames go through the host as {t:'vf'} messages instead.
 
   let peerLib = null;
   function loadPeer() {
@@ -128,9 +131,11 @@
         if (m.bye) { if (ids.delete(m.from)) h.onLeave(m.from); return; }
         if (ids.has(m.from)) h.onData(m.from, m.msg);
       };
+      const voice = localVoice(code, 'host', h);
       return {
         send(id, msg) { ch.postMessage({ to: id, msg }); },
-        close() { for (const id of ids) ch.postMessage({ to: id, bye: true }); ch.close(); },
+        close() { for (const id of ids) ch.postMessage({ to: id, bye: true }); ch.close(); voice.close(); },
+        voice,
       };
     },
     async join(code, h) {
@@ -147,12 +152,25 @@
         if (m.msg) h.onData(m.msg);
       };
       ch.postMessage({ to: 'host', from: me, hello: true });
+      const voice = localVoice(code, me, h);
       return {
         send(msg) { ch.postMessage({ to: 'host', from: me, msg }); },
-        close() { closed = true; ch.postMessage({ to: 'host', from: me, bye: true }); ch.close(); },
+        close() { closed = true; ch.postMessage({ to: 'host', from: me, bye: true }); ch.close(); voice.close(); },
+        voice, me,
       };
     },
   };
+  // voice frames between test tabs: their own channel, so they never queue behind game messages
+  function localVoice(code, me, h) {
+    const ch = new BroadcastChannel(ID_PREFIX + code + '-voice');
+    let on = false;
+    ch.onmessage = ({ data: m }) => { if (on && m && m.from !== me && m.data) h.onVoice?.(m.from, new Uint8Array(m.data)); };
+    return {
+      send(bytes) { ch.postMessage({ from: me, data: bytes }); return true; },
+      listen(v) { on = !!v; },
+      close() { ch.close(); },
+    };
+  }
 
   // Cloudflare room server: relays every message, so it works on mobile data and strict Wi-Fi.
   // Set ROOM_SERVER once the Worker is deployed; the game also uses it automatically when it
@@ -168,10 +186,11 @@
     return withTimeout(new Promise((resolve, reject) => {
       let ws;
       try { ws = new WebSocket(`${relayBase}/room/${code}?role=${role}`); } catch { reject(new Error('broker')); return; }
+      ws.binaryType = 'arraybuffer';
       ws.onmessage = ({ data }) => {
         let m;
         try { m = JSON.parse(data); } catch { return; }
-        if (m.ev === 'ready') resolve(ws);
+        if (m.ev === 'ready') { ws.voiceOk = !!m.voice; ws.myId = m.id || ''; resolve(ws); }
         else if (m.ev === 'error') reject(new Error(m.why || 'broker'));
       };
       ws.onerror = () => reject(new Error('broker'));
@@ -180,13 +199,34 @@
   }
   // keeps phone networks and proxies from dropping a quiet socket
   const keepAlive = (ws) => setInterval(() => { if (ws.readyState === 1) ws.send('ping'); }, 20000);
+  // Voice frames are binary WebSocket messages the room server copies straight to everyone else
+  // who has voice on (it puts the sender's number in front: 0 = host, n = guest 'g<n>').
+  // A frame is dropped rather than queued when the socket is backed up, so game messages never wait.
+  function relayVoice(ws, h) {
+    if (!ws.voiceOk) return null;   // an older room server: voice.js falls back to the host path
+    return {
+      send(bytes) {
+        if (ws.readyState !== 1 || ws.bufferedAmount > 24000) return false;
+        ws.send(bytes);
+        return true;
+      },
+      listen(on) { if (ws.readyState === 1) ws.send(on ? 'v1' : 'v0'); },
+      take(data) {
+        if (!(data instanceof ArrayBuffer) || data.byteLength < 3) return;
+        const b = new Uint8Array(data), n = b[0] | (b[1] << 8);
+        h.onVoice?.(n ? 'g' + n : 'host', b.subarray(2));
+      },
+    };
+  }
 
   const relayTransport = {
     async host(code, h) {
       const ws = await openRoomSocket(code, 'host');
       const beat = keepAlive(ws);
+      const voice = relayVoice(ws, h);
       ws.onmessage = ({ data }) => {
         if (data === 'pong') return;
+        if (typeof data !== 'string') { voice?.take(data); return; }
         let m;
         try { m = JSON.parse(data); } catch { return; }
         if (m.ev === 'join') h.onJoin(m.id);
@@ -197,6 +237,7 @@
       return {
         send(id, msg) { if (ws.readyState === 1) ws.send(JSON.stringify({ to: id, msg })); },
         close() { clearInterval(beat); ws.close(); },
+        voice,
       };
     },
     async join(code, h) {
@@ -204,8 +245,10 @@
       const beat = keepAlive(ws);
       let closed = false;
       const end = () => { clearInterval(beat); if (!closed) { closed = true; h.onClose(); } };
+      const voice = relayVoice(ws, h);
       ws.onmessage = ({ data }) => {
         if (data === 'pong') return;
+        if (typeof data !== 'string') { voice?.take(data); return; }
         let m;
         try { m = JSON.parse(data); } catch { return; }
         if (m && m.ev === 'gone') end();
@@ -215,6 +258,7 @@
       return {
         send(msg) { if (ws.readyState === 1) ws.send(JSON.stringify(msg)); },
         close() { closed = true; clearInterval(beat); ws.close(); },
+        voice, me: ws.myId,
       };
     },
   };
@@ -275,6 +319,67 @@
     else if (role === 'guest' && link) link.send({ t: 'look', look });
   };
 
+  // ---- Voice chat (src/voice.js) -------------------------------------------------
+  // Everyone in a room has a voice id: 'host' for the host, the transport's id for a guest.
+  // The host tells everyone who sits where ({t:'vr'}) and passes voice signalling ({t:'vx'},
+  // tiny JSON: on/off and WebRTC offers) between guests. Audio frames take the transport's
+  // direct voice path (room server / test channel); without one they go through the host as
+  // {t:'vf'} messages. Voice never touches the game messages ('s', 'in', 'act').
+  const V = () => window.EchoVoice;
+  let myVid = '';
+  const toB64 = (u8) => { let t = ''; for (let i = 0; i < u8.length; i++) t += String.fromCharCode(u8[i]); return btoa(t); };
+  const fromB64 = (t) => {
+    try { const d = atob(t), u = new Uint8Array(d.length); for (let i = 0; i < d.length; i++) u[i] = d.charCodeAt(i); return u; } catch { return null; }
+  };
+  const vfBudget = new Map();   // host: guest id -> frames left this second (relayed voice is rate-limited)
+  function vfAllowed(id) {
+    const now = Math.floor(performance.now() / 1000), b = vfBudget.get(id);
+    if (!b || b.s !== now) { vfBudget.set(id, { s: now, n: 29 }); return true; }
+    return b.n-- > 0;
+  }
+  const voiceNet = {
+    get me() { return myVid; },
+    get direct() { return !!link?.voice; },
+    // d is a small JSON object; to is a voice id or '*' for everyone else
+    send(to, d) {
+      if (!link) return;
+      if (role === 'host') {
+        for (const g of guests) if (to === '*' || to === g.id) link.send(g.id, { t: 'vx', from: 'host', d });
+      } else link.send({ t: 'vx', to, d });
+    },
+    frame(bytes) {
+      if (!link) return false;
+      if (link.voice) return link.voice.send(bytes);
+      const b = toB64(bytes);
+      if (role === 'host') guests.forEach((g) => link.send(g.id, { t: 'vf', from: 'host', b }));
+      else link.send({ t: 'vf', b });
+      return true;
+    },
+    listen(on) { link?.voice?.listen(on); },
+  };
+  const onVoice = (from, bytes) => V()?.frame(from, bytes);
+  function voiceRoster() {
+    if (role !== 'host') return;
+    const peers = [{ id: 'host', slot: 0 }, ...guests.map((g, k) => ({ id: g.id, slot: playing && g.slot != null ? g.slot : k + 1 }))];
+    guests.forEach((g) => link.send(g.id, { t: 'vr', you: g.id, peers }));
+    V()?.room(myVid, peers);
+  }
+  function hostVoiceData(id, msg) {
+    if (msg.t === 'vx') {
+      if (msg.to === 'host' || msg.to === '*') V()?.signal(id, msg.d);
+      for (const g of guests) if (g.id !== id && (msg.to === '*' || msg.to === g.id)) link.send(g.id, { t: 'vx', from: id, d: msg.d });
+      return true;
+    }
+    if (msg.t === 'vf') {
+      if (typeof msg.b !== 'string' || msg.b.length > 1400 || !vfAllowed(id)) return true;
+      const bytes = fromB64(msg.b);
+      if (bytes) V()?.frame(id, bytes);
+      for (const g of guests) if (g.id !== id) link.send(g.id, { t: 'vf', from: id, b: msg.b });
+      return true;
+    }
+    return false;
+  }
+
   // ---- Host --------------------------------------------------------------------
   async function createRoom() {
     leave(true);
@@ -284,7 +389,7 @@
     for (let tries = 0; tries < 3; tries++) {
       code = newCode();
       try {
-        link = await transport.host(code, { onJoin, onData, onLeave });
+        link = await transport.host(code, { onJoin, onData, onLeave, onVoice });
         break;
       } catch (e) {
         if (e.message !== 'taken' || tries === 2) {
@@ -299,6 +404,9 @@
     if (role !== 'host') { link?.close(); link = null; return; }  // left while connecting
     guests = [];
     renderRoom();
+    myVid = 'host';
+    V()?.attach(voiceNet);
+    voiceRoster();
   }
 
   function onJoin(id) {
@@ -308,12 +416,14 @@
     guests.push({ id });
     renderRoom();     // may drop a CPU to make a seat
     sendLobby();
+    voiceRoster();
   }
 
   function onData(id, msg) {
     const k = guests.findIndex((g) => g.id === id);
     if (k < 0 || !msg || typeof msg !== 'object') return;
     if (msg.t === 'bye') { onLeave(id); return; }
+    if (hostVoiceData(id, msg)) return;
     if (msg.t === 'look') {
       guests[k].look = window.EchoLooks?.clean?.(msg.look) || null;
       if (!playing) { renderRoom(); sendLobby(); }
@@ -326,13 +436,16 @@
     const k = guests.findIndex((g) => g.id === id);
     if (k < 0) return;
     const [g] = guests.splice(k, 1);
+    vfBudget.delete(id);
     if (playing && eng().active) {
       eng().dropRemote(g.slot);
+      voiceRoster();
       // keep the remaining guests' slots stable for the rest of the match
       return;
     }
     renderRoom();
     sendLobby();
+    voiceRoster();
   }
 
   // The host starts (or restarts) a match. Guests keep their bat for the whole match.
@@ -347,6 +460,7 @@
       playing = true;
       const seed = Math.floor(Math.random() * 1e9);
       guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', mode: 'coop', total, slot: g.slot, level, seed, variant: opts.variant, map: opts.map, looks }); });
+      voiceRoster();
       window.EchoGame.startCoop({
         ...opts, mode: 'host', remotes: guests.length, seed, online: true,
         net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
@@ -361,6 +475,7 @@
     playing = true;
     const { arenaMode, arena, firstTo, powerups } = opts;
     guests.forEach((g, k) => { g.slot = k + 1; link.send(g.id, { t: 'start', total, slot: g.slot, arenaMode, arena, rule, firstTo, powerups, looks }); });
+    voiceRoster();
     window.EchoGame.startDuel({
       ...opts, mode: 'host', remotes: guests.length, online: true,
       net: { broadcast: (msg) => guests.forEach((g) => link.send(g.id, msg)) },
@@ -378,6 +493,7 @@
       playing = false;
       guests.forEach((g) => link.send(g.id, { t: 'lobbyback' }));
       sendLobby();
+      voiceRoster();
     }
     window.EchoGame.showOverlay('battle');
     renderRoom();
@@ -395,7 +511,7 @@
     $('join-go').disabled = true;
     let l;
     try {
-      l = await transport.join(code, { onData: onHostData, onClose: hostGone });
+      l = await transport.join(code, { onData: onHostData, onClose: hostGone, onVoice });
     } catch (e) {
       $('join-go').disabled = false;
       if (role === 'guest' && code === c) { role = null; status(errorText(e), true); }
@@ -405,6 +521,8 @@
     if (role !== 'guest' || code !== c) { l.close(); return; }
     link = l;
     roster = [];
+    myVid = l.me || '';
+    V()?.attach(voiceNet);
     status('Joined! Waiting for the host…');
   }
 
@@ -455,6 +573,18 @@
         playing = false;
         backToLobby();
         break;
+      case 'vr':
+        if (typeof msg.you === 'string') myVid = msg.you;
+        if (Array.isArray(msg.peers)) V()?.room(myVid, msg.peers);
+        break;
+      case 'vx':
+        V()?.signal(msg.from, msg.d);
+        break;
+      case 'vf': {
+        const bytes = typeof msg.b === 'string' && msg.b.length <= 1400 ? fromB64(msg.b) : null;
+        if (bytes) V()?.frame(msg.from, bytes);
+        break;
+      }
       default:
         break;
     }
@@ -463,6 +593,7 @@
   function hostGone() {
     if (role !== 'guest') return;
     const wasPlaying = playing;
+    V()?.detach();
     link = null;
     role = null;
     playing = false;
@@ -475,6 +606,8 @@
 
   // ---- Shared ----------------------------------------------------------------
   function leave(quiet = false) {
+    V()?.detach();
+    myVid = '';
     if (link) {
       if (role === 'guest') link.send({ t: 'bye' });
       link.close();

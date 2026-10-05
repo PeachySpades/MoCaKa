@@ -11,13 +11,18 @@
     ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2);
   }
   function draw(ctx, q, c, ang, t, color, rgb, EAT_PULL = PULL) {
-    const ca = Math.cos(ang), sa = Math.sin(ang), S = q.s;
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    // the mouth: pops up, gapes, snaps shut at EAT_PULL, then shrinks away
+    mouth(ctx, q, ang, t, color, rgb, EAT_PULL);
+    slashes(ctx, c, ang, t, rgb, EAT_PULL);
+    ctx.restore();
+  }
+  // the mouth: pops up, gapes, snaps shut at EAT_PULL, then shrinks away
+  function mouth(ctx, q, ang, t, color, rgb, EAT_PULL, size = 1) {
+    const ca = Math.cos(ang), sa = Math.sin(ang), S = q.s;
     if (t < EAT_PULL + 0.3) {
       const grow = Math.min(1, t / 0.08), after = Math.max(0, t - EAT_PULL) / 0.3;
-      const rad = S * (0.85 + 0.35 * grow) * (1 - after * 0.6) * (1 + 0.12 * Math.max(0, 1 - Math.abs(t - EAT_PULL) / 0.06));
+      const rad = size * S * (0.85 + 0.35 * grow) * (1 - after * 0.6) * (1 + 0.12 * Math.max(0, 1 - Math.abs(t - EAT_PULL) / 0.06));
       const gape = t < EAT_PULL * 0.6 ? 0.95 * Math.min(1, t / (EAT_PULL * 0.45)) : t < EAT_PULL ? 0.95 * (1 - ((t - EAT_PULL * 0.6) / (EAT_PULL * 0.4)) ** 2) : 0;
       const op = gape + 0.02, alpha = 1 - after;
       ctx.globalAlpha = alpha;
@@ -54,7 +59,9 @@
       ctx.fillStyle = '#1a1030'; ctx.beginPath(); ctx.arc(ex + ca * rad * 0.04, ey + sa * rad * 0.04, rad * 0.07, 0, Math.PI * 2); ctx.fill();
       ctx.globalAlpha = 1;
     }
+  }
 
+  function slashes(ctx, c, ang, t, rgb, EAT_PULL) {
     // three big claw slashes across the bite: ragged and uneven, never three neat parallel lines.
     // Each mark gets its own length, tilt, spacing, start and bend (varied a little per bite).
     const st = t - EAT_PULL + 0.04;
@@ -80,6 +87,53 @@
         ctx.strokeStyle = `rgba(255, 255, 255, ${fade})`; ctx.lineWidth = Math.max(1.5, c.s * 0.065 * m.w); ctx.stroke();
       }
     }
+  }
+
+  // A bite that misses (the target hopped over it): the same mouth gapes and
+  // snaps, but on empty air: no slashes, a puff and two swishes where it
+  // closes, and a bouncy "MISS!" popping up over the bat that got away
+  // (m = { x, y, s }: where the text goes). t runs 0 to about 1 second.
+  const MISS_FONT = '"Fredoka", "Nunito", system-ui, sans-serif';
+  // (the mouth is a bit smaller than a real chomp's, so the bat it missed stays in sight above it)
+  function miss(ctx, q, m, ang, t, color, rgb, EAT_PULL = PULL, size = 0.72) {
+    const ca = Math.cos(ang), sa = Math.sin(ang), S = q.s * size;
+    ctx.save();
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    mouth(ctx, q, ang, t, color, rgb, EAT_PULL, size);
+    const st = t - EAT_PULL;
+    if (st > -0.02 && st < 0.5) {
+      // the snap on nothing: a little puff of air and two swishes sweeping past the jaws
+      const k = Math.max(0, st) / 0.5, fade = 1 - k;
+      const fx = q.x + ca * S * 0.75, fy = q.y + sa * S * 0.75;
+      for (let j = 0; j < 5; j++) {
+        const a = ang + (j - 2) * 0.7, d = S * (0.15 + 0.45 * k);
+        ctx.fillStyle = `rgba(232, 236, 255, ${0.5 * fade})`;
+        ctx.beginPath(); ctx.arc(fx + Math.cos(a) * d, fy + Math.sin(a) * d, S * (0.07 + 0.08 * k), 0, Math.PI * 2); ctx.fill();
+      }
+      for (const side of [1, -1]) {
+        const r0 = S * (0.7 + 0.35 * k), a0 = ang + side * (0.25 + 0.9 * k), a1 = ang + side * (1.3 + 0.9 * k);
+        ctx.beginPath(); ctx.arc(q.x, q.y, r0, Math.min(a0, a1), Math.max(a0, a1));
+        ctx.strokeStyle = `rgba(${rgb}, ${0.45 * fade})`; ctx.lineWidth = Math.max(4, S * 0.16); ctx.stroke();
+        ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * fade})`; ctx.lineWidth = Math.max(1.5, S * 0.05); ctx.stroke();
+      }
+    }
+    // MISS! pops in as the jaws close: overshoots, wobbles, settles, then fades and drifts up
+    const tt = t - EAT_PULL + 0.06;
+    if (m && tt > 0) {
+      const life = 1 - EAT_PULL + 0.06, f = tt > life - 0.25 ? Math.max(0, (life - tt) / 0.25) : 1;
+      const pop = tt < 0.1 ? 0.3 + 7 * tt : 1 + 0.35 * Math.exp(-tt * 7) * Math.cos(tt * 26);
+      const wob = 0.22 * Math.exp(-tt * 6) * Math.sin(tt * 30) - 0.08;
+      const fs = Math.max(20, m.s * 0.85) * pop;
+      ctx.translate(m.x, m.y - tt * m.s * 0.35);
+      ctx.rotate(wob);
+      ctx.globalAlpha = f;
+      ctx.font = `800 ${fs}px ${MISS_FONT}`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.strokeStyle = 'rgba(12, 10, 34, 0.95)'; ctx.lineWidth = Math.max(4, fs * 0.2); ctx.strokeText('MISS!', 0, 0);
+      ctx.strokeStyle = 'rgba(143, 220, 255, 0.9)'; ctx.lineWidth = Math.max(2, fs * 0.09); ctx.strokeText('MISS!', 0, 0);
+      ctx.fillStyle = '#ffffff'; ctx.fillText('MISS!', 0, 0);
+      ctx.globalAlpha = 1;
+    }
     ctx.restore();
   }
   // a little toothy mouth for BITE buttons: a Pac-Man with fangs, facing right
@@ -99,5 +153,5 @@
     ctx.beginPath(); ctx.arc(x - r * 0.05, y - r * 0.5, r * 0.13, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
-  window.EchoChomp = { draw, icon, PULL, TIME };
+  window.EchoChomp = { draw, miss, icon, PULL, TIME };
 })();

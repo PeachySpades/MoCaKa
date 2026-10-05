@@ -502,6 +502,87 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
   // seal a dead end with a gate across its tunnel, and put its switch somewhere outside.
   // The gate is every tile exactly t steps from the chamber's middle: any way out has to cross it.
   const reach = () => { const d = flood([sx, sy]); let n = 0; for (let k = 0; k < W * H; k++) if (d[k] >= 0) n++; return n; };
+  // a side cavern for a switch: a crawl from a tunnel into the rock, a turn, a second leg and a
+  // small den at the end with the lever on its floor. It only touches the cave at its mouth (a
+  // dead end nobody flies through, so never on the way to anything), round a corner (it can't be
+  // seen from the tunnel), its mouth off the way through, outside every pocket and a short flight
+  // (d: steps from the pocket's middle, t: the gate's) from the gate. Roomiest shape that fits.
+  // nothing else open within gap tiles of a lever at sw (dug: the den's own tiles), and no clear
+  // line of sight to it from anywhere in the cave outside its den
+  function hidden([wx, wy], dug, gap) {
+    const cx = wx + 0.5, cy = wy + 0.5;
+    for (let y = Math.max(1, wy - 14); y <= Math.min(H - 2, wy + 14); y++) {
+      for (let x = Math.max(1, wx - 14); x <= Math.min(W - 2, wx + 14); x++) {
+        if (rock(x, y) || dug.has(y * W + x)) continue;
+        const dd = Math.hypot(x - wx, y - wy);
+        if (dd < gap) return false;
+        if (dd > 14) continue;
+        let seen = true;
+        for (let i = 1, n = Math.ceil(dd * 4); i < n && seen; i++) {
+          const f = i / n, qx = Math.floor(x + 0.5 + (cx - x - 0.5) * f), qy = Math.floor(y + 0.5 + (cy - y - 0.5) * f);
+          if (rock(qx, qy) && !dug.has(qy * W + qx)) seen = false;
+        }
+        if (seen) return false;
+      }
+    }
+    return true;
+  }
+  function switchDen(d, t) {
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    // [leg width, first leg, second leg, den across, den deep]
+    const SHAPES = [[2, 3, 3, 4, 3], [2, 3, 2, 4, 3], [2, 3, 2, 3, 3], [1, 3, 2, 3, 3], [1, 2, 2, 3, 2], [1, 2, 1, 2, 2]];
+    const tiers = [[], [], []];
+    for (let k = 0; k < W * H; k++) {
+      if (d[k] < t + 3 || d[k] > t + 26 || inPocket[k]) continue;
+      const x = k % W, y = (k - x) / W;
+      if (g[y][x] !== '.' || safe(x, y) || near(x, y, items, 4) || near(x, y, gateTiles, 4)) continue;
+      tiers[routeSet.has(k) ? 2 : fromRoute[k] >= 2 && d[k] <= t + 18 ? 0 : 1].push([x, y]);
+    }
+    for (const list of tiers) for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
+    // (the lever wants rock between it and the rest of the cave: gap tiles, then a little less)
+    for (const gap of [3.2, 2.2]) for (const list of tiers) {
+      for (const [lw, a, b, dw, dd] of SHAPES) {
+        for (const [x, y] of list) {
+          const o0 = Math.floor(rand() * 8);
+          for (let o = 0; o < 8; o++) {
+            const [dx, dy] = dirs[(o0 + o) % 8 >> 1], side = (o0 + o) % 2 ? 1 : -1, px = -dy * side, py = dx * side;
+            if (!rock(x + dx, y + dy)) continue;
+            const own = new Map();   // local (u along the crawl, v to the side) for each dug tile
+            const add = (u, v) => own.set(u * 64 + v, [u, v]);
+            for (let u = 1; u <= a; u++) for (let v = 0; v < lw; v++) add(u, v);                          // first leg
+            for (let v = lw; v < lw + b; v++) for (let u = a - lw + 1; u <= a; u++) add(u, v);             // round the corner
+            for (let v = lw + b; v < lw + b + dd; v++) for (let u = a - lw + 1; u <= a - lw + dw; u++) add(u, v);   // the den
+            const at = (u, v) => [x + dx * u + px * v, y + dy * u + py * v];
+            let ok = true;
+            for (const [u, v] of own.values()) {
+              const [tx, ty] = at(u, v);
+              if (tx < 2 || ty < 2 || tx > W - 3 || ty > H - 3) { ok = false; break; }
+              for (let dv = -1; dv <= 1 && ok; dv++) for (let du = -1; du <= 1 && ok; du++) {
+                const nu = u + du, nv = v + dv;
+                if (own.has(nu * 64 + nv) || (u === 1 && v < lw && nu <= 0)) continue;   // its own tiles, or the mouth
+                if (!rock(...at(nu, nv))) ok = false;
+              }
+              if (!ok) break;
+            }
+            if (!ok) continue;
+            // the lever: on the den's floor (rock below it, room above), as deep in as it goes
+            const dug = new Set([...own.values()].map(([u, v]) => { const [tx, ty] = at(u, v); return ty * W + tx; }));
+            let sw = null, sd = -1;
+            for (const [u, v] of own.values()) {
+              if (v < lw + b) continue;
+              const [tx, ty] = at(u, v), deep = v * 4 + u;
+              const floor = !dug.has((ty + 1) * W + tx), roof = dug.has((ty - 1) * W + tx);
+              if (floor && roof && deep > sd) { sd = deep; sw = [tx, ty]; }
+            }
+            if (!sw || !hidden(sw, dug, gap)) continue;
+            for (const [u, v] of own.values()) carve(...at(u, v));
+            return sw;
+          }
+        }
+      }
+    }
+    return null;
+  }
   function makeGate(c) {
     const cx = Math.floor(c.cx), cy = Math.floor(c.cy), d = flood([cx, cy]);
     let best = null;
@@ -524,15 +605,11 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
       if (!best || ring.length < best.ring.length) best = { t, ring };
     }
     if (!best) return null;
-    // the switch: on a floor out in the cave, a short flight from the gate
-    const cands = [];
-    for (let k = 0; k < W * H; k++) {
-      if (d[k] < best.t + 4 || d[k] > best.t + 16 || inPocket[k]) continue;
-      const x = k % W, y = (k - x) / W;
-      if (free(x, y) && rock(x, y + 1) && open(x, y - 1) && !near(x, y, items, 3) && !near(x, y, lanterns, 2)) cands.push([x, y]);
-    }
-    if (!cands.length) return null;
-    const sw = cands[Math.floor(rand() * cands.length)], id = gates.length;
+    // the switch: in its own little side cavern a short flight from the gate, dug into the rock
+    // off a tunnel (never on the way through) and round a corner, so it isn't seen at a glance
+    const sw = switchDen(d, best.t);
+    if (!sw) return null;
+    const id = gates.length;
     for (let k = 0; k < W * H; k++) if (d[k] >= 0 && d[k] < best.t) inPocket[k] = id + 1;
     const tiles = best.ring.map((k) => [k % W, Math.floor(k / W)]);
     for (const [x, y] of tiles) { g[y][x] = 'G'; gateTiles.push([x, y]); }
