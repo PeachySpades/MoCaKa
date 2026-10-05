@@ -664,6 +664,7 @@
     $('end-button').hidden = false;
     $('end-wait').hidden = true;
     $('menu-button').textContent = 'Menu';
+    $('lobby-button').hidden = true;
     setTimeout(() => {
       if (state !== 'win' && state !== 'lose') return;
       showOverlay('end');
@@ -2285,11 +2286,20 @@
     engine().setPaused(paused);
     keys.clear(); stick = null;
     $('pause-title').textContent = online() ? 'Menu' : 'Paused';
+    // online the match goes on; the host's "Back to multiplayer" brings everyone back to the room,
+    // a guest's leaves their bat to a CPU and waits in the room's lobby
+    const host = online() && duelCfg.mode === 'host';
     $('pause-note').hidden = !online();
+    $('pause-note').textContent = !online() ? '' : host ? 'The match keeps going for everyone else. Back to room ends it for everyone.'
+      : 'The match keeps going. Back to room: a CPU flies your bat and you wait in the room.';
     $('pause-restart').hidden = online();
-    $('pause-menu').textContent = online() ? 'Leave match' : 'Main menu';
+    $('pause-lobby').hidden = mode !== 'duel';
+    lobbyLabels();
+    $('pause-menu').textContent = online() ? 'Leave room' : 'Main menu';
   }
   function resume() { showOverlay(null); }
+  // out of the match view: stop whatever was running and go to the title (or, online, the lobby
+  // with the room left behind)
   function toMenu() {
     const wasOnline = online();
     if (wasOnline) duelCfg.leave();
@@ -2299,6 +2309,40 @@
     state = 'title';
     L = null;
     showOverlay(wasOnline ? 'battle' : 'title');
+  }
+  // the end screen's "Main menu": leaves the room (online) and goes all the way to the title
+  function toTitle() {
+    if (online()) duelCfg.leave();
+    window.EchoDuel.stop();
+    window.EchoCoop?.stop();
+    mode = 'cave';
+    state = 'title';
+    L = null;
+    window.EchoNet?.clearStatus?.();
+    showOverlay('title');
+  }
+  // back to the Multiplayer lobby, keeping the room: the match view closes (net.js calls this too)
+  function toLobby() {
+    window.EchoDuel.stop();
+    window.EchoCoop?.stop();
+    setMapOpen(false);
+    mode = 'cave';
+    state = 'title';
+    L = null;
+    showOverlay('battle');
+    renderPickers();
+  }
+  // online it's "Back to room" (the connection stays); offline "Back to lobby"
+  function lobbyLabels() {
+    const t = online() ? 'Back to room' : 'Back to lobby';
+    for (const id of ['lobby-button', 'pause-lobby']) $(id).querySelector('span').textContent = t;
+  }
+  // "Back to room" (end screen and pause menu): online, net.js handles the room
+  // (the host brings everyone back; a guest steps out to the lobby), offline it's straight back
+  function backToMultiplayer() {
+    unlockAudio();
+    if (mode === 'duel' && duelCfg.online && duelCfg.lobby) duelCfg.lobby();
+    else toLobby();
   }
 
   function enterGame(newMode) {
@@ -2351,7 +2395,9 @@
     $('end-detail').innerHTML = d.lines.map((l) => `<li class="${l.got ? 'got' : ''}"${l.color ? ` style="color:${l.color}"` : ''}>${l.text}</li>`).join('');
     $('end-button').textContent = result.won ? 'Play again' : 'Try again';
     $('end-button').hidden = guest;
-    $('menu-button').textContent = duelCfg.online ? 'Room' : 'Menu';
+    $('menu-button').textContent = 'Main menu';
+    $('lobby-button').hidden = false;
+    lobbyLabels();
     $('end-wait').hidden = !guest;
     showOverlay('end');
   }
@@ -2371,7 +2417,9 @@
       .join('');
     $('end-button').textContent = 'Rematch';
     $('end-button').hidden = guest;
-    $('menu-button').textContent = duelCfg.online ? 'Room' : 'Menu';
+    $('menu-button').textContent = 'Main menu';
+    $('lobby-button').hidden = false;
+    lobbyLabels();
     $('end-wait').hidden = !guest;
     showOverlay('end');
   }
@@ -2397,12 +2445,20 @@
   const maxSeats = (rule = pick.rule) => (rule === 'coop' ? MAX_COOP : MAX_BATTLE);
   const LEVELS = ['easy', 'normal', 'hard'];
   const LEVEL_NAMES = { easy: 'Easy', normal: 'Normal', hard: 'Hard' };
-  // arenas: one that slowly reshapes, one of the four caves kept still, or open sky
+  // arenas: one that slowly reshapes, Morphing Xtreme (the cave turns lava, ice, moss and crystal in
+  // turn, each with its own rules), one of the four caves kept still, or open sky
   const ARENA_CHOICES = [
-    { id: 'morph', name: 'Morphing', desc: 'The walls slowly reshape', mode: 'morph' },
-    ...['Crystal Grotto', 'Lava Hollow', 'Mossy Den', 'Frozen Cavern'].map((name, i) => ({ id: `still-${i}`, name, desc: 'Stays the same all match', mode: 'still', arena: i })),
+    { id: 'morph', name: 'Morphing', desc: 'The blocks slowly reshape', mode: 'morph' },
+    { id: 'xtreme', name: 'Morphing Xtreme', desc: 'Crystal, lava, ice and moss in turn', mode: 'xtreme' },
+    ...[['Crystal Grotto', 'Mirrored crystal halls'], ['Lava Hollow', 'Hop the blocks, the floor is lava'],
+      ['Mossy Den', 'Chomp through the bushes'], ['Frozen Cavern', 'Slippery ice, lots of room']]
+      .map(([name, desc], i) => ({ id: `still-${i}`, name, desc, mode: 'still', arena: i })),
     { id: 'sky', name: 'Open Sky', desc: 'No cave, just the night', mode: 'sky' },
   ];
+  // Morphing Xtreme's preview flips through its caves in the order EchoDuel plays them
+  const XTREME_NAMES = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
+  const xtremeOrder = () => XTREME_NAMES.map((n) => (window.ECHO_ARENAS || []).findIndex((a) => a.name === n)).filter((i) => i >= 0);
+  const xtremeNow = () => { const o = xtremeOrder(); return o.length ? o[Math.floor(performance.now() / 1100) % o.length] : -1; };
   // the Battle tab's two modes (Free-for-all = 'bites', Rounds = 'survivor') and Co-op Run;
   // pick.rule keeps these values, which is what EchoDuel/EchoCoop and online rooms use
   const RULES = { bites: 'battle', survivor: 'battle', coop: 'coop' };
@@ -2422,12 +2478,14 @@
     scroll: 'The screen keeps moving.', explore: 'Roam a big cave at your own pace.',
   };
   const note = (long, short) => `<span class="long">${long}</span><span class="short">${short}</span>`;
-  const FREQS = ['off', 'low', 'normal', 'high'];
-  const FREQ_NAMES = { off: 'Off', low: 'Low', normal: 'Normal', high: 'High' };
+  // 'max' (Extreme) is the busiest: more power-ups, more often (EchoDuel's POWER_FREQ.max)
+  const FREQS = ['off', 'low', 'normal', 'high', 'max'];
+  const FREQ_NAMES = { off: 'Off', low: 'Low', normal: 'Normal', high: 'High', max: 'Extreme' };
   const powerList = () => window.EchoDuel?.POWER_LIST || [];
   const arenaOpts = (p) => { const a = ARENA_CHOICES.find((x) => x.id === p.arenaId) || ARENA_CHOICES[0]; return { arenaMode: a.mode, arena: a.arena }; };
   const cleanPowers = (pw) => {
     const on = {};
+    // only the power-ups EchoDuel has now (old saves may name ones that were taken out, like 'wall')
     for (const p of powerList()) on[p.id] = pw?.on?.[p.id] !== false;
     return { on, freq: FREQS.includes(pw?.freq) ? pw.freq : 'normal' };
   };
@@ -2484,19 +2542,49 @@
     const c = $('arena-preview'), g = c.getContext('2d');
     const arenas = window.ECHO_ARENAS;
     const ch = ARENA_CHOICES.find((x) => x.id === pick.arenaId) || ARENA_CHOICES[0];
-    const def = ch.mode === 'sky' ? arenas.find((a) => a.open) : arenas[ch.mode === 'morph' ? 2 : ch.arena];
+    const caves = (arenas || []).filter((a) => !a.open);
+    // Morphing Xtreme flips through its caves every second or so
+    const xi = ch.mode === 'xtreme' ? xtremeNow() : -1;
+    // classic Morphing reshapes the plain stone caves (the first one stands in for them)
+    const stone = (arenas || []).findIndex((a) => a.classic);
+    const def = !arenas ? null : ch.mode === 'sky' ? arenas.find((a) => a.open) : arenas[xi >= 0 ? xi : ch.mode === 'morph' ? (stone >= 0 ? stone : 2) : ch.arena] || caves[0];
+    previewKey = `${ch.id}|${xi}`;
+    if (!def || !def.map || !def.map.length) { g.fillStyle = '#05060d'; g.fillRect(0, 0, c.width, c.height); return; }
     const w = def.map[0].length, h = def.map.length, s = Math.min(c.width / w, c.height / h);
     const x0 = (c.width - w * s) / 2, y0 = (c.height - h * s) / 2;
     g.fillStyle = def.theme.bg; g.fillRect(0, 0, c.width, c.height);
+    // Lava Hollow's floor is lava: a hot glow under the blocks
+    const lava = def.theme.style === 'lava';
+    if (lava) { g.fillStyle = 'rgba(255, 110, 30, 0.75)'; g.fillRect(x0, y0, w * s, h * s); }
     def.map.forEach((row, y) => [...row].forEach((ch, x) => {
-      if (ch === '#') { g.fillStyle = `rgba(${def.theme.wall}, 0.85)`; g.fillRect(x0 + x * s, y0 + y * s, s + 0.3, s + 0.3); }
+      if (ch === '#' || ch === 'E') { g.fillStyle = lava ? 'rgb(60, 22, 12)' : `rgba(${def.theme.wall}, 0.85)`; g.fillRect(x0 + x * s, y0 + y * s, s + 0.3, s + 0.3); }
+      if (ch === 'E' || ch === 'e') { g.fillStyle = '#e9f6ff'; g.fillRect(x0 + (x + 0.3) * s, y0 + (y + 0.3) * s, s * 0.4, s * 0.4); }
       else if ('ABCD'.includes(ch)) { g.fillStyle = ['#8b6cff', '#ff7ad9', '#9dff6a', '#ffb347']['ABCD'.indexOf(ch)]; g.beginPath(); g.arc(x0 + (x + 0.5) * s, y0 + (y + 0.5) * s, s * 0.8, 0, Math.PI * 2); g.fill(); }
     }));
     if (def.open) {
       g.fillStyle = 'rgba(255, 244, 214, 0.8)';
       g.beginPath(); g.arc(c.width * 0.8, c.height * 0.3, 7, 0, Math.PI * 2); g.fill();
     }
+    if (xi >= 0) {
+      // Xtreme: a band of all four cave colours across the corner, the one showing now lit up
+      const order = xtremeOrder(), k = order.indexOf(xi), bw = c.width * 0.07;
+      order.forEach((ai, j) => {
+        const th = arenas[ai]?.theme;
+        if (!th) return;
+        g.fillStyle = `rgba(${th.wall}, ${j === k ? 1 : 0.45})`;
+        g.beginPath();
+        const x = c.width - bw * (order.length - j) - 4;
+        g.moveTo(x + bw * 0.5, 4); g.lineTo(x + bw * 1.5, 4); g.lineTo(x + bw, c.height * 0.3); g.lineTo(x, c.height * 0.3);
+        g.closePath(); g.fill();
+      });
+    }
   }
+  let previewKey = '';
+  // keep Morphing Xtreme's preview flipping while the lobby shows it
+  setInterval(() => {
+    if ($('battle-screen').hidden || $('arena-pick').hidden || pick.arenaId !== 'xtreme') return;
+    if (previewKey !== `xtreme|${xtremeNow()}`) drawArenaPreview();
+  }, 200);
   function renderPickers() {
     const ppl = people(), n = ppl.length, edit = canEdit(), coop = pick.rule === 'coop';
     pick.cpus = Math.max(0, Math.min(pick.cpus, maxSeats() - n));
@@ -2584,8 +2672,10 @@
     $('start-text').textContent = coop ? "Let's Fly!" : "Let's Fight!";
     $('duel-start').disabled = total < need;
     // only says something when there's something to do (or wait for)
-    $('start-hint').textContent = guest ? 'Waiting for the host to start…' : total < need ? 'Add a CPU or invite a friend' : '';
+    // a guest who stepped out of a match (net.js) is told why they're waiting
+    $('start-hint').textContent = guest ? (window.EchoNet?.waitNote || 'Waiting for the host to start…') : total < need ? 'Add a CPU or invite a friend' : '';
     $('start-hint').hidden = !$('start-hint').textContent;
+    document.querySelector('.lobby .start-wrap').classList.toggle('waiting', guest);
     paintBats();
   }
   // ---- the bats on the seat cards, drawn with EchoLooks
@@ -2644,8 +2734,52 @@
       + `<i>${p.icon || '★'}</i><b>${p.name}</b><small>${p.desc || ''}</small></button>`).join('')
       : '<p class="small">Power-ups are on.</p>';
     document.querySelectorAll('[data-freq]').forEach((b) => { const on = b.dataset.freq === pick.powers.freq; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); b.disabled = !edit; });
+    if (!$('powers-screen').hidden) syncPowersBar();
   }
-  $('powers-open').addEventListener('click', () => { renderPowers(); $('powers-screen').hidden = false; });
+  // the list's own scroll bar: a slim neon track on the right that follows the list and can be
+  // dragged (phones don't show a scroll bar of their own until you scroll)
+  const pList = $('powers-list'), pBar = $('powers-bar'), pThumb = pBar.firstElementChild;
+  function syncPowersBar() {
+    const sh = pList.scrollHeight, ch = pList.clientHeight, more = sh - ch > 2;
+    pBar.hidden = !more;
+    pList.classList.toggle('more-up', more && pList.scrollTop > 2);
+    pList.classList.toggle('more-down', more && pList.scrollTop < sh - ch - 2);
+    if (!more) return;
+    const th = pBar.clientHeight, h = Math.max(24, (th * ch) / sh);
+    pThumb.style.height = `${h}px`;
+    pThumb.style.transform = `translateY(${((th - h) * pList.scrollTop) / (sh - ch)}px)`;
+  }
+  pList.addEventListener('scroll', syncPowersBar, { passive: true });
+  addEventListener('resize', () => { if (!$('powers-screen').hidden) syncPowersBar(); });
+  let barDrag = null;
+  pBar.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const r = pBar.getBoundingClientRect(), tr = pThumb.getBoundingClientRect();
+    const onThumb = e.clientY >= tr.top && e.clientY <= tr.bottom;
+    // a tap on the track jumps there; then (or on the thumb) dragging slides the list
+    const grab = onThumb ? e.clientY - tr.top : tr.height / 2;
+    barDrag = { id: e.pointerId, grab, r };
+    pBar.setPointerCapture?.(e.pointerId);
+    pBar.classList.add('drag');
+    if (!onThumb) dragBar(e);
+  });
+  function dragBar(e) {
+    if (!barDrag || e.pointerId !== barDrag.id) return;
+    const { r, grab } = barDrag, h = pThumb.offsetHeight, span = Math.max(1, r.height - h);
+    const f = Math.max(0, Math.min(1, (e.clientY - r.top - grab) / span));
+    pList.scrollTop = f * (pList.scrollHeight - pList.clientHeight);
+    syncPowersBar();
+  }
+  pBar.addEventListener('pointermove', dragBar);
+  const endBar = () => { barDrag = null; pBar.classList.remove('drag'); };
+  pBar.addEventListener('pointerup', endBar);
+  pBar.addEventListener('pointercancel', endBar);
+  $('powers-open').addEventListener('click', () => {
+    renderPowers();
+    $('powers-screen').hidden = false;
+    pList.scrollTop = 0;
+    requestAnimationFrame(syncPowersBar);
+  });
   $('powers-done').addEventListener('click', () => { $('powers-screen').hidden = true; });
   $('powers-list').addEventListener('click', (e) => {
     const b = e.target.closest('[data-power]');
@@ -2691,6 +2825,7 @@
       if (!RULES[pick.rule]) pick.rule = 'bites';
       if (s.powers) pick.powers = cleanPowers(s.powers);
       renderPickers();
+      if (!$('powers-screen').hidden) renderPowers();
     },
   };
   lobby.arenaOpts = arenaOpts;
@@ -2775,10 +2910,9 @@
     if (room) window.EchoNet.leave();
     else { window.EchoNet?.clearStatus?.(); showOverlay('title'); }
   });
-  $('menu-button').addEventListener('click', () => {
-    if (mode === 'duel' && duelCfg.online) { duelCfg.lobby(); return; }
-    toMenu();
-  });
+  // end screen: Main menu (multiplayer: leaves any room for the title), Back to lobby (keeps the room)
+  $('menu-button').addEventListener('click', () => (mode === 'duel' ? toTitle() : toMenu()));
+  $('lobby-button').addEventListener('click', backToMultiplayer);
   // 3D or flat view for battles; each device picks its own
   function setView(v) {
     v = v === '2d' ? '2d' : '3d';
@@ -2799,9 +2933,14 @@
     else { showOverlay(null); startGame(mode, levelIndex); }
   });
   $('pause-menu').addEventListener('click', toMenu);
+  $('pause-lobby').addEventListener('click', backToMultiplayer);
 
   // Used by the online rooms (net.js)
-  window.EchoGame = { startDuel, startCoop, showEnd: (r, o) => (duelCfg.coop ? endCoop(r, o) : endDuel(r, o)), showOverlay };
+  window.EchoGame = {
+    startDuel, startCoop, showEnd: (r, o) => (duelCfg.coop ? endCoop(r, o) : endDuel(r, o)), showOverlay, toLobby,
+    // is this device showing a match (playing it or on its end screen)?
+    get inMatchView() { return mode === 'duel' && state === 'duel'; },
+  };
 
   function updateBests() {
     // Explore: which cave is next, and the stars earned across all three

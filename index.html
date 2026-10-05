@@ -200,7 +200,10 @@
 <section id="powers-screen" class="overlay sheet" hidden>
   <div class="card powers">
     <h2 class="logo">Power-<span>ups</span></h2>
-    <div id="powers-list" class="powers-list"></div>
+    <div class="powers-scroll">
+      <div id="powers-list" class="powers-list"></div>
+      <div id="powers-bar" class="scroll-bar" aria-hidden="true"><i></i></div>
+    </div>
     <div class="set-row freq" style="--c: var(--yellow)" role="group" aria-label="How often">
       <span>How often</span>
       <div class="chips">
@@ -208,6 +211,7 @@
         <button type="button" class="chip" data-freq="low">Low</button>
         <button type="button" class="chip" data-freq="normal">Normal</button>
         <button type="button" class="chip" data-freq="high">High</button>
+        <button type="button" class="chip xtreme" data-freq="max">Extreme</button>
       </div>
     </div>
     <button id="powers-done" type="button" class="btn primary">Done</button>
@@ -222,6 +226,7 @@
     <p id="end-wait" class="small" hidden>Waiting for the host to start a rematch…</p>
     <div class="actions">
       <button id="menu-button" type="button" class="btn ghost">Menu</button>
+      <button id="lobby-button" type="button" class="btn violet lobby-back" hidden><svg aria-hidden="true"><use href="#i-group"/></svg><span>Back to room</span></button>
       <button id="end-button" type="button" class="btn primary">Play again</button>
     </div>
   </div>
@@ -235,6 +240,7 @@
       <button id="pause-resume" type="button" class="btn primary">Resume</button>
       <button id="pause-restart" type="button" class="btn">Restart</button>
       <button id="pause-view" type="button" class="btn">Switch to 2D view</button>
+      <button id="pause-lobby" type="button" class="btn violet lobby-back" hidden><svg aria-hidden="true"><use href="#i-group"/></svg><span>Back to room</span></button>
       <button id="pause-menu" type="button" class="btn ghost">Main menu</button>
     </div>
   </div>

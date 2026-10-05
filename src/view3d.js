@@ -17,6 +17,7 @@
   let walls, floor, ringPool = [], beamPool = [], batRigs = [], crystalMeshes = [], powerMeshes = [];
   let starField = null, moon = null;
   const target = { x: 0, y: 0, ready: false };
+  const tmpM2 = new (T ? T.Matrix4 : Object)(), ZERO = T ? new T.Matrix4().makeScale(0, 0, 0) : null;
   const tmpM = new (T ? T.Matrix4 : Object)(), tmpC = new (T ? T.Color : Object)(), tmpV = new (T ? T.Vector3 : Object)();
   let lastTiles = 0, lastClock = 0, W = 0, H = 0, wallTop = new Float32Array(0);   // wallTop: how tall each tile's wall is drawn (0: none)
 
@@ -191,10 +192,72 @@
       fg.restore();
     }
 
+    // themed battle floors, 2x2 atlases like the slabs: ice, grass and crystal
+    const atlas = (fill, fn) => {
+      const [c, g] = canvasOf(F, fill);
+      for (let k = 0; k < 4; k++) {
+        const ox = (k % 2) * FQ, oy = Math.floor(k / 2) * FQ;
+        g.save(); g.beginPath(); g.rect(ox, oy, FQ, FQ); g.clip(); g.translate(ox, oy);
+        fn(g, k);
+        g.restore();
+      }
+      return c;
+    };
+    // ice: pale glassy slabs, long white streaks, a few fine cracks
+    const iceC = atlas('rgb(196, 222, 255)', (g, k) => {
+      const gr = g.createLinearGradient(0, 0, FQ, FQ);
+      gr.addColorStop(0, 'rgba(255, 255, 255, 0.35)'); gr.addColorStop(0.5, 'rgba(160, 200, 255, 0.1)'); gr.addColorStop(1, 'rgba(120, 170, 240, 0.35)');
+      g.fillStyle = gr; g.fillRect(0, 0, FQ, FQ);
+      for (let j = 0; j < 3; j++) {
+        const y0 = rnd() * FQ * 1.4 - FQ * 0.2;
+        g.strokeStyle = `rgba(255, 255, 255, ${0.12 + rnd() * 0.18})`; g.lineWidth = FQ * (0.03 + rnd() * 0.06);
+        g.beginPath(); g.moveTo(-5, y0); g.lineTo(FQ + 5, y0 - FQ * 0.6); g.stroke();
+      }
+      for (let j = 0; j < 2 + (k % 2); j++) {
+        const pts = []; let x = rnd() * FQ, y = rnd() * FQ, a = rnd() * 6;
+        for (let i = 0; i < 5; i++) { pts.push([x, y]); a += (rnd() - 0.5) * 1.6; x += Math.cos(a) * FQ * 0.12; y += Math.sin(a) * FQ * 0.12; }
+        poly(g, pts, 'rgba(255, 255, 255, 0.55)', 1.2);
+      }
+      g.strokeStyle = 'rgba(90, 130, 200, 0.35)'; g.lineWidth = FQ * 0.03; g.strokeRect(0, 0, FQ, FQ);
+    });
+    // grass: blades of green in light and dark, now and then a tiny flower
+    const grassC = atlas('rgb(86, 150, 70)', (g) => {
+      for (let j = 0; j < 22; j++) {
+        const x = rnd() * FQ, y = rnd() * FQ, r = FQ * (0.08 + rnd() * 0.15);
+        g.fillStyle = rnd() < 0.5 ? 'rgba(40, 90, 30, 0.35)' : 'rgba(150, 210, 110, 0.25)';
+        g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+      }
+      g.lineCap = 'round';
+      for (let j = 0; j < 150; j++) {
+        const x = rnd() * FQ, y = rnd() * FQ, l = FQ * (0.04 + rnd() * 0.06), a = -Math.PI / 2 + (rnd() - 0.5) * 0.9;
+        g.strokeStyle = rnd() < 0.5 ? 'rgba(30, 80, 25, 0.75)' : 'rgba(170, 235, 120, 0.7)'; g.lineWidth = 1 + rnd() * 1.4;
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+      }
+      for (let j = 0; j < 2; j++) {
+        g.fillStyle = rnd() < 0.5 ? 'rgba(255, 240, 150, 0.9)' : 'rgba(255, 170, 220, 0.9)';
+        g.beginPath(); g.arc(rnd() * FQ, rnd() * FQ, 1.8, 0, Math.PI * 2); g.fill();
+      }
+    });
+    // crystal: glassy diamond facets with bright edges
+    const crysC = atlas('rgb(120, 130, 220)', (g, k) => {
+      const m = FQ / 2;
+      const tri = (pts, a) => { g.fillStyle = `rgba(${a > 0 ? '235, 240, 255' : '20, 20, 70'}, ${Math.abs(a)})`; g.beginPath(); pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.closePath(); g.fill(); };
+      tri([[0, 0], [m, 0], [m, m]], 0.18); tri([[0, 0], [0, m], [m, m]], -0.15);
+      tri([[FQ, 0], [m, 0], [m, m]], -0.08); tri([[FQ, 0], [FQ, m], [m, m]], 0.22);
+      tri([[0, FQ], [0, m], [m, m]], 0.1); tri([[0, FQ], [m, FQ], [m, m]], -0.2);
+      tri([[FQ, FQ], [m, FQ], [m, m]], 0.16); tri([[FQ, FQ], [FQ, m], [m, m]], -0.1);
+      g.strokeStyle = 'rgba(200, 235, 255, 0.55)'; g.lineWidth = 1.5;
+      g.beginPath(); g.moveTo(m, 0); g.lineTo(FQ, m); g.lineTo(m, FQ); g.lineTo(0, m); g.closePath(); g.stroke();
+      g.beginPath(); g.moveTo(0, 0); g.lineTo(FQ, FQ); g.moveTo(FQ, 0); g.lineTo(0, FQ); g.strokeStyle = 'rgba(200, 235, 255, 0.18)'; g.stroke();
+      g.strokeStyle = 'rgba(10, 10, 40, 0.8)'; g.lineWidth = FQ * 0.04; g.strokeRect(0, 0, FQ, FQ);
+      if (k === 1 || k === 2) { g.fillStyle = 'rgba(255, 255, 255, 0.9)'; g.beginPath(); g.arc(m + (rnd() - 0.5) * m, m + (rnd() - 0.5) * m, 1.6, 0, Math.PI * 2); g.fill(); }
+    });
+
     const ground = tex(rc, true);
     ground.repeat.set(0.5, 0.5);
     // the floor is seen at a slant, so it gets anisotropic filtering to keep its grout crisp
-    return (TX = { block: tex(bc), blockGlow: tex(gc), rough: tex(rc, true), roughGlow: tex(rgc, true), tile: tex(fc, false, 4), ground });
+    return (TX = { block: tex(bc), blockGlow: tex(gc), rough: tex(rc, true), roughGlow: tex(rgc, true), tile: tex(fc, false, 4), ground,
+      floors: { stone: tex(fc, false, 4), lava: tex(fc, false, 4), ice: tex(iceC, false, 4), moss: tex(grassC, false, 4), crystal: tex(crysC, false, 4), sky: tex(fc, false, 4) } });
   }
 
   // Stone materials. The patched shader picks a texture variant per block (by
@@ -261,6 +324,71 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     g.setAttribute('color', new T.BufferAttribute(col, 3));
     return g;
   }
+  // a battle block in Crystal Grotto: a faceted six-sided crystal with a bevelled top
+  function crystalBlockGeo() {
+    const g = new T.LatheGeometry([[0, 0], [0.7, 0], [0.66, 0.78], [0.42, 1.0], [0, 1.06]].map(([x, y]) => new T.Vector2(x, y)), 6);
+    g.rotateY(Math.PI / 6); g.translate(0.5, 0, 0.5);
+    return shadeByHeight(g, 0.5, 1.3);
+  }
+  // a battle block in Mossy Den: a round leafy bush, a few lumpy balls of leaves
+  function bushGeo() {
+    const parts = [[0.3, 0.32, 0.32, 0.36], [0.7, 0.36, 0.34, 0.36], [0.36, 0.4, 0.7, 0.36], [0.68, 0.34, 0.68, 0.35], [0.5, 0.66, 0.5, 0.4]];
+    const pos = [];
+    parts.forEach(([x, y, z, r], j) => {
+      const ico = new T.IcosahedronGeometry(r, 1), p = ico.attributes.position;
+      for (let i = 0; i < p.count; i++) {
+        const vx = p.getX(i), vy = p.getY(i), vz = p.getZ(i), n = 0.85 + 0.3 * floorHash(Math.round(vx * 50) * 7 + Math.round(vy * 50) * 13 + Math.round(vz * 50) * 3 + j * 101);
+        pos.push(x + vx * n, Math.max(0, y + vy * n * 0.9), z + vz * n);
+      }
+      ico.dispose();
+    });
+    const g = new T.BufferGeometry();
+    g.setAttribute('position', new T.Float32BufferAttribute(pos, 3));
+    g.computeVertexNormals();
+    return shadeByHeight(g, 0.45, 1.25);
+  }
+  // Lava Hollow's floor: glowing lava that churns and flows (u.amt: 0 none .. 1 full)
+  function lavaMaterial() {
+    return new T.ShaderMaterial({
+      uniforms: { time: { value: 0 }, amt: { value: 0 } },
+      transparent: true, depthWrite: false,
+      vertexShader: 'varying vec2 vP; void main() { vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+      fragmentShader: `uniform float time; uniform float amt; varying vec2 vP;
+        float h(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float n(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(h(i), h(i + vec2(1.0, 0.0)), f.x), mix(h(i + vec2(0.0, 1.0)), h(i + vec2(1.0, 1.0)), f.x), f.y); }
+        float fbm(vec2 p) { float v = 0.0, a = 0.5; for (int i = 0; i < 4; i++) { v += a * n(p); p = p * 2.03 + 1.7; a *= 0.5; } return v; }
+        void main() {
+          vec2 p = vP * 0.6; float t = time * 0.22;
+          vec2 q = vec2(fbm(p + vec2(t, 0.0)), fbm(p + vec2(3.1, t * 1.3)));
+          float f = fbm(p * 1.4 + q * 2.2 + vec2(-t * 0.7, t * 0.5));
+          vec3 c = mix(vec3(0.32, 0.03, 0.0), vec3(1.0, 0.3, 0.02), smoothstep(0.32, 0.58, f));
+          c = mix(c, vec3(1.0, 0.86, 0.4), smoothstep(0.6, 0.78, f));
+          float crust = smoothstep(0.03, 0.0, abs(f - 0.47)) * 0.6;
+          c = mix(c, vec3(0.12, 0.02, 0.0), crust);
+          c *= 0.85 + 0.2 * sin(time * 2.0 + f * 9.0);
+          gl_FragColor = vec4(c, amt);
+        }`,
+    });
+  }
+  // the shield: a smooth glass bubble, brightest at its rim, with a slow shimmer
+  // drifting over it and a soft highlight (u.alpha fades it, u.flash brightens it)
+  function shieldMaterial() {
+    return new T.ShaderMaterial({
+      uniforms: { time: { value: 0 }, alpha: { value: 1 }, color: { value: new T.Color(0.55, 0.94, 1.0) } },
+      transparent: true, depthWrite: false, blending: T.AdditiveBlending,
+      vertexShader: 'varying vec3 vN; varying vec3 vV; varying vec3 vP; void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); vP = position; gl_Position = projectionMatrix * mv; }',
+      fragmentShader: `uniform float time; uniform float alpha; uniform vec3 color; varying vec3 vN; varying vec3 vV; varying vec3 vP;
+        void main() {
+          vec3 N = normalize(vN);
+          float fr = pow(1.0 - abs(dot(N, normalize(vV))), 2.4);
+          float sh = smoothstep(0.75, 1.0, sin(vP.y * 9.0 + vP.x * 4.0 - time * 2.4)) * 0.35;
+          float hl = pow(max(0.0, dot(N, normalize(vec3(-0.45, 0.65, 0.6)))), 30.0);
+          vec3 c = color * (0.08 + fr * 1.1 + sh * (0.3 + fr)) + vec3(1.0) * (pow(fr, 5.0) * 0.5 + hl * 0.9);
+          gl_FragColor = vec4(c * alpha, 1.0);
+        }`,
+    });
+  }
   const glowMatOf = () => new T.MeshBasicMaterial({ map: softDot(), transparent: true, depthWrite: false, blending: T.AdditiveBlending, fog: false });
   function instanced(geo, mat, n) {
     const m = new T.InstancedMesh(geo, mat, n);
@@ -320,9 +448,13 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
   }
 
   // ---- Arena: one block per tile, shown only where sound or senses reach ----
-  let wallMat = null, floorMat = null;
+  let wallMat = null, floorMat = null, gemMat = null, bushMat = null, gems = null, bushes = null, lavaPlane = null, floorStyle = '';
   function buildTiles(arena) {
-    if (walls) { scene.remove(walls, floor); walls.geometry.dispose(); floor.geometry.dispose(); walls.dispose(); floor.dispose(); }
+    if (walls) {
+      scene.remove(walls, floor, gems, bushes, lavaPlane);
+      for (const m of [walls, floor, gems, bushes]) { m.geometry.dispose(); m.dispose(); }
+      lavaPlane.geometry.dispose();
+    }
     const n = arena.w * arena.h, tx = textures();
     const wg = new T.BoxGeometry(1, WALL_H, 1);
     wg.translate(0.5, WALL_H / 2, 0.5);
@@ -332,7 +464,19 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     fg.rotateX(-Math.PI / 2); fg.translate(0.5, 0, 0.5);
     floorMat = floorMat || patch(new T.MeshBasicMaterial({ map: tx.tile }), 'atlas', 0, 'stone-floor');
     floor = new T.InstancedMesh(fg, floorMat, n);
-    for (const m of [walls, floor]) {
+    // the themed blocks: crystals (Crystal Grotto) and bushes (Mossy Den); one block mesh shows at a time
+    if (!gemMat) {
+      gemMat = crystalMat();
+      bushMat = new T.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+      bushMat.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n totalEmissiveRadiance += vColor * 0.22;\n#endif'); };
+      bushMat.customProgramCacheKey = () => 'bush';
+    }
+    gems = new T.InstancedMesh(crystalBlockGeo(), gemMat, n);
+    bushes = new T.InstancedMesh(bushGeo(), bushMat, n);
+    lavaPlane = new T.Mesh(new T.PlaneGeometry(arena.w, arena.h).rotateX(-Math.PI / 2).translate(arena.w / 2, 0.012, arena.h / 2), lavaMaterial());
+    lavaPlane.visible = false; lavaPlane.renderOrder = 1;
+    scene.add(lavaPlane);
+    for (const m of [walls, floor, gems, bushes]) {
       m.instanceMatrix.setUsage(T.DynamicDrawUsage);
       m.instanceColor = new T.InstancedBufferAttribute(new Float32Array(n * 3), 3);
       m.instanceColor.setUsage(T.DynamicDrawUsage);
@@ -537,25 +681,28 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
     // a dark shadow on the floor while it jumps
     const shadow = new T.Mesh(new T.CircleGeometry(0.34, 24).rotateX(-Math.PI / 2), new T.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, depthWrite: false }));
     shadow.visible = false; into.add(shadow);
-    const shield = new T.Mesh(new T.SphereGeometry(0.62, 20, 14), new T.MeshBasicMaterial({ color: 0x96f0ff, transparent: true, opacity: 0.22, wireframe: true }));
+    const shield = new T.Mesh(new T.SphereGeometry(0.62, 32, 20), shieldMaterial());
+    shield.renderOrder = 3;
     g.add(shield);
     const stars = [0, 1, 2].map(() => {
       const s = new T.Mesh(new T.OctahedronGeometry(0.06), new T.MeshBasicMaterial({ color: 0xffe278, transparent: true }));
       g.add(s); return s;
     });
     into.add(g);
-    return { g, yaw: 0, wings: body.wings, eyes: body.eyes, glow, shadow, shield, stars, mats: [...body.mats, glow.material, ...stars.map((s) => s.material)], color: b.color, key: lookKey(b), into, tick: body.tick };
+    return { g, yaw: 0, wings: body.wings, eyes: body.eyes, glow, shadow, shield, shieldMat: shield.material, stars, mats: [...body.mats, glow.material, ...stars.map((s) => s.material)], color: b.color, key: lookKey(b), into, tick: body.tick };
   }
   function dropRig(r) {
     if (!r) return;
     r.into.remove(r.g, r.glow);
     if (r.shadow) { r.into.remove(r.shadow); r.shadow.geometry.dispose(); r.shadow.material.dispose(); }
     for (const m of r.mats) m.dispose();
+    r.shieldMat?.dispose();
   }
   // set every material's opacity (looks can be see-through, e.g. ghost bats)
   // (and move its trail, if it has one)
   function rigAlpha(r, a, clock = 0) {
     for (const m of r.mats) m.opacity = a * (m.userData.base ?? 1);
+    if (r.shieldMat) { r.shieldMat.uniforms.time.value = clock; r.shieldMat.uniforms.alpha.value = a * (0.85 + 0.15 * Math.sin(clock * 3)); }
     if (r.tick) r.tick(clock, a);
   }
   // the original single-colour bat, used if looks.js is missing
@@ -612,8 +759,16 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
 
     const open = !!arena.def.open, th = v.theme || null;
     const bg = th ? th.bg : open ? hexRgb(arena.theme.bg) : CAVE_BG, stone = th ? th.stone : STONE, base = th ? th.floor : [0.36, 0.37, 0.72];
-    const lava = th ? th.lava : 0, ice = th ? th.ice : 0;
+    const ice = th ? th.ice : 0, style = th?.style || 'stone';
+    // the lava floor: v.lava (0..1, as it eases in), or a pulsing warning glow during the 3-2-1
+    const lavaAmt = Math.max(v.lava || 0, v.lavaWarn > 0 ? 0.18 + 0.14 * Math.sin(clock * 9) : 0);
     tintDecor(th);
+    if (floorStyle !== style) { floorStyle = style; floorMat.map = textures().floors[style] || textures().tile; floorMat.needsUpdate = true; }
+    const blockMesh = style === 'crystal' ? gems : style === 'moss' ? bushes : walls;
+    for (const m of [walls, gems, bushes]) m.visible = m === blockMesh || m === walls;
+    lavaPlane.visible = !open && lavaAmt > 0.01;
+    if (lavaPlane.visible) { lavaPlane.material.uniforms.time.value = clock; lavaPlane.material.uniforms.amt.value = Math.min(1, lavaAmt); }
+    const lavaLit = style === 'lava' ? Math.max(0.3, (v.lava || 0) * 0.5) : 0;
     if (!scene.fog) { scene.background = new T.Color(); scene.fog = new T.Fog(0, 15, 36); }
     scene.background.setRGB(bg[0], bg[1], bg[2]);
     scene.fog.color.setRGB(bg[0], bg[1], bg[2]);
@@ -630,7 +785,8 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       for (let tx = 0; tx < w; tx++) {
         const k = ty * w + tx, solid = arena.grid[k] === 1;
         const border = tx === 0 || ty === 0 || tx === w - 1 || ty === h - 1;
-        let a = lit[k], pool = 0;
+        // (over lava the blocks always show, lit from below)
+        let a = Math.max(lit[k], solid && !border ? lavaLit : 0), pool = 0;
         for (let j = 0; j < near.length; j++) {
           const d = Math.hypot(tx + 0.5 - near[j].x, ty + 0.5 - near[j].y);
           a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * (solid ? 0.65 : 0.35));
@@ -647,33 +803,55 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
           if (border) k2 = Math.max(a, open ? 0.3 : 0.62);
           // (lights in three are physically scaled, so stone needs a boost to read as bright blue-violet)
           k2 = Math.min(1, k2 * 1.05) * 1.75;
-          const top = border ? 1 : 0.6 + 0.4 * Math.min(1, a * 1.6);
+          // (themed blocks stand full height: bats stand on them)
+          const top = border || blockMesh !== walls || style === 'lava' ? 1 : 0.6 + 0.4 * Math.min(1, a * 1.6);
           wallTop[k] = top * WALL_H;
-          tmpM.makeScale(1, top, 1).setPosition(tx, 0, ty);
-          walls.setMatrixAt(k, tmpM);
-          walls.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2));
+          const mesh = border ? walls : blockMesh;
+          if (mesh === gems) {
+            // crystals glow in the theme's two accent colours, by tile, a little taller now and then
+            const acc = (tx + ty) % 2 ? th.accB : th.accA, hh = 0.92 + 0.16 * floorHash(k * 3);
+            tmpM.makeScale(1, hh, 1).setPosition(tx, 0, ty);
+            r = acc[0] * 0.8 + (r - stone[0]) * 0.5; g = acc[1] * 0.8 + (g - stone[1]) * 0.5; b = acc[2] * 0.8 + (b - stone[2]) * 0.5;
+            k2 *= 0.62;
+          } else if (mesh === bushes) {
+            // a bush that just grew back swells up into place
+            const sc = 1 - 0.55 * tileGlow[k], hsh = floorHash(k * 5);
+            tmpM.makeTranslation(-0.5, 0, -0.5)
+              .premultiply(tmpM2.makeScale(sc, sc * (0.95 + 0.15 * hsh), sc))
+              .premultiply(tmpM2.makeRotationY(Math.floor(hsh * 4) * Math.PI / 2))
+              .premultiply(tmpM2.makeTranslation(tx + 0.5, 0, ty + 0.5));
+            const lf = 0.82 + 0.3 * hsh;
+            r = 0.36 * lf + (r - stone[0]) * 0.4; g = 0.86 * lf + (g - stone[1]) * 0.4; b = 0.3 * lf + (b - stone[2]) * 0.4;
+            k2 *= 0.7;
+          } else tmpM.makeScale(1, top, 1).setPosition(tx, 0, ty);
+          if (style === 'lava' && !border) { r *= 0.42; g *= 0.4; b *= 0.42; }
+          for (const m of [walls, gems, bushes]) if (m !== mesh && m.visible) m.setMatrixAt(k, ZERO);
+          mesh.setMatrixAt(k, tmpM);
+          mesh.setColorAt(k, tmpC.setRGB(bg[0] + (r - bg[0]) * k2, bg[1] + (g - bg[1]) * k2, bg[2] + (b - bg[2]) * k2));
         } else {
-          tmpM.makeScale(0, 0, 0); walls.setMatrixAt(k, tmpM);
+          for (const m of [walls, gems, bushes]) if (m.visible) m.setMatrixAt(k, ZERO);
           wallTop[k] = 0;
         }
         // floor: a dim base everywhere, brighter around your bat and where echoes pass
+        // (ice and grass show a little even in the dark, so the cave reads as icy or grassy)
         if (!open) {
           const lf = Math.max(lit[k] * 0.75, pool * pool * 0.5);
-          const f = 0.1 + lf * 0.95 + ice * 0.1;
+          const f = 0.1 + lf * 0.95 + ice * 0.12 + (style === 'moss' ? 0.05 : 0);
           let r = base[0], g = base[1], b = base[2];
           if (by) { const e = Math.min(1, lit[k]) * 0.5; r += (by[0] - r) * e; g += (by[1] - g) * e; b += (by[2] - b) * e; }
           r = bg[0] + (r - bg[0]) * f; g = bg[1] + (g - bg[1]) * f; b = bg[2] + (b - bg[2]) * f;
           // lava caves: some floor slabs are glowing lava, pulsing; ice caves: frost glints.
           // (laid everywhere, under rock too, so they don't give the walls away)
           const hsh = floorHash(k);
-          if (lava > 0.02 && hsh < 0.1) { const p = lava * (0.34 + 0.16 * Math.sin(clock * 1.7 + k)); r += 0.95 * p; g += 0.3 * p; b += 0.04 * p; }
           if (ice > 0.02 && hsh > 0.86) { const p = ice * 0.2 * (0.45 + 0.55 * Math.sin(clock * 2.2 + k * 1.7)); r += p * 0.8; g += p * 0.95; b += p; }
+          // crystal floors sparkle here and there
+          if (style === 'crystal' && hsh > 0.9) { const p = 0.22 * Math.max(0, Math.sin(clock * 2.6 + k * 2.3)) ** 4; r += p * 0.6; g += p * 0.95; b += p; }
           floor.setColorAt(k, tmpC.setRGB(r, g, b));
         } else floor.setColorAt(k, tmpC.setRGB(0, 0, 0));
       }
     }
-    floor.visible = !open;
-    walls.instanceMatrix.needsUpdate = true; walls.instanceColor.needsUpdate = true;
+    floor.visible = !open && lavaAmt < 0.99;
+    for (const m of [walls, gems, bushes]) if (m.visible) { m.instanceMatrix.needsUpdate = true; m.instanceColor.needsUpdate = true; }
     floor.instanceColor.needsUpdate = true;
     if (open && moon) { moon.position.set(arena.w * 0.8, -6, arena.h * 0.15); starField.material.opacity = 0.55 + 0.25 * Math.sin(clock * 0.8); }
 
@@ -708,7 +886,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       const a = c ? v.seenAt(c.x, c.y) : 0;
       m.visible = a > 0.03;
       if (!m.visible) return;
-      m.position.set(c.x, 0.45 + Math.sin(clock * 2 + c.phase) * 0.08, c.y);
+      m.position.set(c.x, 0.45 + (c.top ? WALL_H : 0) + Math.sin(clock * 2 + c.phase) * 0.08, c.y);
       m.rotation.y = clock * 1.5 + c.phase;
       m.material.opacity = a;
     });
@@ -717,7 +895,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       const a = p ? v.seenAt(p.x, p.y) : 0;
       g.visible = a > 0.03;
       if (!g.visible) return;
-      g.position.set(p.x, 0.55 + Math.sin(clock * 2.5 + p.phase) * 0.1, p.y);
+      g.position.set(p.x, 0.55 + (p.top ? WALL_H : 0) + Math.sin(clock * 2.5 + p.phase) * 0.1, p.y);
       const rgb = rgbOf(v.POWERS[p.type].rgb);
       g.userData.core.material.color.setRGB(...rgb); g.userData.shell.material.color.setRGB(...rgb);
       g.userData.core.material.opacity = a; g.userData.shell.material.opacity = a * 0.8;
@@ -743,10 +921,10 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       } else if (!b || b.dead) alpha = 0;
       const blink = b && b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0;
       rig.g.visible = rig.glow.visible = alpha > 0.03 && !blink;
-      const hop = b && v.jumpH ? v.jumpH(b) : 0;
-      rig.shadow.visible = rig.g.visible && hop > 0 && !open;
+      const hop = b && v.jumpH ? v.jumpH(b) : 0, up = b && v.level ? v.level(b) : 0;
+      rig.shadow.visible = rig.g.visible && (hop > 0 || up > 0.02) && !open;
       if (!rig.g.visible) return;
-      rig.glow.position.set(x, 0.03, y);
+      rig.glow.position.set(x, 0.03 + up * WALL_H, y);
       if (rig.shadow.visible) {
         // on the floor, or on top of the wall it's hopping over
         const tk = Math.floor(y) * arena.w + Math.floor(x);
@@ -756,7 +934,7 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       }
       const stunned = b.stun > 0;
       const flap = stunned ? 0.15 : Math.sin(clock * (b.dashT > 0 ? 40 : hop > 0 ? 28 : 16) + b.i);
-      rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05 + hop * (v.jumpLift || 1.1), y);
+      rig.g.position.set(x, BAT_Y + Math.sin(clock * 3 + b.i) * 0.05 + hop * (v.jumpLift || 1.1) + up * WALL_H, y);
       rig.g.scale.setScalar(scale * 1.15 * (1 + 0.2 * hop));
       // turn to face the way it's flying: toward the camera you see its face,
       // flying away you see its back
@@ -772,7 +950,8 @@ ${tint ? 'totalEmissiveRadiance = mix(totalEmissiveRadiance, vec3(max(totalEmiss
       rig.wings[0].rotation.z = -flap * 0.7; rig.wings[1].rotation.z = flap * 0.7;
       rig.eyes.scale.set(1, stunned ? 0.25 : 1, 1);
       rig.shield.visible = b.shield;
-      rig.shield.rotation.y = clock;
+      rig.shield.rotation.y = clock * 0.4;
+      rig.shield.scale.setScalar(1 + 0.025 * Math.sin(clock * 4 + b.i));
       rig.stars.forEach((s, j) => {
         s.visible = stunned;
         const a = clock * 5 + j * 2.1;

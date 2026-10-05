@@ -163,6 +163,10 @@
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
   let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '', fogT = 0;
   const remoteInput = new Map();
+  // Spectating: while this device's only bat is knocked out, the camera watches a living teammate
+  // (tap, Space or the arrow keys pick the next one). The ghost waits where it fell, so teammates
+  // can fly to it with a heart (Explore) or the next lantern brings it back.
+  let watch = -1, watchFlash = 0;
 
   // ---- Level -------------------------------------------------------------
   function loadLevel(def) {
@@ -373,6 +377,31 @@
   }
   function stop() { active = false; }
 
+  const myBat = () => (viewer >= 0 ? bats[viewer] : localCount === 1 ? localBat(0) : null);
+  const watchable = () => { const me = myBat(); return bats.filter((b) => b !== me && !b.ko); };
+  function spectating() {
+    const me = myBat();
+    return !!me && me.ko && phase === 'play' && !over && watchable().length > 0;
+  }
+  // the teammate being watched: the last one picked while they're still flying, else the nearest
+  function watchTarget() {
+    if (!spectating()) { watch = -1; return null; }
+    const me = myBat(), list = watchable();
+    let t = list.find((b) => b.i === watch);
+    if (!t) {
+      t = list.reduce((a, b) => (Math.hypot(b.x - me.x, b.y - me.y) < Math.hypot(a.x - me.x, a.y - me.y) ? b : a));
+      watch = t.i;
+    }
+    return t;
+  }
+  function cycleWatch(d = 1) {
+    if (!watchTarget()) return;
+    const list = watchable(), k = list.findIndex((b) => b.i === watch);
+    watch = list[(k + d + list.length) % list.length].i;
+    watchFlash = 0.35;
+    window.EchoAudio?.sfx?.tick?.();
+  }
+
   function setPhase(p, t = 0) {
     phase = p; phaseT = t;
     if (p === 'count') countdown = t;
@@ -478,6 +507,11 @@
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
     keys.add(e.code);
     if (e.repeat) return;
+    if (spectating()) {
+      if (['ArrowLeft', 'KeyA'].includes(e.code)) cycleWatch(-1);
+      else if (['ArrowRight', 'ArrowUp', 'ArrowDown', 'KeyD', 'KeyW', 'KeyS', 'Space', 'Enter', 'KeyF'].includes(e.code)) cycleWatch(1);
+      return;
+    }
     for (let slot = 0; slot < localCount; slot++) {
       if (keysFor(slot, 'squeak').includes(e.code)) act(slot, 'squeak');
       if (keysFor(slot, 'dash').includes(e.code)) act(slot, 'dash');
@@ -515,6 +549,7 @@
     e.preventDefault();
     window.EchoAudio?.unlock?.();
     if (e.pointerType === 'touch') touchUsed = true;
+    if (spectating()) { cycleWatch(1); return; }
     if (powerShown() && inButton(powerButton(), e.clientX, e.clientY)) { act(0, 'special'); return; }
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
     if (touchUsed && inSlashButton(e.clientX, e.clientY)) { act(0, 'slash'); return; }
@@ -544,6 +579,7 @@
 
   function localInput(slot) {
     let ix = 0, iy = 0;
+    if (slot === 0 && spectating()) return { ix, iy };   // the ghost waits while you watch a teammate
     const down = (w) => keysFor(slot, w).some((k) => keys.has(k));
     if (down('left')) ix -= 1;
     if (down('right')) ix += 1;
@@ -2283,11 +2319,13 @@
     // a close camera around this device's own bat(s), kept inside the team's shared stretch of cave
     PX = Math.max(H / Math.min(VIEW_H, L.h), W / VIEW_W);
     const mine = bats.filter((b) => (b.ctrl === 'local' || viewer === b.i) && !b.ko);
-    const focus = mine.length ? mine : bats.filter((b) => !b.ko).length ? bats.filter((b) => !b.ko) : bats;
+    const watched = watchTarget();
+    const focus = watched ? [watched] : mine.length ? mine : bats.filter((b) => !b.ko).length ? bats.filter((b) => !b.ko) : bats;
     const fx0 = focus.length ? focus.reduce((t, b) => t + b.x, 0) / focus.length : scroll.x + VIEW_W / 2;
     const fy0 = focus.length ? focus.reduce((t, b) => t + b.y, 0) / focus.length : L.h / 2;
     if (!camF || (explore ? Math.hypot(camF.x - fx0, camF.y - fy0) > 12 : camF.x < scroll.x - 1 || camF.x > scroll.x + VIEW_W + 1)) camF = { x: fx0, y: fy0 };
-    const ease = Math.min(1, frameDt * 6);
+    const ease = Math.min(1, frameDt * (watchFlash > 0 ? 10 : 6));
+    watchFlash = Math.max(0, watchFlash - frameDt);
     camF.x += (fx0 - camF.x) * ease; camF.y += (fy0 - camF.y) * ease;
     const halfW = W / PX / 2, halfH = H / PX / 2;
     const cam = explore
@@ -3592,6 +3630,8 @@
       }
     }
     const me = viewer >= 0 ? bats[viewer] : localCount === 1 ? localBat(0) : null;
+    const watched = watchTarget();
+    if (watched) { drawWatching(watched, size); return; }
     if (me && me.ko && phase === 'play' && !(banner && banner.t > 0)) {
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
@@ -3599,6 +3639,45 @@
         : teamHearts > 0 ? 'You\'re a ghost. Fly to a teammate: they have a heart to revive you!' : 'You\'re a ghost. A teammate with a heart (or the next lantern) revives you.';
       ctx.fillText(bats.some((b) => !b.ko) ? ghostTip : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
     }
+  }
+
+  // spectating: "Watching: Ka" in Ka's colour in a glowing pill near the bottom, with how to switch
+  // (and, for a moment after switching, a ring around the bat being watched)
+  function drawWatching(t, size) {
+    const pulse = 0.75 + 0.25 * Math.sin(clock * 3);
+    {   // a slowly turning dashed ring around the bat being watched (bigger for a moment after switching)
+      const x = X(t.x), y = Y(t.y), rr = PX * (0.9 + watchFlash * 1.4);
+      ctx.save();
+      ctx.strokeStyle = `rgba(${t.rgb}, ${Math.min(1, 0.35 + watchFlash * 1.5)})`; ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]); ctx.lineDashOffset = -clock * 12;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    }
+    const many = watchable().length > 1;
+    const tip = !many ? 'Your ghost waits where it fell' : touchUsed ? 'Tap to switch' : 'Space or arrows to switch';
+    const sub = !explore ? 'The next lantern brings you back' : teamHearts > 0 ? 'A teammate with a heart can fly to your ghost' : 'Find a heart or reach the next lantern';
+    ctx.font = `700 ${size * 0.95}px ${FONT}`;
+    const lab = 'Watching: ', wl = ctx.measureText(lab).width, wn = ctx.measureText(t.name).width;
+    ctx.font = `600 ${size * 0.68}px ${FONT}`;
+    const line2 = `${tip} · ${sub}`, w2 = ctx.measureText(line2).width;
+    const bw = Math.min(W - 24, Math.max(wl + wn, w2) + size * 2.2), bh = size * 2.55;
+    const bx = W / 2 - bw / 2, by = H - size * (variant === 'hunt' ? 6.2 : 4.5) - bh / 2;
+    ctx.save();
+    ctx.shadowColor = t.color; ctx.shadowBlur = 14 * pulse;
+    ctx.fillStyle = 'rgba(8, 9, 24, 0.78)';
+    roundRect(bx, by, bw, bh, bh / 2.4); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = `rgba(${t.rgb}, ${0.55 + 0.3 * pulse})`; ctx.lineWidth = 2; ctx.stroke();
+    ctx.restore();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+    ctx.font = `700 ${size * 0.95}px ${FONT}`;
+    const tx = W / 2 - (wl + wn) / 2, ty = by + bh * 0.36;
+    ctx.fillStyle = 'rgba(232, 236, 255, 0.92)'; ctx.fillText(lab, tx, ty);
+    ctx.fillStyle = t.color; ctx.fillText(t.name, tx + wl, ty);
+    ctx.textAlign = 'center';
+    ctx.font = `600 ${size * 0.68}px ${FONT}`;
+    ctx.fillStyle = 'rgba(232, 236, 255, 0.72)';
+    ctx.fillText(line2, W / 2, by + bh * 0.74, bw - size);
   }
 
   function drawDashButton() {
@@ -3811,6 +3890,9 @@
     get mapReady() { return active && explore && !!L?.fog && !over && (phase === 'play' || phase === 'count' || phase === 'wipe'); },
     get localPlayers() { return mode === 'local' ? localCount : 1; },
     mapInfo,
+    // spectating while your bat is down: the teammate being watched (-1 when not spectating)
+    get watching() { return watchTarget()?.i ?? -1; },
+    cycleWatch,
     // for automated tests
     get bats() { return bats; },
     get cave() { return L; },

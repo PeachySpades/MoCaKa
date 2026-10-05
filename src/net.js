@@ -273,6 +273,9 @@
   let guests = [];          // host: [{ id, look }] in join order; slot = index + 1
   let roster = [];          // guest: [{ slot, me, look }] from the host's lobby message
   let mySlot = -1;
+  // guest: stepped out of the running match (or its end screen) to wait in the room's lobby;
+  // the host's snapshots and results are ignored until the next start
+  let away = false, awayLive = false;
   let coopOn = false;       // the running match is a co-op run rather than a battle
   const eng = () => (coopOn ? window.EchoCoop : window.EchoDuel);
   const stopAll = () => { window.EchoDuel.stop(); window.EchoCoop?.stop(); };
@@ -429,6 +432,8 @@
       if (!playing) { renderRoom(); sendLobby(); }
       return;
     }
+    // a guest went back to the lobby mid-match: a CPU flies their bat until the match ends
+    if (msg.t === 'out') { if (playing && eng().active && !eng().over) eng().dropRemote(guests[k].slot); return; }
     if (playing && (msg.t === 'in' || msg.t === 'act')) eng().remote(guests[k].slot, msg);
   }
 
@@ -486,16 +491,37 @@
     });
   }
 
-  // From the end screen: go back to the room so friends can come and go
+  // "Back to lobby" (end screen) or "Back to multiplayer" (pause menu): the room stays open.
+  // The host ends the match and brings everyone back to the lobby, seats and all. A guest steps
+  // out on their own: mid-match a CPU takes over their bat (they tell the host), and they wait in
+  // the lobby until the host comes back to it (or starts a rematch, which they join).
   function backToLobby() {
-    stopAll();
     if (role === 'host') {
+      stopAll();
       playing = false;
       guests.forEach((g) => link.send(g.id, { t: 'lobbyback' }));
       sendLobby();
       voiceRoster();
+      toLobbyView();
+      status('');
+      return;
     }
-    window.EchoGame.showOverlay('battle');
+    if (role === 'guest') {
+      const live = playing && eng().active && !eng().over;
+      if (live) link?.send({ t: 'out' });
+      away = playing;
+      awayLive = live;
+      stopAll();
+      toLobbyView();
+      status('');
+      return;
+    }
+    stopAll();
+    toLobbyView();
+  }
+  function toLobbyView() {
+    if (window.EchoGame.toLobby) window.EchoGame.toLobby();
+    else window.EchoGame.showOverlay('battle');
     renderRoom();
   }
 
@@ -545,6 +571,7 @@
       }
       case 'start':
         playing = true;
+        away = false;
         mySlot = msg.slot;
         coopOn = msg.mode === 'coop';
         if (coopOn) {
@@ -564,14 +591,19 @@
         });
         break;
       case 's':
-        if (playing) eng().applySnapshot(msg);
+        if (playing && !away) eng().applySnapshot(msg);
         break;
       case 'end':
-        window.EchoGame.showEnd(msg.result, { guest: true });
+        if (!away) window.EchoGame.showEnd(msg.result, { guest: true });
         break;
       case 'lobbyback':
+        // the host is back in the lobby: everyone still on the match (or its results) follows
         playing = false;
-        backToLobby();
+        away = false;
+        stopAll();
+        if (window.EchoGame.inMatchView !== false) toLobbyView();
+        else renderRoom();
+        status('');
         break;
       case 'vr':
         if (typeof msg.you === 'string') myVid = msg.you;
@@ -597,10 +629,10 @@
     link = null;
     role = null;
     playing = false;
+    away = false;
     roster = [];
     stopAll();
-    window.EchoGame.showOverlay('battle');
-    renderRoom();
+    toLobbyView();
     status(wasPlaying ? 'The host left the match.' : 'The host closed the room.', true);
   }
 
@@ -615,6 +647,7 @@
     link = null;
     role = null;
     playing = false;
+    away = false;
     guests = [];
     roster = [];
     renderRoom();
@@ -654,6 +687,13 @@
     get role() { return role; },
     get code() { return code; },
     get guests() { return guests.length; },
+    get playing() { return playing; },
+    get away() { return away; },
+    // the guest lobby's waiting line while away from a match the host is still on
+    get waitNote() {
+      if (role !== 'guest' || !away) return '';
+      return awayLive ? 'A CPU flies your bat till the match ends' : 'The host is still on the results…';
+    },
     createRoom, joinRoom, startMatch, leave, invite,
     clearStatus: () => status(''),
   };

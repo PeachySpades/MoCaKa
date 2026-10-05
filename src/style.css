@@ -1080,3 +1080,80 @@ button.opt.more { flex: 1 1 auto; }
 .vc-ppl ul.many .vc-pm { width: 24px; height: 24px; }
 @media (max-height: 460px) { .vc-ppl ul.many .vc-pm { width: 22px; height: 22px; } .vc-ppl ul.many .vc-p .vc-pvol { height: 18px; } }
 @media (max-height: 460px) { .vc-ppl ul.many { gap: 2px; } .vc-ppl ul.many .vc-p { padding: 1px 7px; } .vc-ppl h4 + ul.many { margin-top: -2px; } }
+
+/* ---- Round 19: back to the lobby, the power-up list's scroll bar, Extreme ---- */
+/* "Back to lobby" (end screen) and "Back to multiplayer" (pause): keeps the room */
+.btn.lobby-back { display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; }
+.btn.lobby-back svg { width: 26px; height: 20px; flex: none; color: #cbb8ff; filter: drop-shadow(0 0 6px rgba(170, 130, 255, 0.8)); }
+#end-screen .actions { gap: 10px 14px; }
+@media (max-height: 460px) {
+  #end-screen .actions .btn { padding: 9px 18px; font-size: 1rem; }
+  #end-screen .actions .btn.primary { min-width: 9.5rem; }
+  #end-screen .actions .btn.ghost { padding: 9px 10px; }
+  .btn.lobby-back svg { width: 22px; height: 17px; }
+  /* the pause menu in two columns, Resume across the top, so it fits a phone held sideways */
+  #pause-screen .card.narrow { width: min(30rem, 100%); }
+  #pause-screen .stack { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  #pause-screen .stack .btn { min-width: 0; width: 100%; padding: 10px 12px; font-size: 1rem; }
+  #pause-screen .stack #pause-resume { grid-column: 1 / -1; justify-self: center; width: auto; min-width: 13rem; }
+  #pause-note { margin: 0; font-size: 0.74rem; line-height: 1.25; }
+}
+
+/* the power-up picker: the list scrolls (with its own slim neon bar) while the title, the
+   frequency row and Done stay put */
+.card.powers { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; overflow: hidden; max-height: 100%; }
+.powers-scroll { position: relative; width: 100%; min-height: 0; display: grid; }
+.powers-list {
+  min-height: 0; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; padding: 2px 16px 2px 2px; box-sizing: border-box; align-content: start;
+  /* soft fade at whichever edge has more below/above it */
+  --fade-top: 0px; --fade-bot: 0px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bot)), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bot)), transparent 100%);
+}
+.powers-list::-webkit-scrollbar { display: none; }
+.powers-list.more-up { --fade-top: 16px; }
+.powers-list.more-down { --fade-bot: 18px; }
+.scroll-bar {
+  position: absolute; top: 2px; bottom: 2px; right: 1px; width: 10px; border-radius: 999px;
+  background: rgba(4, 6, 20, 0.6); border: 1px solid rgba(255, 210, 63, 0.22);
+  touch-action: none; cursor: pointer;
+}
+.scroll-bar[hidden] { display: none; }
+.scroll-bar i {
+  position: absolute; left: 1px; right: 1px; top: 0; min-height: 24px; border-radius: 999px;
+  background: linear-gradient(180deg, #ffe680, #ffb13f);
+  box-shadow: 0 0 8px rgba(255, 200, 70, 0.85), 0 0 2px #fff inset;
+}
+.scroll-bar.drag i { background: linear-gradient(180deg, #fff3b0, #ffc95e); }
+/* a wider invisible grab area for fingers */
+.scroll-bar::before { content: ""; position: absolute; inset: -4px -6px -4px -10px; }
+.set-row.freq .chip.xtreme.on { background: linear-gradient(95deg, #ff6a3d, #ff3fb4); color: #fff; border-color: rgba(255, 190, 220, 0.8); box-shadow: 0 0 14px rgba(255, 80, 160, 0.6); }
+@media (max-height: 460px) and (max-width: 760px) {
+  .card.powers .set-row.freq .chip { padding: 4px 8px; }
+}
+@media (max-height: 360px) {
+  .card.powers { gap: 6px; padding: 8px 10px; }
+  .card.powers h2.logo { font-size: 1.35rem; }
+  .card.powers #powers-done { padding: 7px 26px; min-width: 9rem; }
+}
+/* a guest waiting for the host: a glowing pill where the host's start button sits */
+.lobby .start-wrap.waiting { align-content: center; }
+.lobby .start-wrap.waiting #start-hint {
+  display: block; position: relative; margin: 0; padding: 7px 12px 7px 26px; border-radius: 16px;
+  font: 600 0.82rem/1.25 var(--display); color: #d7d2ff; text-align: left;
+  background: rgba(10, 12, 40, 0.72); border: 1.5px solid rgba(160, 140, 255, 0.55);
+  box-shadow: 0 0 14px rgba(140, 100, 255, 0.3);
+}
+.lobby .start-wrap.waiting #start-hint[hidden] { display: none; }
+.lobby .start-wrap.waiting #start-hint::before {
+  content: ""; position: absolute; left: 10px; top: 50%; width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+  background: #7dff4a; box-shadow: 0 0 8px #7dff4a; animation: wait-dot 1.4s ease-in-out infinite;
+}
+@keyframes wait-dot { 50% { opacity: 0.25; transform: scale(0.7); } }
+@media (max-height: 460px) { .lobby .start-wrap.waiting #start-hint { font-size: 0.7rem; padding: 5px 9px 5px 22px; } .lobby .start-wrap.waiting #start-hint::before { left: 8px; } }
+@media (prefers-reduced-motion: reduce) { .lobby .start-wrap.waiting #start-hint::before { animation: none; } }
+@media (max-height: 360px) {
+  .lobby .start-wrap.waiting #start-hint { font-size: 0.66rem; line-height: 1.2; padding: 4px 8px 4px 20px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .lobby .start-wrap.waiting #start-hint::before { left: 7px; width: 7px; height: 7px; }
+}

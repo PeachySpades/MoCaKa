@@ -35,12 +35,27 @@
   const PARRY_RGB = '255, 246, 200';
   const OPEN_SKY_CHANCE = 0.3;
   // Arena modes, picked before a match:
-  //   morph  the cave slowly reshapes itself, a few walls at a time, into the next one
-  //   still  one cave, picked in the lobby, that never changes
-  //   sky    Open Sky the whole match: no cave at all
+  //   morph   classic Morphing: one stone cave slowly reshapes itself, a few walls
+  //           at a time, into the next (same look throughout, no lava or ice)
+  //   xtreme  Morphing Xtreme: the themed maps take turns (crystal, lava, ice, moss),
+  //           each with its own rules, XTREME_HOLD seconds each
+  //   still   one themed cave, picked in the lobby, that never changes
+  //   sky     Open Sky the whole match: no cave at all
   // (older lobbies may still send 'shift' or 'chaos'; those play as morph)
-  const ARENA_MODES = ['morph', 'still', 'sky'];
+  const ARENA_MODES = ['morph', 'xtreme', 'still', 'sky'];
   const MORPH_STEP = 0.3, MORPH_PAUSE = 5;
+  // Xtreme: each map stays XTREME_HOLD seconds, then reshapes fast (XTREME_TILES
+  // tiles every XTREME_STEP seconds). Turning into Lava Hollow, the blocks change
+  // first, then LAVA_WARN seconds of 3-2-1 before the floor turns to lava.
+  const XTREME_HOLD = 28, XTREME_STEP = 0.1, XTREME_TILES = 9, LAVA_WARN = 3;
+  const XTREME_ORDER = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
+  // Lava: a bat on the lava floor (not on a block top, not mid-jump, not a ghost)
+  // for LAVA_GRACE seconds sizzles: knocked out. The last rival that hit it in
+  // the KO_CREDIT seconds before gets the point (Free-for-all).
+  const LAVA_GRACE = 0.12, KO_CREDIT = 4, SINK_TIME = 0.7;
+  // Mossy Den: a dash into a bush chomps through it; it grows back after
+  // REGROW seconds (waiting while a bat is in the way)
+  const REGROW = 12;
   // A bat the morphing walls have shut into a small pocket (less than
   // TRAP_SHARE of the open cave reachable) for TRAP_TIME seconds sets off an
   // early morph into Open Sky, which melts the walls nearest it first and fast.
@@ -63,13 +78,12 @@
     frenzy: { label: 'ECHO FRENZY', rgb: '255, 120, 200', name: 'Echo Frenzy', desc: '5 seconds of free, rapid squeaks' },
     fire: { label: 'FIREBALL', rgb: '255, 112, 40', name: 'Fireball', desc: 'Shoot fireballs where you fly for 8 seconds: they light the cave and stun', special: true },
     thunder: { label: 'THUNDER', rgb: '255, 245, 90', name: 'Thunder', desc: 'For 8 seconds, call lightning on every rival near you (no parrying it)', special: true },
-    wall: { label: 'STONE WALL', rgb: '214, 160, 110', name: 'Stone Wall', desc: 'Raise a wall behind you for 6 seconds', special: true },
     freeze: { label: 'FREEZE', rgb: '110, 210, 255', name: 'Freeze', desc: 'For 8 seconds, ice blasts freeze rivals close to you', special: true },
     tornado: { label: 'TORNADO', rgb: '190, 255, 235', name: 'Tornado', desc: 'For 8 seconds, send out twisters that pull rivals in and spin them', special: true },
     ghost: { label: 'GHOST', rgb: '214, 196, 255', name: 'Ghost', desc: 'Fly through cave walls for 5 seconds, half see-through', special: true },
   };
   const POWER_TYPES = Object.keys(POWERS);
-  const POWER_ICONS = { mega: '📣', speed: '⚡', shield: '🛡️', frenzy: '🎶', fire: '🔥', thunder: '🌩️', wall: '🧱', freeze: '❄️', tornado: '🌪️', ghost: '👻' };
+  const POWER_ICONS = { mega: '📣', speed: '⚡', shield: '🛡️', frenzy: '🎶', fire: '🔥', thunder: '🌩️', freeze: '❄️', tornado: '🌪️', ghost: '👻' };
   const toHex = (rgb) => '#' + rgb.split(',').map((v) => (+v).toString(16).padStart(2, '0')).join('');
   const POWER_LIST = POWER_TYPES.map((id) => ({ id, name: POWERS[id].name, desc: POWERS[id].desc, color: toHex(POWERS[id].rgb), icon: POWER_ICONS[id], special: !!POWERS[id].special }));
   // how often power-ups appear: [first one after, then every, seconds] and how many can wait on the map
@@ -78,7 +92,9 @@
     low: { first: [10, 14], every: [14, 20], max: 1 },
     normal: { first: [6, 9], every: [8, 13], max: 2 },
     high: { first: [0, 0], every: [2, 3.5], max: 5, start: 2 },   // two show up the moment play starts
+    max: { first: [0, 0], every: [1, 1.5], max: 8, start: 3, near: 2.5 },   // Extreme: three at once, then a flood
   };
+  const POWER_FREQS = [['off', 'Off'], ['low', 'Low'], ['normal', 'Normal'], ['high', 'High'], ['max', 'Extreme']].map(([id, name]) => ({ id, name }));
   let powerOn = POWER_TYPES.slice(), powerFreq = POWER_FREQ.normal;
   const powerWait = (k) => (powerFreq ? powerFreq[k][0] + Math.random() * (powerFreq[k][1] - powerFreq[k][0]) : 1e9);
   // special power numbers
@@ -86,15 +102,13 @@
   // Timed specials: the first use starts a TIMED_LIFE-second clock, and until
   // it runs out you can use the power again and again. Shots (fireball,
   // tornado) fire as fast as you tap; the area blasts (freeze, thunder) keep a
-  // short gap. CPUs use slower gaps so they don't spray. Stone Wall and Ghost
-  // stay one use each.
+  // short gap. CPUs use slower gaps so they don't spray. Ghost stays one use.
   const TIMED_LIFE = 8;
   const TIMED_CD = { fire: 0.08, tornado: 0.12, thunder: 0.6, freeze: 0.6 };
   const CPU_TIMED_CD = { fire: 0.3, tornado: 0.8, thunder: 1.6, freeze: 1.6 };
   const MAX_SHOTS_EACH = 10, MAX_TWISTERS_EACH = 4;   // oldest goes when a bat has more out
   const FIRE_SPEED = 10, FIRE_LIFE = 1.6, FIRE_R = 0.28, FIRE_STUN = 2, FIRE_KNOCK = 6, FIRE_SPLASH = 1.15, SPLASH_STUN = 1.3;
   const THUNDER_RANGE = 7, THUNDER_FAR = 11, THUNDER_DELAY = 0.45, THUNDER_STUN = 2.2, THUNDER_REVEAL = 3, BOLT_FX = 0.9;
-  const WALL_LEN = 4, WALL_LIFE = 6, WALL_RISE = 0.3, WALL_CRUMBLE = 0.7, WALL_BACK = 1.6;
   const FREEZE_R = 3.2, FREEZE_STUN = 2.6, NOVA_FX = 0.55;
   const TORNADO_LIFE = 4.5, TORNADO_SPEED = 2.4, TORNADO_PULL = 3.6, TORNADO_CORE = 0.65, TORNADO_STUN = 1.6;
   const GHOST_TIME = 5;
@@ -113,10 +127,10 @@
   // Big battles (more than 4 bats) stretch the arena by BIG_COLS columns and
   // BIG_ROWS rows of copies (about a third more room)
   const BIG_COLS = 5, BIG_ROWS = 2;
-  // Jump: a hop up over walls, Stone Walls and other bats. Squeak rings and
+  // Jump: a hop up over walls and other bats. Squeak rings and
   // fireballs pass underneath, and a bite on a jumping bat snaps on empty air
-  // (MISS!); nobody bites from up there either. Land inside rock and you're
-  // nudged out to the nearest gap. The jump meter holds JUMP_CHARGES jumps
+  // (MISS!); nobody bites from up there either. Land on a block and you stay
+  // up on top (see Levels below); land half on rock and you're eased off it. The jump meter holds JUMP_CHARGES jumps
   // and refills one every JUMP_RECHARGE seconds on the ground; after landing there's a
   // JUMP_GAP pause before the next hop (a press in the last JUMP_BUFFER
   // seconds of a jump is kept and hops again as soon as it can). Stunned bats
@@ -136,27 +150,32 @@
   ];
 
   // ---- Arena -------------------------------------------------------------
-  // Morph mode: caves morph in order; now and then the walls melt away into the wall-less Open Sky instead.
+  // Classic Morph: the classic caves morph in order; now and then the walls melt away into the wall-less Open Sky instead.
+  // Xtreme: the four themed maps in XTREME_ORDER.
   let arena, arenaIndex = 0, lastCave = 0;
-  const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open ? i : -1)).filter((i) => i >= 0);
-  // the morph's theme cycle: crystal, lava, ice, moss, then round again
-  const MORPH_ORDER = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'];
+  // the themed caves (the lobby's 0-3), Open Sky, and the classic stone caves
+  const arenaKinds = (open) => window.ECHO_ARENAS.map((a, i) => (!!a.open === open && !a.classic ? i : -1)).filter((i) => i >= 0);
+  const classicKinds = () => window.ECHO_ARENAS.map((a, i) => (a.classic ? i : -1)).filter((i) => i >= 0);
+  const arenaByName = (n) => window.ECHO_ARENAS.findIndex((a) => a.name === n);
   function nextArenaIndex() {
-    const caves = arenaKinds(false), skies = arenaKinds(true);
+    if (arenaMode === 'xtreme') {
+      const order = XTREME_ORDER.map(arenaByName).filter((i) => i >= 0);
+      return order[(order.indexOf(arenaIndex) + 1) % order.length];
+    }
+    const caves = classicKinds(), skies = arenaKinds(true);
     if (!arena.def.open && skies.length && Math.random() < OPEN_SKY_CHANCE) return skies[Math.floor(Math.random() * skies.length)];
-    const order = MORPH_ORDER.map((n) => window.ECHO_ARENAS.findIndex((a) => a.name === n)).filter((i) => caves.includes(i));
-    for (const i of caves) if (!order.includes(i)) order.push(i);
-    return order[(order.indexOf(lastCave) + 1) % order.length];
+    return caves[(caves.indexOf(lastCave) + 1) % caves.length];
   }
-  // Big battles (more than 4 bats) play on a stretched copy of each map: a few
-  // columns and rows inside it are doubled (the copies get no spawn or crystal
-  // spots). The same columns and rows for every map, so morphing still lines up.
+  // Big battles (more than 4 bats) play on a bigger copy of each map: its own
+  // 'big' layout when it has one, else a stretched copy where a few columns and
+  // rows inside it are doubled (the copies get no spawn or crystal spots). The
+  // same columns and rows for every map, so morphing still lines up.
   let bigArena = false;
   const bigMaps = new Map();
   function stretchMap(map) {
     const h = map.length, w = map[0].length;
     const pick = (n, add) => new Set(Array.from({ length: add }, (_, k) => Math.round(2 + ((k + 0.5) * (n - 4)) / add)));
-    const cols = pick(w, BIG_COLS), rows = pick(h, BIG_ROWS), plain = (c) => (c === '#' ? '#' : '.');
+    const cols = pick(w, BIG_COLS), rows = pick(h, BIG_ROWS), plain = (c) => (c === '#' || c === 'E' ? '#' : '.');
     const out = [];
     map.forEach((row, y) => {
       let r = '';
@@ -169,14 +188,16 @@
   function mapRows(i) {
     const def = window.ECHO_ARENAS[i];
     if (!bigArena) return def.map;
+    if (def.big) return def.big;
     if (!bigMaps.has(i)) bigMaps.set(i, stretchMap(def.map));
     return bigMaps.get(i);
   }
 
   // ---- Cave themes ---------------------------------------------------------
-  // The look follows the cave: crystal, lava, ice, moss (or open sky). While
-  // the cave morphs, its colours blend from the old theme into the new one as
-  // the walls change (themeK: 0 old .. 1 new); an icy cave is slippery.
+  // The look follows the cave: crystal, lava, ice, moss (or open sky, or the
+  // classic stone). While Xtreme morphs, its colours blend from the old theme
+  // into the new one as the walls change (themeK: 0 old .. 1 new); an icy cave
+  // is slippery.
   let themeFrom = 0, themeTo = 0, themeK = 0, themeShow = 0, themeCache = null, themeKey = '';
   function setTheme(from, to, k) {
     if (from !== themeFrom || to !== themeTo) themeShow = k;
@@ -193,11 +214,11 @@
     const A = window.ECHO_ARENAS[themeFrom].theme, B = window.ECHO_ARENAS[themeTo].theme, la = A.look, lb = B.look;
     themeKey = key;
     themeCache = {
-      key, k, from: themeFrom, to: themeTo, title: (k < 0.5 ? A : B).title,
+      key, k, from: themeFrom, to: themeTo, title: (k < 0.5 ? A : B).title, style: (k < 0.5 ? A : B).style || 'stone',
       wall: mixRgb(A.wall, B.wall, k), fill: mixRgb(A.fill, B.fill, k), bg: `rgb(${mixRgb(A.bg, B.bg, k)})`,
       ambient: (k < 0.5 ? A : B).ambient, ambientRgb: mixRgb(A.ambientRgb, B.ambientRgb, k),
       look: la && lb ? {
-        key, stone: mixA(la.stone, lb.stone, k), floor: mixA(la.floor, lb.floor, k), bg: mixA(la.bg, lb.bg, k),
+        key, style: (k < 0.5 ? A : B).style || 'stone', stone: mixA(la.stone, lb.stone, k), floor: mixA(la.floor, lb.floor, k), bg: mixA(la.bg, lb.bg, k),
         accA: mixA(la.accA, lb.accA, k), accB: mixA(la.accB, lb.accB, k), mote: mixA(la.mote, lb.mote, k),
         hemi: [mixA(la.hemi[0], lb.hemi[0], k), mixA(la.hemi[1], lb.hemi[1], k)], lava: mixN(la.lava, lb.lava, k), ice: mixN(la.ice, lb.ice, k),
         vein: mixN(la.vein || 0, lb.vein || 0, k),
@@ -210,6 +231,9 @@
     const la = window.ECHO_ARENAS[themeFrom].theme.look, lb = window.ECHO_ARENAS[themeTo].theme.look;
     return la && lb ? mixN(la.ice, lb.ice, themeK) : 0;
   }
+  // the map style in play now (by rules): the one being morphed into counts once it's half there
+  const styleNow = () => (window.ECHO_ARENAS[themeK >= 0.5 ? themeTo : themeFrom].theme.style || 'stone');
+  const mossy = () => styleNow() === 'moss';
 
   function loadArena(i) {
     const n = window.ECHO_ARENAS.length;
@@ -220,10 +244,11 @@
     const h = rows.length, w = rows[0].length;
     const a = { def, rows, theme: def.theme, w, h, grid: new Uint8Array(w * h), spawns: [], crystalSpots: [], open: [] };
     rows.forEach((row, y) => [...row].forEach((c, x) => {
-      a.grid[y * w + x] = c === '#' ? 1 : 0;
-      if (c !== '#') a.open.push({ x: x + 0.5, y: y + 0.5 });
+      a.grid[y * w + x] = c === '#' || c === 'E' ? 1 : 0;
+      if (c !== '#' && c !== 'E') a.open.push({ x: x + 0.5, y: y + 0.5 });
       if ('ABCD'.includes(c)) a.spawns.push({ x: x + 0.5, y: y + 0.5, key: c });
       if (c === 'e') a.crystalSpots.push({ x: x + 0.5, y: y + 0.5 });
+      if (c === 'E') a.crystalSpots.push({ x: x + 0.5, y: y + 0.5, top: 1 });
     }));
     a.spawns.sort((p, q) => p.key.localeCompare(q.key));
     arena = a;
@@ -232,20 +257,19 @@
     tileGlow = new Float32Array(w * h);
     crystals = a.crystalSpots.map((c) => ({ ...c, on: false, timer: 0.5 + Math.random() * 2.5, phase: Math.random() * 6 }));
     powerups = [];
+    regrow = [];
     ambient = Array.from({ length: Math.round((46 * w * h) / 510) }, () => ({
       x: Math.random() * w, y: Math.random() * h,
       v: 0.3 + Math.random() * 0.7, phase: Math.random() * 6, size: 0.04 + Math.random() * 0.06,
     }));
   }
-  // grid: 0 open, 1 cave wall, 2 a Stone Wall power's temporary block
+  // grid: 0 open, 1 rock (a block, bush or crystal; bats can stand on top of it)
   const solid = (tx, ty) => tx < 0 || ty < 0 || tx >= arena.w || ty >= arena.h || arena.grid[ty * arena.w + tx] !== 0;
-  const blockerAt = (tx, ty) => tx >= 0 && ty >= 0 && tx < arena.w && ty < arena.h && arena.grid[ty * arena.w + tx] === 2;
-  // is there a Stone Wall block on the straight line between two points?
-  function blockerBetween(x0, y0, x1, y1) {
-    const d = Math.hypot(x1 - x0, y1 - y0), n = Math.ceil(d / 0.2);
-    for (let k = 1; k < n; k++) if (blockerAt(Math.floor(x0 + (x1 - x0) * k / n), Math.floor(y0 + (y1 - y0) * k / n))) return true;
-    return false;
-  }
+  // a block a bat can stand on: rock that isn't the outer wall
+  const blockAt = (x, y) => {
+    const tx = Math.floor(x), ty = Math.floor(y);
+    return tx > 0 && ty > 0 && tx < arena.w - 1 && ty < arena.h - 1 && arena.grid[ty * arena.w + tx] !== 0;
+  };
   const litAt = (x, y) => {
     const tx = Math.floor(x), ty = Math.floor(y);
     return tx < 0 || ty < 0 || tx >= arena.w || ty >= arena.h ? 0 : lit[ty * arena.w + tx];
@@ -260,8 +284,7 @@
     }
     return false;
   }
-  // Which open patch each tile belongs to (cave walls split them; Stone Wall
-  // blocks count as open since they crumble): label per tile (-1 for rock) and patch sizes
+  // Which open patch each tile belongs to (cave walls split them): label per tile (-1 for rock) and patch sizes
   function openRegions() {
     const { w, h, grid } = arena, label = new Int16Array(w * h).fill(-1), sizes = [], stack = [];
     for (let k0 = 0; k0 < w * h; k0++) {
@@ -282,20 +305,38 @@
     }
     return { label, sizes };
   }
+  // block tops to stand on (lava): tile centres of rock inside the border, the
+  // roomiest first (more rock around them)
+  function blockSpots() {
+    const out = [];
+    for (let ty = 1; ty < arena.h - 1; ty++) for (let tx = 1; tx < arena.w - 1; tx++) {
+      if (!blockAt(tx + 0.5, ty + 0.5)) continue;
+      let room = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if (blockAt(tx + dx + 0.5, ty + dy + 0.5)) room++;
+      out.push({ x: tx + 0.5, y: ty + 0.5, room, top: 1 });
+    }
+    return out;
+  }
   // Starting spots: one safe open tile near each corner (top-left, top-right,
   // bottom-left, bottom-right), all in the cave's biggest open patch; with
-  // more than 4 bats also one near the middle of each edge (top, bottom, left, right)
+  // more than 4 bats also one near the middle of each edge (top, bottom, left, right).
+  // When the floor is lava they're block tops instead.
   function cornerSpots(n = 4) {
-    const { w, h } = arena, { label, sizes } = openRegions();
-    const big = sizes.indexOf(Math.max(...sizes));
-    const ok = arena.open.filter((p) => label[Math.floor(p.y) * w + Math.floor(p.x)] === big && !hitsWall(p.x, p.y, R));
-    const pool = ok.length ? ok : arena.open, used = new Set();
+    const { w, h } = arena;
+    let pool;
+    if (lavaSafeOnly()) pool = blockSpots().filter((p) => p.room >= 4);
+    else {
+      const { label, sizes } = openRegions(), big = sizes.indexOf(Math.max(...sizes));
+      pool = arena.open.filter((p) => label[Math.floor(p.y) * w + Math.floor(p.x)] === big && !hitsWall(p.x, p.y, R));
+    }
+    if (!pool.length) pool = arena.open;
+    const used = new Set();
     const want = [[2.5, 2.5], [w - 2.5, 2.5], [2.5, h - 2.5], [w - 2.5, h - 2.5]];
     if (n > 4) want.push([w / 2, 3.5], [w / 2, h - 3.5], [2.5, h / 2], [w - 2.5, h / 2]);   // (top and bottom a row in, clear of the HUD)
     return want.map(([cx, cy]) => {
       let best = null, bd = Infinity;
       for (const p of pool) {
-        const d = Math.hypot(p.x - cx, p.y - cy);
+        const d = Math.hypot(p.x - cx, p.y - cy) - (p.room || 0) * 0.15;
         if (d < bd && !used.has(p)) { bd = d; best = p; }
       }
       best = best || pool[0];
@@ -335,15 +376,22 @@
   let localCount = 1;                    // humans on this device (local mode)
   let bats = [], rings = [], crystals = [], powerups = [], particles = [], popups = [], eats = [], ambient = [];
   let parries = [], parryCount = 0;                      // parry flashes being drawn: { x, y, ax, ay, rgb, t }
-  // special powers in play: fireballs, twisters, Stone Wall segments, thunder strikes (rules, host)
-  // and the purely visual lightning bolts and ice blasts (everyone)
-  let shots = [], twisters = [], blocks = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0, jumpCount = 0;
+  // special powers in play: fireballs, twisters, thunder strikes (rules, host)
+  // and the purely visual lightning bolts, ice blasts and shatters (everyone)
+  let shots = [], twisters = [], thunders = [], bolts = [], novas = [], fxId = 0, specialCount = 0, jumpCount = 0;
+  let shatters = [], shieldPops = [], sinks = [];
+  // Lava: lavaOn while the floor burns; lavaWarn counts down the 3-2-1 before it
+  // does (Xtreme); lavaVis is how much lava is drawn (eases in and out)
+  let lavaOn = false, lavaWarn = 0, lavaVis = 0, koCount = 0;
+  const lavaSafeOnly = () => lavaOn || lavaWarn > 0;
+  // Mossy Den: chomped bushes waiting to grow back: { k (tile), t (seconds left) }
+  let regrow = [], bushCount = 0;
   let misses = [], missCount = 0;                       // bites that snapped on empty air under a jumping bat
   // The controls guide before a match (kind 'match') and, in Rounds, before
   // each next round (kind 'round'): play waits until this device's player (or
   // the host online) taps Start. Tests can turn it off (skipGuide).
   let guide = null, noGuide = false;
-  let lit, litBy;
+  let lit, litBy, gridSent = 0;
   let clock = 0, countdown = 0, over = false, banner = null, morph = null, tileGlow = null;
   let slowmo = 0, shake = 0, powerTimer = 6, firstPower = true, snapTimer = 0, outbox = [], ringId = 0, ended = false;
   const remoteInput = new Map();         // slot -> { ix, iy }
@@ -355,6 +403,7 @@
       dashCd: 0, dashT: 0, power: null, powerT: 0, mega: false, shield: false,
       parryT: 0, parryCd: 0, parryRing: null, hitBy: null, biteT: 0, dashSeq: 0, out: false,
       held: null, heldLeft: 0, specialCd: 0, ghostT: 0, ice: 0, burn: 0, revealT: 0, look: null, jumpT: 0, jumpCd: 0, jumps: JUMP_CHARGES, jumpQ: false,
+      top: 0, hv: 0, lavaT: 0, lastHit: null,
       ai: ctrl === 'cpu' ? { path: [], repath: 0, think: Math.random() * 0.3, wander: null } : null,
     };
   }
@@ -375,7 +424,8 @@
     arenaMode = ARENA_MODES.includes(o.arenaMode) ? o.arenaMode : 'morph';
     rule = o.rule === 'survivor' ? 'survivor' : 'bites';
     winScore = Math.max(1, Math.min(15, Math.round(+o.firstTo) || WIN_SCORE));
-    // o.powerups: { on: { fire: false, ... }, freq: 'off' | 'low' | 'normal' | 'high' }
+    // o.powerups: { on: { fire: false, ... }, freq: 'off' | 'low' | 'normal' | 'high' | 'max' }
+    // (power ids no longer in the game, like the old 'wall', are just ignored)
     const pu = o.powerups || {};
     powerOn = POWER_TYPES.filter((t) => !pu.on || pu.on[t] !== false);
     powerFreq = Object.prototype.hasOwnProperty.call(POWER_FREQ, pu.freq) ? POWER_FREQ[pu.freq] : POWER_FREQ.normal;
@@ -400,32 +450,40 @@
     }
     // more than 4 bats: a bigger arena (guests know from o.total)
     bigArena = bats.length > 4;
-    // o.arena picks the cave (0-3: Crystal Grotto, Lava Hollow, Mossy Den, Frozen Cavern)
-    // for 'still', and the first cave for 'morph'; otherwise a random one. Guests
-    // load whatever the host's snapshots say.
-    const caves = arenaKinds(false), want = o.arena == null || o.arena === '' ? NaN : Math.floor(+o.arena);
+    // o.arena picks the cave for 'still' (0-3: Crystal Grotto, Lava Hollow, Mossy Den,
+    // Frozen Cavern; else a random one). Classic 'morph' starts in a classic stone
+    // cave (o.arena picks which), Xtreme always in Crystal Grotto. Guests load
+    // whatever the host's snapshots say.
+    const caves = arenaKinds(false), classic = classicKinds(), want = o.arena == null || o.arena === '' ? NaN : Math.floor(+o.arena);
     const cave = want >= 0 ? caves[want % caves.length] : mode === 'client' ? caves[0] : caves[Math.floor(Math.random() * caves.length)];
-    loadArena(arenaMode === 'sky' ? arenaKinds(true)[0] : cave);
-    morph = arenaMode === 'morph' && mode !== 'client' ? { target: -1, timer: 0, pause: MORPH_PAUSE } : null;
+    lavaOn = false; lavaWarn = 0; lavaVis = 0; regrow = [];
+    loadArena(arenaMode === 'sky' ? arenaKinds(true)[0]
+      : arenaMode === 'morph' ? classic[want >= 0 ? want % classic.length : mode === 'client' ? 0 : Math.floor(Math.random() * classic.length)]
+        : arenaMode === 'xtreme' ? arenaByName(XTREME_ORDER[0]) : cave);
+    // a still Lava Hollow burns from the start (everyone starts on a block)
+    if (styleNow() === 'lava' && arenaMode === 'still') { lavaOn = true; lavaVis = 1; }
+    morph = (arenaMode === 'morph' || arenaMode === 'xtreme') && mode !== 'client'
+      ? { target: -1, timer: 0, pause: arenaMode === 'xtreme' ? XTREME_HOLD : MORPH_PAUSE, x: arenaMode === 'xtreme' } : null;
     // everyone starts in a different corner (guests take theirs from the host's snapshots)
-    const starts = mode === 'client' ? arena.spawns : cornerStarts();
+    const starts = cornerStarts();
     bats.forEach((b, k) => {
-      const s = starts[k] || arena.spawns[k % arena.spawns.length];
-      b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1;
+      const s = starts[k] || arena.open[k % arena.open.length];
+      b.x = s.x; b.y = s.y; b.face = s.x < arena.w / 2 ? 1 : -1; b.top = s.top ? 1 : 0; b.hv = b.top;
     });
+    gridSent = 0;
     // bat looks (see looks.js): the lobby's pick for each slot, else a preset for
     // people and a random one for CPUs. Guests get the host's from snapshots.
     const seed = Number.isFinite(+(o.seed ?? o.cpuSeed)) ? +(o.seed ?? o.cpuSeed) : Math.floor(Math.random() * 1e6);
     bats.forEach((b) => { b.look = lookFor(b, o.looks?.[b.i], seed); b.lv = CPU_LEVELS[o.levels?.[b.i]] || null; });
     looksSent = 0;
     rings = []; particles = []; popups = []; eats = []; outbox = []; parries = []; misses = [];
-    shots = []; twisters = []; blocks = []; thunders = []; bolts = []; novas = [];
+    shots = []; twisters = []; thunders = []; bolts = []; novas = []; shatters = []; shieldPops = []; sinks = [];
     remoteInput.clear();
     guide = noGuide || window.__echoNoGuide ? null : { kind: 'match', t: 0 };
     clock = 0; countdown = 3; over = false; ended = false; slowmo = 0; shake = 0;
     round = 1; roundClock = 0; roundEnd = null; storm = false; stormWarned = false; matchWinner = null; watchI = -1;
     powerTimer = powerWait('first'); firstPower = true; snapTimer = 0;
-    banner = mode === 'client' ? null : { text: arena.def.name, rgb: arena.theme.wall, t: 3.2 };
+    banner = mode === 'client' ? null : { text: arenaMode === 'xtreme' ? 'Morphing Xtreme' : arena.def.name, rgb: arena.theme.wall, t: 3.2 };
     // a big battle gets its own banner as the countdown ends (guests too)
     if (bigArena) banner = { text: `${bats.length}-BAT BRAWL!`, rgb: '255, 226, 120', t: 5.2, big: true };
     keys.clear();
@@ -470,6 +528,27 @@
       const a = bats[ev.a];
       if (a) misses.push({ eater: a, food: ev.f, x: ev.x, y: ev.y, ang: ev.ang, t: 0 });
       for (const k of [-1, 1]) particles.push({ x: ev.x, y: ev.y, vx: k * 2.4, vy: -1.2, life: 0.45, rgb: '232, 236, 255', size: 4 });
+    } else if (ev.k === 'spop') shieldPops.push({ i: ev.i, x: ev.x, y: ev.y, t: 0 });
+    else if (ev.k === 'shatter') {
+      // a frozen bat breaks free: shards of ice fly off
+      shatters.push({ x: ev.x, y: ev.y, t: 0, top: ev.top || 0 });
+      for (let k = 0; k < 14; k++) {
+        const a = (k / 14) * Math.PI * 2 + Math.random() * 0.3, v = 2.5 + Math.random() * 3.5;
+        particles.push({ x: ev.x, y: ev.y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 0.6, life: 0.45 + Math.random() * 0.35, rgb: k % 3 ? '200, 240, 255' : '255, 255, 255', size: 3 + Math.random() * 3, shard: true });
+      }
+      (s.shatter || s.crystal)?.();
+    } else if (ev.k === 'sink') {
+      // into the lava: the bat sinks with a splash of embers
+      const b = bats[ev.i];
+      sinks.push({ i: ev.i, x: ev.x, y: ev.y, t: 0, look: b ? { ...b } : null });
+      burst(ev.x, ev.y, '255, 140, 50', 20, 4, 5); burst(ev.x, ev.y, '255, 230, 140', 10, 2.5, 3);
+    } else if (ev.k === 'leaves') {
+      // a bush chomped through (or growing back): a puff of leaves
+      for (let k = 0; k < (ev.grow ? 6 : 14); k++) {
+        const a = Math.random() * Math.PI * 2, v = (ev.grow ? 0.8 : 2) + Math.random() * 2.5;
+        particles.push({ x: ev.x + (Math.random() - 0.5) * 0.6, y: ev.y + (Math.random() - 0.5) * 0.6, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 0.6 + Math.random() * 0.5,
+          rgb: ['120, 230, 100', '170, 255, 120', '80, 190, 90'][k % 3], size: 5 + Math.random() * 3, leaf: true, spin: Math.random() * 6 });
+      }
     } else if (ev.k === 'parry') {
       parries.push({ x: ev.x, y: ev.y, ax: ev.ax, ay: ev.ay, rgb: ev.rgb, t: 0 });
       // a bright two-tone ping; game.js may provide its own 'parry' sound
@@ -502,6 +581,11 @@
     // the controls guide: Enter (or any squeak key) starts
     if (guide) {
       if (canStartGuide() && (e.code === 'Enter' || e.code === 'NumpadEnter' || [...Array(localCount).keys()].some((s) => keysFor(s, 'squeak').includes(e.code)))) startFromGuide();
+      return;
+    }
+    if (spectating() && (e.code === 'Enter' || e.code === 'Tab' || [...Array(localCount).keys()].some((s) => keysFor(s, 'squeak').includes(e.code)))) {
+      if (e.code === 'Tab') e.preventDefault();
+      watchNext();
       return;
     }
     for (let slot = 0; slot < localCount; slot++) {
@@ -561,9 +645,11 @@
     if (e.pointerType === 'touch') touchUsed = true;
     // the controls guide swallows taps; only its Start button does anything
     if (guide) {
-      if (canStartGuide() && inStartButton(e.clientX, e.clientY)) startFromGuide();
+      guideTap(e.clientX, e.clientY);
       return;
     }
+    // out of the round: a tap watches someone else
+    if (spectating() && localCount === 1) { watchNext(); return; }
     if (specialShown() && inPowerButton(e.clientX, e.clientY)) { act(0, 'special'); return; }
     if (biteShown() && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
     if (biteShown() && inJumpButton(e.clientX, e.clientY)) { act(0, 'jump'); return; }
@@ -688,8 +774,45 @@
   // cpuLevel is the level of the CPU being thought for (o.levels can set one per seat)
   let cpuLevel = CPU_LEVELS.normal, baseLevel = CPU_LEVELS.normal;
   function randomOpenSpot() {
-    const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
+    const spots = lavaSafeOnly() ? blockSpots() : arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
     return spots[Math.floor(Math.random() * spots.length)];
+  }
+  // Lava: a path over the block tops, walking from block to block or hopping a
+  // gap (up to 2 tiles); steps that need a jump are marked hop
+  function topPath(fromX, fromY, toX, toY) {
+    const { w, h } = arena, sx = Math.floor(fromX), sy = Math.floor(fromY);
+    let gx = Math.floor(toX), gy = Math.floor(toY);
+    if (!blockAt(sx + 0.5, sy + 0.5)) return [];
+    if (!blockAt(gx + 0.5, gy + 0.5)) {
+      // aim for the block top nearest the goal
+      let bd = Infinity;
+      for (const p of blockSpots()) { const d = Math.hypot(p.x - toX, p.y - toY); if (d < bd) { bd = d; gx = Math.floor(p.x); gy = Math.floor(p.y); } }
+    }
+    const prev = new Int32Array(w * h).fill(-1), hop = new Uint8Array(w * h), q = [sy * w + sx];
+    prev[q[0]] = q[0];
+    const steps = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) for (const d of [2, 3]) steps.push([dx * d, dy * d, 1]);
+    for (const [dx, dy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) steps.push([dx * 2, dy * 2, 1]);
+    for (let k = 0; k < q.length; k++) {
+      const c = q[k], cx = c % w, cy = (c / w) | 0;
+      if (cx === gx && cy === gy) break;
+      for (const [dx, dy, jump] of steps) {
+        const nx = cx + dx, ny = cy + dy, n = ny * w + nx;
+        if (!blockAt(nx + 0.5, ny + 0.5) || prev[n] >= 0) continue;
+        prev[n] = c; hop[n] = jump; q.push(n);
+      }
+    }
+    const goal = gy * w + gx;
+    if (prev[goal] < 0) return [];
+    const path = [];
+    for (let c = goal; c !== prev[c]; c = prev[c]) path.push({ x: (c % w) + 0.5, y: ((c / w) | 0) + 0.5, hop: !!hop[c] });
+    return path.reverse();
+  }
+  // the nearest block top (to climb onto when the floor is about to burn)
+  function nearestBlock(b) {
+    let best = null, bd = Infinity;
+    for (const p of blockSpots()) { const d = Math.hypot(p.x - b.x, p.y - b.y) - p.room * 0.08; if (d < bd) { bd = d; best = p; } }
+    return best;
   }
   function cpuInput(b, dt) {
     const ai = b.ai, lv = cpuLevel;
@@ -699,7 +822,7 @@
     // what this bat can perceive right now
     for (const o of foes) {
       const noticed = o.stun > 0 || o.seen > 0.25 || litAt(o.x, o.y) > 0.35 || dist(o, b) < lv.sense;
-      if (noticed) ai.known.set(o.i, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, age: 0, bat: o });
+      if (noticed) ai.known.set(o.i, { x: o.x, y: o.y, vx: o.vx, vy: o.vy, age: 0, bat: o, top: o.top });
     }
     cpuParry(b, foes);
     cpuDodge(b);
@@ -710,26 +833,49 @@
     const known = [...ai.known.values()].sort((p, q) => dist(p, b) - dist(q, b));
     const fresh = known.filter((k) => k.age < 0.4);
     const snack = foes.find((o) => o.stun > 0 && dist(o, b) < 9);
-    let target = snack;
-    if (!target) target = powerups.filter((p) => dist(p, b) < lv.power && litAt(p.x, p.y) + (dist(p, b) < 2.5 ? 1 : 0) > 0.2).sort((p, q) => dist(p, b) - dist(q, b))[0];
+    let target = snack && (snack.top === b.top || !lavaSafeOnly()) ? snack : null;
+    if (!target) target = powerups.filter((p) => (!lavaSafeOnly() || p.top) && dist(p, b) < lv.power && litAt(p.x, p.y) + (dist(p, b) < 2.5 ? 1 : 0) > 0.2).sort((p, q) => dist(p, b) - dist(q, b))[0];
     if (!target && b.echoes === 0) target = crystals.filter((c) => c.on).sort((p, q) => dist(p, b) - dist(q, b))[0];
     if (!target && known.length) {
       // head for where a rival was last noticed, circling a little
       if (!ai.wander || Math.random() < dt * 0.4) ai.wander = { dx: (Math.random() - 0.5) * 4, dy: (Math.random() - 0.5) * 3 };
       const k = known[0];
       target = { x: k.x + ai.wander.dx * Math.min(1, k.age), y: k.y + ai.wander.dy * Math.min(1, k.age) };
-      if (solid(Math.floor(target.x), Math.floor(target.y))) target = k;
+      if (solid(Math.floor(target.x), Math.floor(target.y)) !== !!k.top) target = k;
     }
     if (!target) {
       // nobody noticed: roam the cave
       if (!ai.roam || dist(ai.roam, b) < 1 || Math.random() < dt * 0.25) ai.roam = randomOpenSpot() || { x: b.x, y: b.y };
       target = ai.roam;
     }
+    // the floor is lava (or about to be): a bat down there makes for the nearest block and hops up
+    const lava = lavaSafeOnly();
+    if (lava && !b.top && b.jumpT <= 0 && b.ghostT <= 0) {
+      const blk = nearestBlock(b);
+      if (blk) {
+        target = blk;
+        if (dist(blk, b) < 1.6 && jump(b)) ai.hopTo = { x: blk.x, y: blk.y };
+      }
+    }
     ai.repath -= dt;
-    if (ai.repath <= 0) { ai.path = bfsPath(b.x, b.y, target.x, target.y); ai.repath = 0.25; }
+    // (mid-hop over lava: keep flying at the block it aimed for)
+    if (lava && b.jumpT > 0 && ai.hopTo) { target = ai.hopTo; ai.repath = Math.max(ai.repath, 0.01); }
+    else if (b.jumpT <= 0) ai.hopTo = null;
+    if (ai.repath <= 0) {
+      // up on the blocks: over the lava by block-top paths; elsewhere straight at it (walk off the edge to get down)
+      ai.path = b.top ? (lava ? topPath(b.x, b.y, target.x, target.y) : []) : bfsPath(b.x, b.y, target.x, target.y);
+      ai.repath = 0.25;
+    }
     while (ai.path.length && Math.hypot(ai.path[0].x - b.x, ai.path[0].y - b.y) < 0.35) ai.path.shift();
+    // a hop to the next block: jump once lined up at the edge
+    if (b.top && lava && ai.path[0]?.hop && b.jumpT <= 0) {
+      const h = ai.path[0], d = Math.hypot(h.x - b.x, h.y - b.y);
+      if (d < 3.2 && !blockAt(b.x + (h.x - b.x) / d * 0.55, b.y + (h.y - b.y) / d * 0.55) && jump(b)) ai.hopTo = { x: h.x, y: h.y };
+    }
+    // a ground bat that wants a rival up on a block: hop up next to it
+    if (!b.top && !lava && target.top && b.jumpT <= 0 && dist(target, b) < 2.6 && Math.random() < dt * 3) jump(b);
     // a ghost flies straight at its target, through the rock (and so does a bat hopping a wall)
-    const next = (b.ghostT > 0.4 || b.jumpT > 0 ? null : ai.path[0]) || target;
+    const next = lava && b.jumpT > 0 && ai.hopTo ? ai.hopTo : (b.ghostT > 0.4 || (b.jumpT > 0 && !lava) ? null : ai.path[0]) || target;
     const dx = next.x - b.x, dy = next.y - b.y, len = Math.hypot(dx, dy) || 1;
 
     ai.think -= dt;
@@ -742,13 +888,14 @@
       else if (!known.length && b.echoes > 2 && Math.random() < lv.search) squeak(b);
       // the bite is a dash: lunge at a stunned rival in reach, or (less often) at one it can perceive close by
       if (b.dashCd <= 0) {
-        const prey = snack && dist(snack, b) < 2.6 ? snack
-          : fresh.map((k) => k.bat).find((o) => o.safe <= 0 && dist(o, b) < 2.2);
+        // (only a rival on its own level: a bite can't reach up onto a block or down off one)
+        const prey = snack && snack.top === b.top && dist(snack, b) < 2.6 ? snack
+          : fresh.map((k) => k.bat).find((o) => o.safe <= 0 && o.top === b.top && dist(o, b) < 2.2);
         if (prey && Math.random() < (prey.stun > 0 ? lv.dash : lv.dash * 0.6)) {
           const k = prey.stun > 0 ? prey : ai.known.get(prey.i) || prey;
           const ax = k.x + (k.vx || 0) * 0.1 - b.x, ay = k.y + (k.vy || 0) * 0.1 - b.y, d = Math.hypot(ax, ay) || 1;
           const err = (Math.random() - 0.5) * 2 * lv.aimErr, c = Math.cos(err), sn = Math.sin(err);
-          if (castRay(b.x, b.y, ax / d, ay / d, d) >= d - 0.4) dash(b, (ax * c - ay * sn) / d, (ax * sn + ay * c) / d);
+          if (b.top || castRay(b.x, b.y, ax / d, ay / d, d) >= d - 0.4) dash(b, (ax * c - ay * sn) / d, (ax * sn + ay * c) / d);
         }
       }
       if (b.held && b.specialCd <= 0) cpuSpecial(b, fresh, known, target);
@@ -779,12 +926,6 @@
       case 'tornado': if (near && d < 6.5 && clear(near)) useSpecial(b, ...aim(near, 0)); break;
       case 'thunder': if (live.some((k) => dist(k, b) < THUNDER_RANGE - 0.5 && k.bat.stun <= 0)) useSpecial(b); break;
       case 'freeze': if (live.some((k) => dist(k, b) < FREEZE_R - 0.2 && k.bat.stun <= 0)) useSpecial(b); break;
-      case 'wall': {
-        // a rival close by and able to bite: wall it off (the wall goes behind, so fly away from it)
-        const t = live.find((k) => dist(k, b) < 3.4 && k.bat.stun <= 0 && (k.bat.biteT > 0 || k.bat.dashCd < 0.5));
-        if (t) useSpecial(b, (b.x - t.x) / dist(t, b), (b.y - t.y) / dist(t, b));
-        break;
-      }
       case 'ghost': {
         // the way to its target winds around rock: go straight through instead
         const goal = target && dist(target, b);
@@ -802,6 +943,8 @@
   function cpuDodge(b) {
     const lv = cpuLevel, ai = b.ai;
     if (!lv.jump || b.jumpT > 0 || b.jumpCd > 0 || b.jumps < 1 || b.parryT > 0 || b.dashT > 0) return;
+    // over lava, only a hop that comes down on a block
+    if (lavaSafeOnly() && !blockAt(b.x + b.vx * JUMP_TIME * 0.8, b.y + b.vy * JUMP_TIME * 0.8)) return;
     ai.dodged = ai.dodged || new Set();
     if (ai.dodged.size > 60) ai.dodged.clear();
     for (const o of bats) {
@@ -831,7 +974,7 @@
   // right ahead, with open cave again within a jump's reach
   function cpuHop(b, target) {
     const lv = cpuLevel, ai = b.ai;
-    if (!lv.jump || !target || b.jumpT > 0 || b.jumpCd > 0 || b.jumps < 1 || b.ghostT > 0) return;
+    if (!lv.jump || !target || b.jumpT > 0 || b.jumpCd > 0 || b.jumps < 1 || b.ghostT > 0 || b.top || lavaSafeOnly()) return;
     const dx = target.x - b.x, dy = target.y - b.y, d = Math.hypot(dx, dy);
     if (d < 2.2 || d > 8 || ai.path.length < d * 1.6 + 2) return;
     const ux = dx / d, uy = dy / d, free = castRay(b.x, b.y, ux, uy, d);
@@ -893,11 +1036,9 @@
       }
       if (attacker.safe <= 0 && attacker.stun <= 0) {
         const dx = attacker.x - b.x, dy = attacker.y - b.y, d = Math.hypot(dx, dy) || 1;
-        if (attacker.shield) {
-          attacker.shield = false;
-          fx({ k: 'popup', x: attacker.x, y: attacker.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
-          fx({ k: 'sfx', n: 'block' });
-        } else {
+        hitFrom(attacker, b.i);
+        if (attacker.shield) shieldBlock(attacker);
+        else {
           attacker.stun = PARRY_STUN;
           attacker.dashT = 0;
           const kick = dashed ? 6 : 3;
@@ -950,6 +1091,7 @@
   // two bats dashing into each other bounce apart, and nobody gets a bite
   function clash(a, b, ux, uy) {
     for (const [o, s] of [[a, -1], [b, 1]]) { o.biteT = 0; o.dashT = 0; o.vx = ux * s * 6; o.vy = uy * s * 6; o.seen = 1; }
+    hitFrom(a, b.i); hitFrom(b, a.i);
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
     fx({ k: 'burst', x: mx, y: my, rgb: '255, 255, 255', n: 16, sp: 4 });
     fx({ k: 'popup', x: mx, y: my - 1, text: 'CLASH!', rgb: '232, 236, 255', big: true, life: 0.8 });
@@ -1024,16 +1166,60 @@
     fx({ k: 'sfx', n: 'jump', alt: 'charged' });
     return true;
   }
-  // touching down: anyone who'd land in rock is nudged out to the nearest gap
+  // ---- Levels: the floor and the block tops ---------------------------------
+  // A bat that lands on a block (rock inside the outer wall) stays up there
+  // (b.top): it flies around over the connected block tops, ignoring the walls
+  // below, until it flies off the edge and drops to the floor (or jumps).
+  // Ground bats are blocked by walls as ever. Bites only reach a rival on the
+  // same level (a bat dashing off a block drops mid-dash, so it can pounce on
+  // one below); squeaks, thunder, ice and wind reach both levels. Over lava,
+  // a block's edge holds you back unless you're knocked off it (stunned).
+  const lvl = (b) => (b.top ? 1 : 0);
+  // eases a bat out of rock it half-overlaps (a short way, never across the cave)
+  function easeOut(b) {
+    if (!hitsWall(b.x, b.y, R)) return;
+    for (let r = 0.05; r <= 1.2; r += 0.05) {
+      let best = null;
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2, x = b.x + Math.cos(a) * r, y = b.y + Math.sin(a) * r;
+        if (!hitsWall(x, y, R)) { best = { x, y }; break; }
+      }
+      if (best) { b.x = best.x; b.y = best.y; return; }
+    }
+    // (deep in rock: the nearest gap, as a last resort)
+    const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
+    if (spot) { b.x = spot.x; b.y = spot.y; b.vx *= 0.3; b.vy *= 0.3; }
+  }
+  // where a bat ends up when it comes down (a landing, or a ghost turning solid again)
+  function settle(b) {
+    // over lava, coming down with any part of you on a block is enough: you're nudged onto it
+    if (lavaSafeOnly() && !blockAt(b.x, b.y) && b.ghostT <= 0) {
+      let best = null, bd = R + 0.2;
+      for (let ty = Math.floor(b.y - 1); ty <= Math.floor(b.y + 1); ty++) for (let tx = Math.floor(b.x - 1); tx <= Math.floor(b.x + 1); tx++) {
+        if (!blockAt(tx + 0.5, ty + 0.5)) continue;
+        const nx = Math.max(tx + 0.08, Math.min(b.x, tx + 0.92)), ny = Math.max(ty + 0.08, Math.min(b.y, ty + 0.92)), d = Math.hypot(nx - b.x, ny - b.y);
+        if (d < bd) { bd = d; best = { x: nx, y: ny }; }
+      }
+      if (best) { b.x = best.x; b.y = best.y; }
+    }
+    if (blockAt(b.x, b.y)) b.top = 1;
+    else { b.top = 0; easeOut(b); }
+  }
+  // flew off the edge of the block tops: down to the floor
+  function drop(b) {
+    b.top = 0;
+    easeOut(b);
+    if (!lavaSafeOnly()) fx({ k: 'burst', x: r2(b.x), y: r2(b.y + 0.25), rgb: TH().wall, n: 4, sp: 1.2, sz: 3 });
+  }
+  // touching down: on a block it stays up top; half on rock it's eased off it
   function land(b) {
     b.jumpT = 0;
-    if (b.ghostT <= 0 && hitsWall(b.x, b.y, R)) {
-      const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
-      if (spot) { b.x = spot.x; b.y = spot.y; b.vx *= 0.3; b.vy *= 0.3; }
-    }
+    settle(b);
     fx({ k: 'burst', x: r2(b.x), y: r2(b.y + 0.25), rgb: TH().wall, n: 6, sp: 1.6, sz: 3 });
     fx({ k: 'sfx', n: 'land', alt: 'thud' });
   }
+  // remember who last knocked a bat about (a lava knockout's point goes to them)
+  const hitFrom = (foe, by) => { if (by >= 0 && by !== foe.i) foe.lastHit = { by, t: clock }; };
 
   // ---- Special powers (held, used with the POWER button) --------------------
   // Fire, thunder, ice and wind light up the cave around them like sound does
@@ -1053,13 +1239,8 @@
   // a stun from a power; false if a shield blocked it
   function powerStun(foe, by, t, kx, ky, text, rgb, parryFrom) {
     foe.seen = 1;
-    if (foe.shield) {
-      foe.shield = false;
-      fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
-      fx({ k: 'burst', x: foe.x, y: foe.y, rgb: POWERS.shield.rgb, n: 12 });
-      fx({ k: 'sfx', n: 'block' });
-      return false;
-    }
+    hitFrom(foe, by);
+    if (foe.shield) { shieldBlock(foe); return false; }
     if (parryFrom) noteHit(foe, by, parryFrom.x, parryFrom.y, foe.vx, foe.vy);
     foe.stun = Math.max(foe.stun, t);
     foe.dashT = 0; foe.biteT = 0;
@@ -1077,12 +1258,6 @@
     const l = Math.hypot(ux, uy) || 1;
     ux /= l; uy /= l;
     const type = b.held;
-    if (type === 'wall' && !placeWall(b, ux, uy)) {
-      // nowhere to put it without boxing someone in: keep it for later
-      b.specialCd = SPECIAL_CD;
-      if (b.ctrl !== 'cpu') { fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'NO ROOM', rgb: POWERS.wall.rgb, life: 0.7 }); fx({ k: 'sfx', n: 'empty' }); }
-      return false;
-    }
     if (TIMED_CD[type]) {
       // a timed power: the first use starts its clock, then it keeps working until that runs out
       if (!(b.heldLeft > 0)) b.heldLeft = TIMED_LIFE;
@@ -1103,13 +1278,22 @@
     return true;
   }
 
+  // A shield soaks up a hit: the bubble flashes and pops (everyone sees it)
+  function shieldBlock(b) {
+    b.shield = false;
+    fx({ k: 'spop', i: b.i, x: r2(b.x), y: r2(b.y) });
+    fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
+    fx({ k: 'sfx', n: 'block' });
+  }
+
   // Fire: a fireball flies straight on, lighting the cave, and bursts on the
   // first wall or bat it meets. A hit stuns and knocks back (bite them next!);
   // the burst singes anyone close. A parry knocks it back at whoever threw it.
   function shootFire(b, ux, uy) {
     const mine = shots.filter((m) => m.owner === b.i);
     if (mine.length >= MAX_SHOTS_EACH) shots.splice(shots.indexOf(mine[0]), 1);
-    shots.push({ id: ++fxId, x: b.x + ux * 0.35, y: b.y + uy * 0.35, vx: ux * FIRE_SPEED, vy: uy * FIRE_SPEED, owner: b.i, t: 0 });
+    // (thrown from up on a block it flies over the rock, and can hit anyone below too)
+    shots.push({ id: ++fxId, x: b.x + ux * 0.35, y: b.y + uy * 0.35, vx: ux * FIRE_SPEED, vy: uy * FIRE_SPEED, owner: b.i, t: 0, top: b.top ? 1 : 0 });
     b.vx -= ux * 0.8; b.vy -= uy * 0.8;
     b.seen = 1;
     fx({ k: 'sfx', n: 'fire', alt: 'beam' });
@@ -1121,10 +1305,10 @@
       const steps = Math.max(1, Math.ceil((Math.hypot(s.vx, s.vy) * dt) / 0.1));
       for (let k = 0; k < steps && !s.gone; k++) {
         const nx = s.x + (s.vx * dt) / steps, ny = s.y + (s.vy * dt) / steps;
-        if (solid(Math.floor(nx), Math.floor(ny))) { explode(s, null); break; }
+        if (s.top ? inBorder(nx, ny) : solid(Math.floor(nx), Math.floor(ny))) { explode(s, null); break; }
         s.x = nx; s.y = ny;
         for (const foe of bats) {
-          if (foe.i === s.owner || foe.dead || foe.safe > 0 || airborne(foe) || Math.hypot(foe.x - s.x, foe.y - s.y) > R + FIRE_R) continue;
+          if (foe.i === s.owner || foe.dead || foe.safe > 0 || airborne(foe) || (foe.top && !s.top) || Math.hypot(foe.x - s.x, foe.y - s.y) > R + FIRE_R) continue;
           if (foe.parryT > 0 && foe.stun <= 0) { deflect(s, foe); break; }
           const sp = Math.hypot(s.vx, s.vy) || 1;
           if (powerStun(foe, s.owner, FIRE_STUN, (s.vx / sp) * FIRE_KNOCK, (s.vy / sp) * FIRE_KNOCK, 'BURNED!', POWERS.fire.rgb, s)) foe.burn = 1.4;
@@ -1142,9 +1326,9 @@
     fx({ k: 'sfx', n: 'boom', alt: 'crash' });
     fx({ k: 'shake', v: 0.16 });
     for (const foe of bats) {
-      if (foe === hit || foe.i === s.owner || foe.dead || foe.safe > 0 || foe.stun > 0 || airborne(foe)) continue;
+      if (foe === hit || foe.i === s.owner || foe.dead || foe.safe > 0 || foe.stun > 0 || airborne(foe) || (foe.top && !s.top)) continue;
       const d = Math.hypot(foe.x - s.x, foe.y - s.y);
-      if (d > FIRE_SPLASH + R || castRay(s.x, s.y, (foe.x - s.x) / (d || 1), (foe.y - s.y) / (d || 1), d) < d - 0.3) continue;
+      if (d > FIRE_SPLASH + R || (!s.top && castRay(s.x, s.y, (foe.x - s.x) / (d || 1), (foe.y - s.y) / (d || 1), d) < d - 0.3)) continue;
       if (powerStun(foe, s.owner, SPLASH_STUN, ((foe.x - s.x) / (d || 1)) * 4, ((foe.y - s.y) / (d || 1)) * 4, 'SCORCHED!', POWERS.fire.rgb, s)) foe.burn = 1;
     }
   }
@@ -1154,7 +1338,7 @@
     if (atk && !atk.dead) { ux = atk.x - s.x; uy = atk.y - s.y; }
     const l = Math.hypot(ux, uy) || 1;
     s.vx = (ux / l) * FIRE_SPEED * 1.15; s.vy = (uy / l) * FIRE_SPEED * 1.15;
-    s.owner = foe.i; s.t = 0;
+    s.owner = foe.i; s.t = 0; s.top = foe.top ? 1 : 0;
     parrySucceed(foe, null, s.x, s.y);
   }
 
@@ -1194,8 +1378,7 @@
   }
 
   // Freeze: a blast of ice around you. Rivals in reach are frozen solid in a
-  // block of ice (stunned, can't drift). Like a squeak, it can be parried, and
-  // it doesn't pass a Stone Wall.
+  // block of ice (stunned, can't drift). Like a squeak, it can be parried.
   function freezeBlast(b) {
     b.seen = 1;
     fx({ k: 'nova', x: r2(b.x), y: r2(b.y), o: b.i });
@@ -1204,7 +1387,7 @@
     for (const foe of bats) {
       if (foe === b || foe.dead || foe.safe > 0 || airborne(foe)) continue;
       const d = dist(foe, b);
-      if (d > FREEZE_R + R || blockerBetween(b.x, b.y, foe.x, foe.y)) continue;
+      if (d > FREEZE_R + R) continue;
       if (foe.parryT > 0 && foe.stun <= 0) { parrySucceed(foe, b, b.x, b.y); continue; }
       if (powerStun(foe, b.i, FREEZE_STUN, 0, 0, 'FROZEN!', POWERS.freeze.rgb, b)) foe.ice = FREEZE_STUN;
     }
@@ -1238,6 +1421,7 @@
         const d = Math.hypot(foe.x - tw.x, foe.y - tw.y);
         if (d > TORNADO_PULL) continue;
         foe.seen = Math.max(foe.seen, 0.6);
+        hitFrom(foe, tw.owner);
         if (d < TORNADO_CORE) {
           tw.hit.add(foe.i);
           const k = d || 1, tx = -(foe.y - tw.y) / k, ty = (foe.x - tw.x) / k;
@@ -1258,88 +1442,18 @@
   // Ghost: fly through cave walls (not the outer wall) for GHOST_TIME seconds,
   // half see-through. If it wears off inside rock, you pop out at the nearest gap.
   const inBorder = (x, y) => x < 1 + R || y < 1 + R || x > arena.w - 1 - R || y > arena.h - 1 - R;
-  // ghosts and jumping bats only stop at the outer wall
-  const batBlocked = (b, x, y) => (b.ghostT > 0 || b.jumpT > 0 ? inBorder(x, y) : hitsWall(x, y, R));
+  // ghosts and jumping bats only stop at the outer wall; bats up on the blocks
+  // too, except that over lava a block's edge holds them (unless a big hit, like a
+  // fireball or a clash, knocks them flying off it)
+  const edgeHolds = (b) => lavaSafeOnly() && (b.stun <= 0 || Math.hypot(b.vx, b.vy) < 5.5);
+  const batBlocked = (b, x, y) => (b.ghostT > 0 || b.jumpT > 0 ? inBorder(x, y)
+    : b.top ? inBorder(x, y) || (edgeHolds(b) && !blockAt(x, y)) : hitsWall(x, y, R));
+  // turning solid again inside rock: up on top if it's a block, else eased out
   function unGhost(b) {
     b.ghostT = 0;
-    if (b.jumpT > 0 || !hitsWall(b.x, b.y, R)) return;   // (a jump lands on its own)
-    const spot = arena.open.filter((p) => !hitsWall(p.x, p.y, R)).sort((p, q) => dist(p, b) - dist(q, b))[0];
-    if (spot) { b.x = spot.x; b.y = spot.y; b.vx = 0; b.vy = 0; }
+    if (b.jumpT > 0 || (!b.top && !hitsWall(b.x, b.y, R))) return;   // (a jump lands on its own)
+    settle(b);
     fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.ghost.rgb, n: 12 });
-  }
-
-  // Stone Wall: a row of WALL_LEN blocks rises across your path, just behind
-  // you (it blocks bats, squeaks, fireballs and dashes), then crumbles
-  // after WALL_LIFE seconds. Blocks never land on a bat, a crystal or a
-  // power-up, and a placement that would box any bat into a tiny pocket is
-  // skipped (it tries a few spots; if none work you keep the power).
-  function canBlock(tx, ty) {
-    if (tx < 1 || ty < 1 || tx >= arena.w - 1 || ty >= arena.h - 1 || arena.grid[ty * arena.w + tx] !== 0) return false;
-    for (const o of bats) {
-      if (o.dead && !o.out) continue;
-      if (o.out) continue;
-      const nx = Math.max(tx, Math.min(o.x, tx + 1)), ny = Math.max(ty, Math.min(o.y, ty + 1));
-      if (Math.hypot(o.x - nx, o.y - ny) < R + 0.12) return false;
-    }
-    const here = (p) => Math.floor(p.x) === tx && Math.floor(p.y) === ty;
-    return !crystals.some((c) => c.on && here(c)) && !powerups.some(here) && !twisters.some(here);
-  }
-  function reach(tx, ty, limit) {
-    const { w } = arena, seen = new Set([ty * w + tx]), q = [ty * w + tx];
-    for (let k = 0; k < q.length && seen.size < limit; k++) {
-      const c = q[k], cx = c % w, cy = (c / w) | 0;
-      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-        const n = (cy + dy) * w + cx + dx;
-        if (!seen.has(n) && !solid(cx + dx, cy + dy)) { seen.add(n); q.push(n); }
-      }
-    }
-    return seen.size;
-  }
-  const TRAP_SPACE = 30;
-  function trapsSomeone(tiles) {
-    const live = bats.filter((o) => !o.dead && !o.out && o.ghostT <= 0);
-    const before = live.map((o) => reach(Math.floor(o.x), Math.floor(o.y), TRAP_SPACE));
-    for (const k of tiles) arena.grid[k] = 2;
-    const after = live.map((o) => reach(Math.floor(o.x), Math.floor(o.y), TRAP_SPACE));
-    for (const k of tiles) arena.grid[k] = 0;
-    return after.some((n, j) => n < Math.min(before[j], TRAP_SPACE));
-  }
-  function placeWall(b, ux, uy) {
-    const across = Math.abs(ux) >= Math.abs(uy);   // flying sideways: the wall stands as a column
-    for (const back of [WALL_BACK, WALL_BACK + 0.9, WALL_BACK - 0.6, -WALL_BACK]) {
-      for (const side of [0, 1, -1]) {
-        const cx = b.x - ux * back, cy = b.y - uy * back, tiles = [];
-        for (let j = 0; j < WALL_LEN; j++) {
-          const off = j - (WALL_LEN - 1) / 2 + side;
-          const tx = Math.floor(across ? cx : cx + off), ty = Math.floor(across ? cy + off : cy);
-          if (canBlock(tx, ty)) tiles.push(ty * arena.w + tx);
-        }
-        if (tiles.length < 3 || trapsSomeone(tiles)) continue;
-        for (const k of tiles) { arena.grid[k] = 2; tileGlow[k] = 1; }
-        blocks.push({ id: ++fxId, tiles, t: 0, owner: b.i });
-        fx({ k: 'sfx', n: 'wallUp', alt: 'crash' });
-        fx({ k: 'shake', v: 0.14 });
-        return true;
-      }
-    }
-    return false;
-  }
-  function updateBlocks(dt) {
-    for (const bk of blocks) {
-      bk.t += dt;
-      if (bk.t >= WALL_LIFE) bk.gone = true;
-    }
-    if (blocks.some((bk) => bk.gone)) {
-      for (const bk of blocks) if (bk.gone) clearBlock(bk);
-      blocks = blocks.filter((bk) => !bk.gone);
-    }
-  }
-  function clearBlock(bk) {
-    for (const k of bk.tiles) if (arena.grid[k] === 2) arena.grid[k] = 0;
-  }
-  // the morphing cave swapped its whole grid: the Stone Walls stay put
-  function reapplyBlocks() {
-    for (const bk of blocks) for (const k of bk.tiles) if (arena.grid[k] === 0) arena.grid[k] = 2;
   }
 
   // The bite: the stunned bat gets slurped into the eater's open mouth,
@@ -1350,14 +1464,38 @@
     eater.biteT = 0; eater.dashT = 0;
     eater.vx *= 0.3; eater.vy *= 0.3;
     eats.push({ eater, food: { ...food }, t: 0, chomped: false, burped: false, ang: Math.atan2(food.y - eater.y, food.x - eater.x) });
-    food.dead = RESPAWN_DELAY + EAT_TIME;
-    food.stun = 0;
-    food.power = null; food.mega = false; food.shield = false;
-    food.held = null; food.heldLeft = 0; food.ghostT = 0; food.ice = 0; food.burn = 0; food.revealT = 0; food.jumpT = 0; food.jumpQ = false;
+    knockedOut(food, RESPAWN_DELAY + EAT_TIME);
     fx({ k: 'slowmo', t: 0.45 });
     fx({ k: 'sfx', n: 'slurp' });
     if (rule === 'bites' && eater.score >= winScore) { over = true; matchWinner = eater; }
     if (rule === 'survivor') checkRoundOver();
+  }
+  // a bat that's been eaten or fell in the lava loses everything it had
+  function knockedOut(b, wait) {
+    b.dead = wait;
+    b.stun = 0;
+    b.power = null; b.mega = false; b.shield = false;
+    b.held = null; b.heldLeft = 0; b.ghostT = 0; b.ice = 0; b.burn = 0; b.revealT = 0; b.jumpT = 0; b.jumpQ = false; b.lavaT = 0;
+    if (b.ice > 0) b.ice = 0;
+  }
+  // Lava: a bat fell in. It sinks with a sizzle and is out like a bitten bat.
+  // Free-for-all: whoever last hit it (squeak, power, parry, clash, wind) in the
+  // KO_CREDIT seconds before scores the point; nobody does if it just fell.
+  function sizzle(b) {
+    const h = b.lastHit, by = h && clock - h.t <= KO_CREDIT ? bats[h.by] : null;
+    koCount++;
+    fx({ k: 'sink', i: b.i, x: r2(b.x), y: r2(b.y) });
+    fx({ k: 'popup', x: b.x, y: b.y - 1.1, text: 'SIZZLE!', rgb: '255, 150, 60', big: true, life: 1 });
+    fx({ k: 'sfx', n: 'boom', alt: 'crash' });
+    fx({ k: 'shake', v: 0.2 });
+    knockedOut(b, RESPAWN_DELAY + SINK_TIME);
+    b.lastHit = null;
+    if (rule === 'survivor') { b.out = true; checkRoundOver(); return; }
+    if (by && !by.dead) {
+      by.score++;
+      fx({ k: 'popup', x: by.x, y: by.y - 1, text: '+1 KNOCKOUT', rgb: by.rgb, life: 1.1 });
+      if (by.score >= winScore) { over = true; matchWinner = by; }
+    }
   }
 
   // A bite on a bat up in a jump: the whole chomp plays, but on empty air
@@ -1417,8 +1555,7 @@
     round++;
     roundEnd = null; roundClock = 0; storm = false; stormWarned = false;
     rings = []; eats = []; powerups = []; parries = []; misses = [];
-    for (const bk of blocks) clearBlock(bk);
-    shots = []; twisters = []; blocks = []; thunders = []; bolts = []; novas = [];
+    shots = []; twisters = []; thunders = []; bolts = []; novas = []; sinks = [];
     powerTimer = powerWait('first'); firstPower = true;
     for (const c of crystals) { c.on = false; c.timer = 0.5 + Math.random() * 2.5; }
     // a fresh corner each for everyone (the corner spots dodge any walls the morphing cave grew)
@@ -1427,7 +1564,7 @@
       const s = starts[k] || randomOpenSpot();
       if (b.trapT) b.trapT = 0;
       Object.assign(b, {
-        x: s.x, y: s.y, vx: 0, vy: 0, face: s.x < arena.w / 2 ? 1 : -1, out: false, dead: 0,
+        x: s.x, y: s.y, vx: 0, vy: 0, face: s.x < arena.w / 2 ? 1 : -1, out: false, dead: 0, top: s.top ? 1 : 0, hv: s.top ? 1 : 0, lavaT: 0, lastHit: null,
         echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, cooldown: 0, dashCd: 0, dashT: 0, biteT: 0,
         parryT: 0, parryCd: 0, parryRing: null, hitBy: null, power: null, powerT: 0, mega: false, shield: false,
         mouth: 0, puff: 0, seen: 0,
@@ -1480,7 +1617,7 @@
     for (const b of bats) if (b.puff > 0) b.puff = Math.max(0, b.puff - dt * 1.6);
     const done = eats.filter((e) => e.t >= EAT_TIME);
     eats = eats.filter((e) => e.t < EAT_TIME);
-    if (over && !ended && !eats.length && (matchWinner || done.length)) {
+    if (over && !ended && !eats.length && (matchWinner || done.length) && !sinks.some((k) => k.t < SINK_TIME * 0.8)) {
       ended = true;
       const winner = matchWinner || done[done.length - 1].eater;
       // score is bites (rule 'bites') or round wins (rule 'survivor')
@@ -1492,8 +1629,11 @@
     }
   }
 
-  // Morph mode: every few moments a handful of tiles turn into the next
+  // Morph modes: every few moments a handful of tiles turn into the next
   // arena's layout, never closing on a bat, until the whole cave has become it.
+  // Classic Morphing pauses MORPH_PAUSE seconds between caves; Xtreme holds each
+  // themed map XTREME_HOLD seconds, then reshapes fast. Into Lava Hollow, the
+  // floor only turns to lava after the blocks are in place and a 3-2-1.
   function updateMorph(dt) {
     if (!morph) return;
     checkTrapped(dt);
@@ -1502,39 +1642,51 @@
       if (morph.pause <= 0) {
         morph.target = morph.next ?? nextArenaIndex();
         morph.next = null; morph.total = 0;
-        setTheme(arenaIndex, morph.target, 0);
-        // the new cave's theme starts creeping in: say which
-        const th = window.ECHO_ARENAS[morph.target].theme;
-        fx({ k: 'banner', text: `Morphing: ${th.title}${th.look?.ice ? ' · slippery!' : th.look?.lava ? ' · hot!' : ''}`, rgb: th.wall, t: 2.2 });
-        fx({ k: 'sfx', n: 'warn' });
+        const def = window.ECHO_ARENAS[morph.target];
+        if (morph.x) {
+          // Xtreme: the themes blend as the walls change. Off lava, the floor cools first
+          if (lavaOn) { lavaOn = false; fx({ k: 'popup', x: arena.w / 2, y: arena.h / 2 - 2, text: 'The lava cools', rgb: '255, 190, 120', life: 1.4 }); }
+          setTheme(arenaIndex, morph.target, 0);
+          const lava = def.theme.style === 'lava';
+          fx({ k: 'banner', text: lava ? `${def.name}: get on a block!` : def.name, rgb: def.theme.wall, t: 2.6 });
+          fx({ k: 'sfx', n: 'warn' });
+        } else {
+          // classic: the same stone look all along
+          setTheme(arenaIndex, arenaIndex, 0);
+          fx({ k: 'sfx', n: 'warn' });
+        }
       }
       return;
     }
+    if (morph.target < 0) return;
     morph.timer -= dt;
     if (morph.timer > 0) return;
-    morph.timer = morph.rescue ? RESCUE_STEP : MORPH_STEP;
+    morph.timer = morph.rescue ? RESCUE_STEP : morph.x ? XTREME_STEP : MORPH_STEP;
     const rows = mapRows(morph.target), { w, h, grid } = arena, diff = [];
     for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
-      // (Stone Wall blocks are left alone; they crumble on their own)
-      if (grid[y * w + x] !== 2 && grid[y * w + x] !== (rows[y][x] === '#' ? 1 : 0)) diff.push(y * w + x);
+      const want = rows[y][x] === '#' || rows[y][x] === 'E' ? 1 : 0;
+      if (grid[y * w + x] !== want) diff.push(y * w + x);
     }
-    // the colours blend into the new theme as the walls change
+    // the colours blend into the new theme as the walls change (Xtreme)
     morph.total = Math.max(morph.total || 0, diff.length);
-    setTheme(themeFrom, morph.target, morph.total ? 1 - diff.length / morph.total : 1);
+    if (morph.x) setTheme(themeFrom, morph.target, morph.total ? 1 - diff.length / morph.total : 1);
     if (!diff.length) {
-      const keepLit = lit, keepBy = litBy, keepPowers = powerups;
+      const keepLit = lit, keepBy = litBy, keepPowers = powerups, keepRegrow = regrow;
       loadArena(morph.target);
       lit = keepLit; litBy = keepBy; powerups = keepPowers;
-      reapplyBlocks();
+      if (mossy()) regrow = keepRegrow;
       fx({ k: 'banner', text: arena.def.name, rgb: arena.theme.wall, t: 2 });
-      morph.pause = MORPH_PAUSE;
+      morph.pause = morph.x ? XTREME_HOLD : MORPH_PAUSE;
       morph.rescue = null;
+      morph.target = -1;
       for (const b of bats) b.trapT = 0;
+      // into lava: 3-2-1, then the floor burns
+      if (morph.x && styleNow() === 'lava') { lavaWarn = LAVA_WARN; fx({ k: 'sfx', n: 'warn' }); }
       return;
     }
     const changes = [];
     // freeing a trapped bat: melt the rock nearest it first, many tiles at a time
-    let pick = () => diff.splice(Math.floor(Math.random() * diff.length), 1)[0], count = 3;
+    let pick = () => diff.splice(Math.floor(Math.random() * diff.length), 1)[0], count = morph.x ? XTREME_TILES : 3;
     if (morph.rescue) {
       const near = (k) => Math.min(...morph.rescue.map((p) => Math.hypot((k % w) + 0.5 - p.x, Math.floor(k / w) + 0.5 - p.y)));
       diff.sort((p, q) => (grid[q] - grid[p]) || near(p) - near(q));   // walls to clear first, nearest first
@@ -1544,14 +1696,83 @@
     for (let n = 0; n < count && diff.length; n++) {
       const k = pick();
       const v = grid[k] ? 0 : 1, cx = (k % w) + 0.5, cy = Math.floor(k / w) + 0.5;
-      if (v && bats.some((b) => !b.dead && Math.abs(b.x - cx) < 1 && Math.abs(b.y - cy) < 1)) continue;
+      // (classic: rock never grows on a bat down on the floor; Xtreme: a block
+      // rising under a bat lifts it up on top, and one beside it nudges it aside)
+      const under = bats.filter((o) => !o.dead && !o.top && o.jumpT <= 0 && o.ghostT <= 0 && Math.abs(o.x - cx) < 1 && Math.abs(o.y - cy) < 1);
+      if (v && under.length) {
+        if (!morph.x) continue;
+        for (const o of under) if (Math.floor(o.x) === k % w && Math.floor(o.y) === Math.floor(k / w)) o.top = 1;
+      }
       changes.push([k, v]);
+      const here = (p) => Math.floor(p.x) === k % w && Math.floor(p.y) === Math.floor(k / w);
       if (v) {
-        powerups = powerups.filter((p) => Math.floor(p.x) !== k % w || Math.floor(p.y) !== Math.floor(k / w));
-        for (const c of crystals) if (Math.floor(c.x) === k % w && Math.floor(c.y) === Math.floor(k / w)) { c.on = false; c.timer = 99; }
+        powerups = powerups.filter((p) => !here(p));
+        for (const c of crystals) if (here(c)) { c.on = false; c.timer = 99; }
+      } else for (const p of powerups) if (here(p)) p.top = 0;   // (a power-up on a block that melts drops to the floor)
+      regrow = regrow.filter((r) => r.k !== k);
+    }
+    if (changes.length) {
+      fx({ k: 'tiles', c: changes });
+      for (const o of bats) if (!o.dead && !o.top && o.jumpT <= 0 && o.ghostT <= 0) easeOut(o);
+    }
+  }
+
+  // Xtreme into lava: the 3-2-1, then the floor burns. Power-ups left down on
+  // the floor burn up.
+  function updateLava(dt) {
+    if (lavaWarn <= 0) return;
+    const before = Math.ceil(lavaWarn);
+    lavaWarn = Math.max(0, lavaWarn - dt);
+    if (Math.ceil(lavaWarn) !== before) fx({ k: 'sfx', n: lavaWarn <= 0 ? 'crash' : 'beep' });
+    if (lavaWarn <= 0) {
+      lavaOn = true;
+      powerups = powerups.filter((p) => p.top);
+      fx({ k: 'banner', text: 'The floor is lava!', rgb: '255, 140, 60', t: 1.8 });
+      fx({ k: 'shake', v: 0.25 });
+    }
+  }
+
+  // Mossy Den: a dash into a bush chomps through it (leaves fly); it grows
+  // back REGROW seconds later, waiting while a bat is in the way
+  function chompBush(b, x, y) {
+    const ch = [];
+    for (let ty = Math.floor(y - R); ty <= Math.floor(y + R); ty++) {
+      for (let tx = Math.floor(x - R); tx <= Math.floor(x + R); tx++) {
+        if (!blockAt(tx + 0.5, ty + 0.5)) continue;
+        const nx = Math.max(tx, Math.min(x, tx + 1)), ny = Math.max(ty, Math.min(y, ty + 1));
+        if ((x - nx) ** 2 + (y - ny) ** 2 >= R * R) continue;
+        const k = ty * arena.w + tx;
+        ch.push([k, 0]);
+        regrow.push({ k, t: REGROW });
+        for (const c of crystals) if (Math.floor(c.x) === tx && Math.floor(c.y) === ty) c.on = false;
+        fx({ k: 'leaves', x: tx + 0.5, y: ty + 0.5 });
       }
     }
-    if (changes.length) fx({ k: 'tiles', c: changes });
+    if (!ch.length) return false;
+    bushCount += ch.length;
+    fx({ k: 'tiles', c: ch });
+    fx({ k: 'sfx', n: 'chomp', alt: 'crash' });
+    fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'CHOMP!', rgb: '150, 255, 120', life: 0.7 });
+    return true;
+  }
+  function updateRegrow(dt) {
+    if (!regrow.length) return;
+    if (!mossy()) { regrow = []; return; }
+    const ch = [];
+    regrow = regrow.filter((r) => {
+      r.t -= dt;
+      if (r.t > 0) return true;
+      const tx = r.k % arena.w, ty = Math.floor(r.k / arena.w);
+      // a bat (or a power-up) in the way: wait a little and try again
+      const near = (p, m) => p.x > tx - m && p.x < tx + 1 + m && p.y > ty - m && p.y < ty + 1 + m;
+      if (bats.some((b) => !b.dead && !b.top && near(b, R + 0.05)) || powerups.some((p) => near(p, 0))) { r.t = 0.5; return true; }
+      if (arena.grid[r.k] === 0) ch.push([r.k, 1]);
+      return false;
+    });
+    if (ch.length) {
+      fx({ k: 'tiles', c: ch });
+      for (const [k] of ch) fx({ k: 'leaves', x: (k % arena.w) + 0.5, y: Math.floor(k / arena.w) + 0.5, grow: 1 });
+    }
   }
 
   // Morph mode: is any bat shut in a small pocket? (checked a few times a second)
@@ -1563,7 +1784,7 @@
     const { label, sizes } = openRegions(), total = sizes.reduce((a, n) => a + n, 0) || 1;
     const stuck = [];
     for (const b of bats) {
-      if (b.dead || b.out || b.ghostT > 0 || b.jumpT > 0) { b.trapT = 0; continue; }
+      if (b.dead || b.out || b.ghostT > 0 || b.jumpT > 0 || b.top) { b.trapT = 0; continue; }
       const tx = Math.floor(b.x), ty = Math.floor(b.y), id = tx >= 0 && ty >= 0 && tx < arena.w && ty < arena.h ? label[ty * arena.w + tx] : -1;
       const room = id >= 0 && !hitsWall(b.x, b.y, R) ? sizes[id] : 0;   // wedged into rock counts as trapped too
       b.trapT = room < total * TRAP_SHARE ? (b.trapT || 0) + TRAP_CHECK : 0;
@@ -1571,31 +1792,43 @@
     }
     if (!stuck.length) return;
     if (morph.rescue) { morph.rescue = stuck; return; }   // already opening up: just aim at whoever's stuck now
-    // morph early, straight into Open Sky (or, with no sky about, the next cave)
+    // classic: morph early, straight into Open Sky (or, with no sky about, the next cave).
+    // Xtreme: the map on its way melts nearest the stuck bat first (or the next one does, early)
     const skies = arenaKinds(true);
-    morph.target = skies.length ? skies[Math.floor(Math.random() * skies.length)] : morph.target >= 0 ? morph.target : nextArenaIndex();
-    morph.pause = 0; morph.timer = 0; morph.rescue = stuck; morph.total = 0;
-    setTheme(themeK > 0.5 ? themeTo : themeFrom, morph.target, 0);
+    if (morph.x) {
+      if (lavaSafeOnly()) return;   // (over lava everyone's up on the blocks anyway)
+      if (morph.target < 0) { morph.target = nextArenaIndex(); morph.total = 0; setTheme(arenaIndex, morph.target, 0); }
+    } else {
+      morph.target = skies.length ? skies[Math.floor(Math.random() * skies.length)] : morph.target >= 0 ? morph.target : nextArenaIndex();
+      morph.total = 0;
+      setTheme(arenaIndex, arenaIndex, 0);
+    }
+    morph.pause = 0; morph.timer = 0; morph.rescue = stuck;
     fx({ k: 'banner', text: 'Opening up!', rgb: '190, 255, 235', t: 1.6 });
     fx({ k: 'shake', v: 0.3 });
     fx({ k: 'sfx', n: 'crash', alt: 'warn' });
   }
 
+  // back in, at the start spot farthest from everyone (a block top when the floor is lava)
   function respawn(b) {
     const foes = bats.filter((o) => o !== b && !o.dead);
     const score = (s) => foes.length ? Math.min(...foes.map((o) => Math.hypot(o.x - s.x, o.y - s.y))) : 0;
-    const free = arena.spawns.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
-    const s = (free.length ? free : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
-    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null, ghostT: 0, ice: 0, burn: 0, jumpT: 0, jumpCd: 0, jumps: JUMP_CHARGES, jumpQ: false });
+    const spots = cornerSpots(8).filter((p) => p.top || !hitsWall(p.x, p.y, R));
+    const s = (spots.length ? spots : [randomOpenSpot()]).slice().sort((p, q) => score(q) - score(p))[0];
+    Object.assign(b, { x: s.x, y: s.y, vx: 0, vy: 0, echoes: START_ECHOES, stun: 0, safe: SPAWN_SAFE, dead: 0, cooldown: 0, mouth: 0, dashT: 0, parryT: 0, parryRing: null, hitBy: null, ghostT: 0, ice: 0, burn: 0, jumpT: 0, jumpCd: 0, jumps: JUMP_CHARGES, jumpQ: false,
+      top: s.top ? 1 : 0, hv: s.top ? 1 : 0, lavaT: 0, lastHit: null });
   }
 
   function spawnPowerup(force) {
     const types = force ? [force] : powerOn;
     if (!types.length) return;
-    const spots = arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)) && bats.every((b) => b.dead || dist(p, b) > 5) && powerups.every((q) => dist(p, q) > 4));
+    // (over lava they sit on block tops; Extreme packs them closer together)
+    const gap = powerFreq?.near || 4, room = powerFreq?.near ? 3 : 5;
+    const pool = lavaSafeOnly() ? blockSpots().filter((p) => p.room >= 3) : arena.open.filter((p) => !solid(Math.floor(p.x), Math.floor(p.y)));
+    const spots = pool.filter((p) => bats.every((b) => b.dead || dist(p, b) > room) && powerups.every((q) => dist(p, q) > gap));
     if (!spots.length) return;
     const s = spots[Math.floor(Math.random() * spots.length)];
-    powerups.push({ x: s.x, y: s.y, type: types[Math.floor(Math.random() * types.length)], phase: Math.random() * 6 });
+    powerups.push({ x: s.x, y: s.y, type: types[Math.floor(Math.random() * types.length)], phase: Math.random() * 6, top: s.top ? 1 : 0 });
   }
 
   function grabPowerup(b, p) {
@@ -1625,7 +1858,8 @@
     const dt = slowmo > 0 ? rawDt * 0.35 : rawDt;
     updateEats(rawDt);
 
-    if (!over) updateMorph(rawDt);
+    if (!over) { updateMorph(rawDt); updateLava(rawDt); }
+    updateRegrow(dt);
     updateRound(rawDt);
     const slip = iceNow(), bounce = 0.4 + 0.3 * slip;   // icy caves: slippery, and walls bounce harder
 
@@ -1659,7 +1893,9 @@
       if (b.dead > 0) { if (b.out) continue; b.dead -= dt; if (b.dead <= 0 && !over) respawn(b); continue; }
       let ix = 0, iy = 0;
       if (b.stun > 0) b.stun = Math.max(0, b.stun - dt);
+      const wasIce = b.ice > 0;
       b.ice = b.stun > 0 ? Math.max(0, b.ice - dt) : 0;
+      if (wasIce && b.ice <= 0) fx({ k: 'shatter', x: r2(b.x), y: r2(b.y), top: b.top });
       if (b.ice > 0) { b.vx = 0; b.vy = 0; }   // frozen solid
       else if (b.stun > 0) {
         // stunned bats can't steer: the hit's knockback dies off fast and they hang still (they slide on ice)
@@ -1687,17 +1923,25 @@
       const sp = Math.hypot(b.vx, b.vy);
       if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
       if (Math.abs(b.vx) > 0.2) b.face = Math.sign(b.vx);
+      // (a dash into a bush in Mossy Den chomps right through it)
+      const chomps = (x, y) => !b.top && b.jumpT <= 0 && b.ghostT <= 0 && (b.dashT > 0 || b.biteT > 0) && mossy() && hitsWall(x, y, R) && chompBush(b, x, y);
       const nx = b.x + b.vx * dt;
-      if (!batBlocked(b, nx, b.y)) b.x = nx; else b.vx *= -bounce;
+      if (!batBlocked(b, nx, b.y) || chomps(nx, b.y)) b.x = nx; else b.vx *= -(b.top ? 0.2 : bounce);
       const ny = b.y + b.vy * dt;
-      if (!batBlocked(b, b.x, ny)) b.y = ny; else b.vy *= -bounce;
+      if (!batBlocked(b, b.x, ny) || chomps(b.x, ny)) b.y = ny; else b.vy *= -(b.top ? 0.2 : bounce);
+      // up on the blocks: flying off the edge drops you to the floor (a ghost just sinks into the rock)
+      if (b.top && b.jumpT <= 0 && !blockAt(b.x, b.y)) { if (b.ghostT > 0) b.top = 0; else drop(b); }
+      // the floor is lava: down there (not up on a block, not mid-jump, not a ghost) you sizzle
+      if (lavaOn && !b.top && b.jumpT <= 0 && b.ghostT <= 0 && !over && !roundEnd) {
+        b.lavaT += dt;
+        if (b.lavaT >= LAVA_GRACE) sizzle(b);
+      } else b.lavaT = 0;
     }
 
     advanceRings(dt, true);
     updateShots(dt);
     updateThunder(dt);
     updateTwisters(dt);
-    updateBlocks(dt);
 
     // biting: a bat mid-dash (or just after) that touches any rival chomps it,
     // unless the rival parries, blocks with a shield, or is dashing too (a
@@ -1708,17 +1952,16 @@
         let jumper = null;
         for (const b of bats) {
           if (b === a || b.dead || b.safe > 0 || Math.hypot(a.x - b.x, a.y - b.y) >= BITE_REACH) continue;
-          if (airborne(b)) { jumper = jumper || b; continue; }
+          // up in a jump, or on another level (up on a block / down on the floor): the jaws snap on air
+          if (airborne(b) || lvl(b) !== lvl(a)) { jumper = jumper || b; continue; }
           const d = Math.hypot(b.x - a.x, b.y - a.y) || 1, ux = (b.x - a.x) / d, uy = (b.y - a.y) / d;
           if (b.biteT > 0 && b.stun <= 0) { clash(a, b, ux, uy); continue outer; }
           if (b.parryT > 0 && b.stun <= 0) { parrySucceed(b, a, a.x, a.y, true); continue outer; }
           if (b.shield) {
-            b.shield = false;
             a.biteT = 0; a.dashT = 0; a.vx = -ux * 5; a.vy = -uy * 5;
             b.vx = ux * 3; b.vy = uy * 3;
-            fx({ k: 'popup', x: b.x, y: b.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
-            fx({ k: 'burst', x: b.x, y: b.y, rgb: POWERS.shield.rgb, n: 12 });
-            fx({ k: 'sfx', n: 'block' });
+            hitFrom(b, a.i);
+            shieldBlock(b);
             continue outer;
           }
           eat(a, b);
@@ -1737,7 +1980,7 @@
         continue;
       }
       for (const b of bats) {
-        if (b.dead || Math.hypot(c.x - b.x, c.y - b.y) > 0.6) continue;
+        if (b.dead || Math.hypot(c.x - b.x, c.y - b.y) > 0.6 || (!airborne(b) && lvl(b) !== (c.top || 0))) continue;
         b.echoes = Math.min(MAX_ECHOES, b.echoes + CRYSTAL_ECHOES);
         c.on = false;
         c.timer = 4 + Math.random() * 3;
@@ -1754,7 +1997,7 @@
       firstPower = false; powerTimer = powerWait('every');
     }
     powerups = powerups.filter((p) => {
-      const b = bats.find((o) => !o.dead && dist(o, p) < 0.6);
+      const b = bats.find((o) => !o.dead && dist(o, p) < 0.6 && (airborne(o) || lvl(o) === (p.top || 0)));
       if (b) { grabPowerup(b, p); return false; }
       return true;
     });
@@ -1787,17 +2030,14 @@
         const d = Math.hypot(foe.x - ring.x, foe.y - ring.y);
         if (d < r + R && d >= prev - R) {
           ring.hit.add(foe.i);
-          if (blocks.length && blockerBetween(ring.x, ring.y, foe.x, foe.y)) continue;   // a Stone Wall soaks it up
           foe.seen = 1;
           if (foe.stun > 0) continue;
           const k = d || 1;
           if (foe.parryT > 0) { parrySucceed(foe, bats[ring.owner], ring.x, ring.y); continue; }
+          hitFrom(foe, ring.owner);
           if (foe.shield) {
-            foe.shield = false;
             foe.vx = ((foe.x - ring.x) / k) * 3; foe.vy = ((foe.y - ring.y) / k) * 3;
-            fx({ k: 'popup', x: foe.x, y: foe.y - 1, text: 'BLOCKED', rgb: POWERS.shield.rgb, life: 0.8 });
-            fx({ k: 'burst', x: foe.x, y: foe.y, rgb: POWERS.shield.rgb, n: 12 });
-            fx({ k: 'sfx', n: 'block' });
+            shieldBlock(foe);
             continue;
           }
           noteHit(foe, ring.owner, ring.x, ring.y, foe.vx, foe.vy);
@@ -1824,6 +2064,14 @@
     popups = popups.filter((p) => p.t < p.life);
     for (const p of parries) p.t += dt;
     parries = parries.filter((p) => p.t < PARRY_FX);
+    for (const list of [shieldPops, shatters, sinks]) for (const p of list) p.t += dt;
+    shieldPops = shieldPops.filter((p) => p.t < 0.6); shatters = shatters.filter((p) => p.t < 0.6); sinks = sinks.filter((p) => p.t < SINK_TIME);
+    // the lava floor eases in (and cools off); a bat's height eases between the floor and the block tops
+    lavaVis += ((lavaOn ? 1 : 0) - lavaVis) * Math.min(1, dt * (lavaOn ? 4 : 1.5));
+    for (const b of bats) {
+      const want = b.jumpT > 0 ? (blockAt(b.x, b.y) ? 1 : 0) : b.top ? 1 : 0;
+      b.hv = b.dead ? want : (b.hv || 0) + (want - (b.hv || 0)) * Math.min(1, dt * (b.jumpT > 0 ? 7 : 14));
+    }
     for (const m of misses) {
       m.t += dt;
       // the biter's mouth gapes until the snap (the host's snapshots carry it to guests)
@@ -1835,7 +2083,7 @@
     misses = misses.filter((m) => m.t < MISS_TIME);
     for (const p of particles) {
       p.x += p.vx * dt; p.y += p.vy * dt;
-      if (p.feather) { p.vy += 1.5 * dt; p.vx *= 1 - 1.5 * dt; } else { p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; }
+      if (p.feather || p.leaf) { p.vy += 1.5 * dt; p.vx *= 1 - 1.5 * dt; } else { p.vx *= 1 - 2 * dt; p.vy *= 1 - 2 * dt; }
       p.life -= dt;
     }
     particles = particles.filter((p) => p.life > 0);
@@ -1891,14 +2139,6 @@
       n.t += dt;
     }
     novas = novas.filter((n) => n.t < NOVA_FX);
-    for (const bk of blocks) {
-      if (!bk.cr && bk.t >= WALL_LIFE - WALL_CRUMBLE) { bk.cr = true; (s.crumble || s.crash)?.(); }
-      if (bk.t < WALL_RISE || bk.cr) {
-        // dust while it rises, falling chunks while it crumbles
-        const k = bk.tiles[Math.floor(Math.random() * bk.tiles.length)], x = (k % arena.w) + Math.random(), y = Math.floor(k / arena.w) + Math.random();
-        if (Math.random() < 0.6) particles.push({ x, y, vx: (Math.random() - 0.5) * 2, vy: bk.cr ? 1.5 + Math.random() : -0.5 - Math.random(), life: 0.4 + Math.random() * 0.3, rgb: bk.cr ? POWERS.wall.rgb : '200, 190, 170', size: 3 + Math.random() * 3 });
-      }
-    }
   }
 
   // ---- Online snapshots ----------------------------------------------------
@@ -1909,19 +2149,21 @@
       gd: guide ? (guide.kind === 'round' ? 2 : 1) : 0,   // the controls guide is up, waiting on the host's Start
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, r2(b.stun), r2(b.dead), b.score, b.echoes, r2(b.safe), r2(b.seen),
         r2(b.mouth), r2(b.puff), r2(b.dashCd), b.power || 0, r2(b.powerT), b.mega ? 1 : 0, b.shield ? 1 : 0, b.ctrl === 'cpu' ? 1 : 0, r2(b.dashT), r2(b.jumps), r2(b.parryT), b.out ? 1 : 0,
-        b.held || 0, r2(b.ghostT), r2(b.ice), r2(b.burn), r2(b.heldLeft), r2(b.specialCd), r2(b.jumpT), r2(b.jumpCd)]),
+        b.held || 0, r2(b.ghostT), r2(b.ice), r2(b.burn), r2(b.heldLeft), r2(b.specialCd), r2(b.jumpT), r2(b.jumpCd), b.top ? 1 : 0]),
       r: rings.map((g) => [g.id, r2(g.x), r2(g.y), r2(g.r), g.owner, g.max, g.big ? 1 : 0]),
       c: crystals.map((c) => (c.on ? 1 : 0)).join(''),
-      p: powerups.map((p) => [r2(p.x), r2(p.y), p.type]),
+      p: powerups.map((p) => [r2(p.x), r2(p.y), p.type, p.top ? 1 : 0]),
       e: eats.map((e) => [e.eater.i, e.food.i, r2(e.food.x), r2(e.food.y), r2(e.t), r2(e.ang)]),
       fx: outbox,
       ft: winScore,
       tm: [themeFrom, themeTo, r2(themeK)],   // the cave theme: from, to, how far it has blended
+      lv: [lavaOn ? 1 : 0, r2(lavaWarn)],   // lava: burning, and the 3-2-1 before it does
     };
+    // the whole cave's rock, now and then (so chomped bushes and morphs stay in step)
+    if (gridSent++ % 20 === 0) s.gr = arena.grid.join('');
     // special powers in play (only sent while there are some)
-    if (shots.length) s.sh = shots.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.vx), r2(m.vy), m.owner]);
+    if (shots.length) s.sh = shots.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.vx), r2(m.vy), m.owner, m.top ? 1 : 0]);
     if (twisters.length) s.tw = twisters.map((m) => [m.id, r2(m.x), r2(m.y), r2(m.ux), r2(m.uy), r2(m.t), m.owner]);
-    if (blocks.length) s.bk = blocks.map((m) => [m.id, m.tiles, r2(m.t), m.owner]);
     // bat looks: with the first snapshots, then now and then for anyone who missed them
     if (looksSent < 10 || looksSent % 60 === 0) s.lk = bats.map((b) => b.look);
     looksSent++;
@@ -1937,6 +2179,10 @@
     if (s.am) arenaMode = s.am;
     if (s.ft) winScore = s.ft;
     if (s.tm) setTheme(s.tm[0], s.tm[1], s.tm[2]);
+    if (s.lv) { lavaOn = !!s.lv[0]; lavaWarn = s.lv[1] || 0; }
+    if (s.gr && s.gr.length === arena.grid.length) {
+      for (let k = 0; k < arena.grid.length; k++) { const v = s.gr.charCodeAt(k) - 48; if (arena.grid[k] !== v) { arena.grid[k] = v; tileGlow[k] = 1; } }
+    }
     rule = s.ru ? 'survivor' : 'bites';
     if (s.ru) { round = s.ru[0]; roundClock = s.ru[1]; storm = !!s.ru[2]; roundEnd = s.ru[3] ? roundEnd || { t: 0, w: -1 } : null; }
     countdown = s.cd;
@@ -1959,6 +2205,7 @@
       else if (b.jumpT > 0) { if (Math.abs(b.jumpT - jt) > 0.12) b.jumpT = jt; }
       else if (jt > JUMP_TIME * 0.5) b.jumpT = jt;   // (not the tail end of one that just landed here)
       b.jumpCd = v[30] || 0;
+      b.top = v[31] ? 1 : 0;
       if (s.lk && s.lk[i] && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch (e) { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
@@ -1969,11 +2216,11 @@
     });
     [...s.c].forEach((ch, k) => { if (crystals[k]) crystals[k].on = ch === '1'; });
     const oldShots = new Map(shots.map((m) => [m.id, m]));
-    shots = (s.sh || []).map(([id, x, y, vx, vy, owner]) => {
+    shots = (s.sh || []).map(([id, x, y, vx, vy, owner, top]) => {
       const m = oldShots.get(id);
       // keep the smoothly predicted position unless it drifted off
-      if (m && Math.hypot(m.x - x, m.y - y) < 0.6) { m.vx = vx; m.vy = vy; m.owner = owner; return m; }
-      return { id, x, y, vx, vy, owner, t: 0 };
+      if (m && Math.hypot(m.x - x, m.y - y) < 0.6) { m.vx = vx; m.vy = vy; m.owner = owner; m.top = top; return m; }
+      return { id, x, y, vx, vy, owner, t: 0, top };
     });
     const oldTw = new Map(twisters.map((m) => [m.id, m]));
     twisters = (s.tw || []).map(([id, x, y, ux, uy, t, owner]) => {
@@ -1982,19 +2229,7 @@
       m.tx = x; m.ty = y; m.ux = ux; m.uy = uy; m.t = Math.max(m.t || 0, t); m.owner = owner;
       return m;
     });
-    // Stone Wall blocks: the host's list says which tiles are walled right now
-    const oldBk = new Map(blocks.map((m) => [m.id, m]));
-    blocks = (s.bk || []).map(([id, tiles, t, owner]) => {
-      const m = oldBk.get(id) || { id, tiles, t, owner };
-      m.t = Math.max(m.t, t);
-      return m;
-    });
-    const walled = new Set(blocks.flatMap((m) => m.tiles));
-    for (let k = 0; k < arena.grid.length; k++) {
-      if (arena.grid[k] === 2 && !walled.has(k)) arena.grid[k] = 0;
-    }
-    for (const k of walled) if (arena.grid[k] === 0) { arena.grid[k] = 2; tileGlow[k] = 1; }
-    powerups = s.p.map(([x, y, type], k) => ({ x, y, type, phase: powerups[k]?.phase ?? Math.random() * 6 }));
+    powerups = s.p.map(([x, y, type, top], k) => ({ x, y, type, top: top || 0, phase: powerups[k]?.phase ?? Math.random() * 6 }));
     eats = s.e.map(([ei, fi, fx2, fy2, t, ang]) => {
       const f = bats[fi];
       return { eater: bats[ei], food: { ...f, x: fx2, y: fy2 }, t, ang };
@@ -2025,7 +2260,6 @@
       m.t += dt;
       if (m.tx !== undefined) { m.tx += m.ux * TORNADO_SPEED * dt; m.ty += m.uy * TORNADO_SPEED * dt; m.x += (m.tx - m.x) * k; m.y += (m.ty - m.y) * k; }
     }
-    for (const m of blocks) m.t += dt;
     for (const b of bats) {
       if (b.ghostT > 0) b.ghostT = Math.max(0, b.ghostT - dt);
       if (b.jumpT > 0) b.jumpT = Math.max(0, b.jumpT - dt);
@@ -2069,6 +2303,16 @@
     const alive = bats.filter((b) => !b.out).sort((p, q) => q.score - p.score || p.i - q.i);
     watchI = alive.length ? alive[0].i : -1;
     return alive[0] || null;
+  }
+  // a tap (or squeak key) while you're out: watch the next bat still flying
+  function watchNext() {
+    const cur = watched();
+    const alive = bats.filter((b) => !b.out);
+    if (!cur || alive.length < 2) return false;
+    const k = alive.indexOf(cur);
+    watchI = alive[(k + 1) % alive.length].i;
+    applyFx({ k: 'sfx', n: 'tick', alt: 'beep' });
+    return true;
   }
   // Which bats sense their surroundings on this screen: the viewer online,
   // every local player on a shared screen (or the bat being watched)
@@ -2125,41 +2369,151 @@
     ctx.setLineDash([]);
   }
 
-  // Lava and ice caves, top-down: glowing cracks in the floor, or a frosty
-  // sheen with glints. Drawn the same under rock and open floor, so they
-  // give nothing away about where the walls are.
+  // Themed floors, top-down. Drawn the same under rock and open floor, so they
+  // give nothing away about where the walls are (except lava, which glows
+  // around the blocks standing in it): ice has a frosty sheen with glints,
+  // grass a faint carpet of blades, crystal twinkles, lava churns and flows.
+  let patterns = null;
+  function floorPatterns() {
+    if (patterns) return patterns;
+    const mk = (size, fn) => { const c = document.createElement('canvas'); c.width = c.height = size; fn(c.getContext('2d'), size); return ctx.createPattern(c, 'repeat'); };
+    let seed = 99;
+    const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    // lava: hot blobs on dark red rock, drawn wrapped so the tile repeats seamlessly
+    const blobs = (g, S, n, cols, rmin, rmax) => {
+      for (let k = 0; k < n; k++) {
+        const x = rnd() * S, y = rnd() * S, r = S * (rmin + rnd() * (rmax - rmin)), c = cols[k % cols.length];
+        for (const dx of [-S, 0, S]) for (const dy of [-S, 0, S]) {
+          const gr = g.createRadialGradient(x + dx, y + dy, 0, x + dx, y + dy, r);
+          gr.addColorStop(0, `rgba(${c}, 0.95)`); gr.addColorStop(1, `rgba(${c}, 0)`);
+          g.fillStyle = gr; g.fillRect(x + dx - r, y + dy - r, r * 2, r * 2);
+        }
+      }
+    };
+    const lavaA = mk(160, (g, S) => { g.fillStyle = '#5a0c02'; g.fillRect(0, 0, S, S); blobs(g, S, 14, ['255, 90, 10', '255, 140, 30'], 0.12, 0.3); blobs(g, S, 9, ['255, 220, 110'], 0.04, 0.1); });
+    const lavaB = mk(128, (g, S) => { blobs(g, S, 10, ['255, 170, 50', '255, 80, 20'], 0.08, 0.2); });
+    const grass = mk(64, (g, S) => {
+      g.lineCap = 'round';
+      for (let k = 0; k < 70; k++) {
+        const x = rnd() * S, y = rnd() * S, l = 3 + rnd() * 4, a = -Math.PI / 2 + (rnd() - 0.5);
+        g.strokeStyle = rnd() < 0.5 ? 'rgba(120, 220, 100, 0.9)' : 'rgba(60, 150, 60, 0.9)'; g.lineWidth = 1.2;
+        g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+      }
+    });
+    return (patterns = { lavaA, lavaB, grass });
+  }
   function drawFloorTheme2D(th) {
-    const L = th.look;
-    if (!L || (L.lava < 0.02 && L.ice < 0.02)) return;
-    const { w, h } = arena;
+    const L = th.look, style = th.style, { w, h } = arena;
     ctx.save();
-    if (L.ice > 0.02) {
-      ctx.fillStyle = `rgba(150, 200, 255, ${0.06 * L.ice})`;
+    if (L && L.ice > 0.02) {
+      ctx.fillStyle = `rgba(150, 200, 255, ${0.09 * L.ice})`;
       ctx.fillRect(X(0), Y(0), w * PX, h * PX);
+      // long pale streaks across the ice
+      ctx.strokeStyle = `rgba(220, 240, 255, ${0.05 * L.ice})`; ctx.lineWidth = PX * 0.5;
+      ctx.beginPath();
+      for (let k = 0; k < w + h; k += 4) { ctx.moveTo(X(k), Y(0)); ctx.lineTo(X(k - h * 0.6), Y(h)); }
+      ctx.stroke();
     }
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    for (let k = 0; k < w * h; k++) {
-      const r = hash(k * 13.7 + 5);
-      const tx = k % w, ty = (k - tx) / w, x = X(tx), y = Y(ty);
-      if (L.lava > 0.02 && r < 0.09) {
-        const a = L.lava * (0.24 + 0.14 * Math.sin(clock * 1.7 + k));
-        ctx.strokeStyle = `rgba(255, 110, 30, ${a * 0.45})`; ctx.lineWidth = Math.max(2.5, PX * 0.18);
-        ctx.beginPath();
-        let px = x + PX * hash(k + 1), py = y + PX * hash(k + 2);
-        ctx.moveTo(px, py);
-        for (let j = 0; j < 3; j++) { px += (hash(k * 3 + j) - 0.5) * PX * 0.8; py += (hash(k * 5 + j) - 0.5) * PX * 0.8; ctx.lineTo(px, py); }
-        ctx.stroke();
-        ctx.strokeStyle = `rgba(255, 200, 90, ${a})`; ctx.lineWidth = Math.max(1, PX * 0.05); ctx.stroke();
-      }
-      if (L.ice > 0.02 && r > 0.93) {
-        // a glint: a little four-point star, twinkling
-        const a = L.ice * 0.18 * (0.4 + 0.6 * Math.sin(clock * 2.2 + k * 1.7)), cx = x + PX * hash(k + 3), cy = y + PX * hash(k + 4), s = PX * 0.18;
-        ctx.strokeStyle = `rgba(225, 245, 255, ${a})`; ctx.lineWidth = 1;
-        ctx.beginPath(); ctx.moveTo(cx - s, cy); ctx.lineTo(cx + s, cy); ctx.moveTo(cx, cy - s); ctx.lineTo(cx, cy + s); ctx.stroke();
-      }
+    if (style === 'moss') {
+      // a faint carpet of grass
+      const P = floorPatterns();
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.translate(X(0), Y(0)); ctx.scale(PX / 22, PX / 22);
+      ctx.fillStyle = P.grass; ctx.fillRect(0, 0, w * 22, h * 22);
+      ctx.restore();
     }
     ctx.restore();
+    ctx.save();
+    // the lava itself: a churning layer and a brighter one drifting the other way
+    const lavaAmt = Math.max(lavaVis, lavaWarn > 0 ? 0.25 + 0.2 * Math.sin(clock * 9) : 0);
+    if (lavaAmt > 0.01 && !arena.def.open) {
+      const P = floorPatterns(), sc = PX / 40;
+      ctx.beginPath(); ctx.rect(X(1), Y(1), (w - 2) * PX, (h - 2) * PX); ctx.clip();
+      ctx.globalAlpha = Math.min(1, lavaAmt);
+      ctx.translate(X(0) + ((clock * 9) % 160) * sc, Y(0) + ((clock * 4) % 160) * sc); ctx.scale(sc, sc);
+      ctx.fillStyle = P.lavaA; ctx.fillRect(-160, -160, w * 40 + 320, h * 40 + 320);
+      ctx.restore(); ctx.save();
+      ctx.beginPath(); ctx.rect(X(1), Y(1), (w - 2) * PX, (h - 2) * PX); ctx.clip();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = Math.min(1, lavaAmt) * (0.35 + 0.15 * Math.sin(clock * 2.3));
+      ctx.translate(X(0) - ((clock * 13) % 128) * sc, Y(0) + ((clock * 7) % 128) * sc); ctx.scale(sc, sc);
+      ctx.fillStyle = P.lavaB; ctx.fillRect(-128, -128, w * 40 + 256, h * 40 + 256);
+    }
+    ctx.restore();
+    if (!L) return;
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineCap = 'round';
+    for (let k = 0; k < w * h; k++) {
+      const r = hash(k * 13.7 + 5);
+      if (r < 0.9) continue;
+      const tx = k % w, ty = (k - tx) / w, x = X(tx), y = Y(ty);
+      let a = 0, rgb = '225, 245, 255';
+      if (L.ice > 0.02 && r > 0.93) a = L.ice * 0.2 * (0.4 + 0.6 * Math.sin(clock * 2.2 + k * 1.7));
+      else if (style === 'crystal') { a = 0.32 * Math.max(0, Math.sin(clock * 2.6 + k * 2.3)) ** 3; rgb = k % 2 ? '120, 235, 255' : '190, 150, 255'; }
+      if (a <= 0.01) continue;
+      // a glint: a little four-point star, twinkling
+      const cx = x + PX * hash(k + 3), cy = y + PX * hash(k + 4), sz = PX * 0.2;
+      ctx.strokeStyle = `rgba(${rgb}, ${a})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cx - sz, cy); ctx.lineTo(cx + sz, cy); ctx.moveTo(cx, cy - sz); ctx.lineTo(cx, cy + sz); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // One block, top-down, in the cave's style. a: how lit (0..1); open: which
+  // sides face open floor (top, right, bottom, left); rgb: the light's colour
+  function drawBlock2D(style, k, tx, ty, a, open, rgb, th) {
+    const x = X(tx), y = Y(ty), s = PX;
+    if (style === 'moss') {
+      // a bush: a cluster of round leafy clumps (it swells up when it grows back)
+      const sc = 1 - 0.5 * tileGlow[k], h1 = hash(k * 3.1);
+      ctx.fillStyle = `rgba(20, 60, 25, ${a * 0.85})`;
+      ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, s * 0.55 * sc, 0, Math.PI * 2); ctx.fill();
+      for (let j = 0; j < 4; j++) {
+        const ang = h1 * 6 + j * 1.57, cx = x + s / 2 + Math.cos(ang) * s * 0.2 * sc, cy = y + s / 2 + Math.sin(ang) * s * 0.2 * sc, rr = s * (0.3 + 0.06 * hash(k + j)) * sc;
+        const g = ctx.createRadialGradient(cx - rr * 0.3, cy - rr * 0.35, rr * 0.1, cx, cy, rr);
+        g.addColorStop(0, `rgba(170, 245, 120, ${a})`); g.addColorStop(1, `rgba(50, 140, 60, ${a * 0.9})`);
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.fill();
+      }
+      if (a > 0.3) {
+        ctx.strokeStyle = `rgba(${rgb}, ${a * 0.55})`; ctx.lineWidth = Math.max(1, PX * 0.05);
+        ctx.beginPath(); ctx.arc(x + s / 2, y + s / 2, s * 0.56 * sc, 0, Math.PI * 2); ctx.stroke();
+      }
+      return;
+    }
+    if (style === 'lava') {
+      // dark basalt standing in the lava, its foot glowing
+      ctx.fillStyle = `rgba(36, 16, 12, ${Math.max(0.92, a)})`;
+      ctx.fillRect(x, y, s + 0.5, s + 0.5);
+      ctx.fillStyle = `rgba(110, 50, 34, ${0.25 + a * 0.6})`;
+      ctx.fillRect(x + s * 0.12, y + s * 0.12, s * 0.76, s * 0.76);
+      ctx.strokeStyle = `rgba(${lavaVis > 0.1 ? '255, 140, 50' : rgb}, ${Math.max(a, lavaVis * 0.85)})`;
+      ctx.lineWidth = Math.max(1.5, PX * 0.09);
+    } else if (style === 'crystal') {
+      // a cut gem: a bright facet, a dark facet, a glowing rim
+      ctx.fillStyle = `rgba(${th.fill}, ${a * 0.85})`;
+      ctx.fillRect(x, y, s + 0.5, s + 0.5);
+      ctx.fillStyle = `rgba(200, 240, 255, ${a * 0.22})`;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + s, y); ctx.lineTo(x + s / 2, y + s / 2); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = `rgba(150, 110, 255, ${a * 0.18})`;
+      ctx.beginPath(); ctx.moveTo(x, y + s); ctx.lineTo(x + s, y + s); ctx.lineTo(x + s / 2, y + s / 2); ctx.closePath(); ctx.fill();
+      ctx.strokeStyle = `rgba(220, 245, 255, ${a * 0.35})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + s, y + s); ctx.moveTo(x + s, y); ctx.lineTo(x, y + s); ctx.stroke();
+      ctx.strokeStyle = `rgba(${rgb}, ${a})`;
+      ctx.lineWidth = Math.max(1.5, PX * 0.08);
+    } else {
+      ctx.fillStyle = `rgba(${th.fill}, ${a * 0.8})`;
+      ctx.fillRect(x, y, s + 0.5, s + 0.5);
+      ctx.strokeStyle = `rgba(${rgb}, ${a})`;
+      ctx.lineWidth = Math.max(1.5, PX * 0.08);
+    }
+    ctx.beginPath();
+    if (open[0]) { ctx.moveTo(x, y); ctx.lineTo(x + s, y); }
+    if (open[1]) { ctx.moveTo(x + s, y); ctx.lineTo(x + s, y + s); }
+    if (open[2]) { ctx.moveTo(x, y + s); ctx.lineTo(x + s, y + s); }
+    if (open[3]) { ctx.moveTo(x, y); ctx.lineTo(x, y + s); }
+    ctx.stroke();
   }
 
   // crystals and power-ups stay hidden too, until sound or a bat's senses find them
@@ -2175,12 +2529,13 @@
   function render() {
     if (in3d()) {
       let follow = viewer >= 0 ? bats[viewer] : localBat(0);
-      // out of the round: follow a teammate on this screen still flying, else the action
-      if (follow && follow.out) follow = bats.find((b) => b.ctrl === 'local' && !b.out) || watched() || follow;
+      // out (or waiting to come back): follow a teammate on this screen still flying, else whoever you're watching
+      if (spectating()) follow = watched() || follow;
+      else if (follow && (follow.out || follow.dead)) follow = bats.find((b) => b.ctrl === 'local' && !b.out && !b.dead) || follow;
       const ok = window.EchoDuel3D.render({
         W, H, arena, bats, lit, litBy, tileGlow, near: senses(), clock, rings, beams: NO_BEAMS, crystals, powerups, eats, shake, follow,
         batVisible, seenAt, batRgb: BAT_RGB, POWERS, BEAM_LIFE: 1, EAT_PULL, extra: extras3d,
-        theme: TH().look, jumpH, jumpLift: JUMP_LIFT, big: bigArena,
+        theme: TH().look, jumpH, jumpLift: JUMP_LIFT, big: bigArena, level: (b) => b.hv || 0, lava: lavaVis, lavaWarn,
       });
       if (ok) { render3dOverlay(follow); return; }
     }
@@ -2222,32 +2577,23 @@
     // walls: nothing in the dark, bright where sound or a nearby bat's senses reach
     for (let ty = 0; ty < arena.h; ty++) {
       for (let tx = 0; tx < arena.w; tx++) {
-        if (!solid(tx, ty) || arena.grid[ty * arena.w + tx] === 2) continue;   // (Stone Walls are drawn below)
+        if (!solid(tx, ty)) continue;
         const open = [!solid(tx, ty - 1), !solid(tx + 1, ty), !solid(tx, ty + 1), !solid(tx - 1, ty)];
-        if (!open.some(Boolean)) continue;
+        const inner = tx > 0 && ty > 0 && tx < arena.w - 1 && ty < arena.h - 1, style = inner ? th.style : 'stone';
+        if (!open.some(Boolean) && style !== 'lava' && style !== 'moss') continue;
         const l = lit[ty * arena.w + tx];
-        let a = l;
+        // (blocks in lava always show, dark against the glow)
+        let a = style === 'lava' ? Math.max(l, 0.35) : l;
         for (const b of near) {
           const d = Math.hypot(tx + 0.5 - b.x, ty + 0.5 - b.y);
           a = Math.max(a, Math.max(0, Math.min(1, 1 - (d - 0.7) / 1.4)) * 0.35);
         }
         if (a < 0.02) continue;
         const rgb = l > 0.05 ? LIGHT_RGB[litBy[ty * arena.w + tx]] : th.wall;
-        const x = X(tx), y = Y(ty), s = PX;
-        ctx.fillStyle = `rgba(${th.fill}, ${a * 0.8})`;
-        ctx.fillRect(x, y, s + 0.5, s + 0.5);
-        ctx.strokeStyle = `rgba(${rgb}, ${a})`;
-        ctx.lineWidth = Math.max(1.5, PX * 0.08);
-        ctx.beginPath();
-        if (open[0]) { ctx.moveTo(x, y); ctx.lineTo(x + s, y); }
-        if (open[1]) { ctx.moveTo(x + s, y); ctx.lineTo(x + s, y + s); }
-        if (open[2]) { ctx.moveTo(x, y + s); ctx.lineTo(x + s, y + s); }
-        if (open[3]) { ctx.moveTo(x, y); ctx.lineTo(x, y + s); }
-        ctx.stroke();
+        drawBlock2D(style, ty * arena.w + tx, tx, ty, a, open, rgb, th);
       }
     }
 
-    drawBlocks2D();
 
     for (const c of crystals) {
       if (!c.on) continue;
@@ -2283,10 +2629,8 @@
 
     for (const p of particles) {
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
-      if (p.feather) {
-        ctx.save(); ctx.translate(X(p.x), Y(p.y)); ctx.rotate(p.life * 6);
-        ctx.beginPath(); ctx.ellipse(0, 0, p.size, p.size * 0.4, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-      } else ctx.fillRect(X(p.x) - p.size / 2, Y(p.y) - p.size / 2, p.size, p.size);
+      if (p.feather || p.leaf || p.shard) particleShape(p, X(p.x), Y(p.y), p.size);
+      else ctx.fillRect(X(p.x) - p.size / 2, Y(p.y) - p.size / 2, p.size, p.size);
     }
 
     // (a bat hopping over a bite is drawn after the jaws, up above them)
@@ -2302,6 +2646,7 @@
     drawChomps((x, y) => ({ x: X(x), y: Y(y), s: PX }), true);
     drawMisses((x, y) => ({ x: X(x), y: Y(y), s: PX }), (b) => ({ x: X(b.x), y: Y(b.y - jumpH(b) * 0.95 - 0.95), s: PX }));
     drawBats(true);
+    drawFxExtras(P2, false);
     drawParries((x, y) => ({ x: X(x), y: Y(y), s: PX }));
 
     for (const p of popups) {
@@ -2350,17 +2695,15 @@
       if (q.off) continue;
       const size = p.size * q.s / 34;
       ctx.fillStyle = `rgba(${p.rgb}, ${Math.min(1, p.life * 1.6)})`;
-      if (p.feather) {
-        ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(p.life * 6);
-        ctx.beginPath(); ctx.ellipse(0, 0, size, size * 0.4, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-      } else ctx.fillRect(q.x - size / 2, q.y - size / 2, size, size);
+      if (p.feather || p.leaf || p.shard) particleShape(p, q.x, q.y, size);
+      else ctx.fillRect(q.x - size / 2, q.y - size / 2, size, size);
     }
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     for (const b of bats) {
       if (b.dead) continue;
       const v = batVisible(b);
       if (v < 0.03 || (b.safe > 0 && Math.floor(b.safe * 10) % 2 === 0)) continue;
-      const q = P(b.x, b.y, FLY_Y + JUMP_LIFT * jumpH(b)), s = q.s;
+      const q = P(b.x, b.y, lift3(b)), s = q.s;
       if (q.off) continue;
       ctx.globalAlpha = b.ctrl === 'local' || viewer === b.i ? 1 : v;
       if (b.held && b.heldLeft > 0) {
@@ -2390,7 +2733,8 @@
     }
     drawChomps(P);
     // (the missed jaws snap down by the floor, under the bat hopping over them)
-    drawMisses((x, y) => P(x, y, 0.12), (b) => P(b.x, b.y, FLY_Y + JUMP_LIFT * jumpH(b) + 0.75), 0.55);
+    drawMisses((x, y) => P(x, y, 0.12), (b) => P(b.x, b.y, lift3(b) + 0.75), 0.55);
+    drawFxExtras(P, true);
     drawParries(P);
     for (const p of popups) {
       const k = p.t / p.life;
@@ -2480,6 +2824,51 @@
   // Parry: a bat's open parry window shows as a thin bright guard ring; a
   // successful parry flashes white-gold rings with a spark burst and a crackle
   // of light back to the attacker. P(x, y) maps arena to screen: { x, y, s }.
+  // shield pops, ice shattering, bats sinking into the lava. P maps arena to
+  // screen; z (3D only) is the height to draw a bat's effects at
+  // feathers and leaves flutter (an oval), ice shards spin (a sliver)
+  function particleShape(p, x, y, size) {
+    ctx.save(); ctx.translate(x, y); ctx.rotate(p.life * 6 + (p.spin || 0));
+    ctx.beginPath();
+    if (p.shard) { ctx.moveTo(0, -size); ctx.lineTo(size * 0.35, size * 0.5); ctx.lineTo(-size * 0.35, size * 0.5); ctx.closePath(); }
+    else ctx.ellipse(0, 0, size, size * (p.leaf ? 0.5 : 0.4), 0, 0, Math.PI * 2);
+    ctx.fill(); ctx.restore();
+  }
+  function drawFxExtras(P, in3d) {
+    for (const p of shieldPops) {
+      const k = p.t / 0.6, b = bats[p.i], z = in3d && b ? lift3(b) : undefined, q = P(p.x, p.y, z);
+      if (q.off) continue;
+      drawShieldBubble(q.x, q.y, q.s * 0.72 * (1 + 0.7 * k), (1 - k) * (1 - k), 1 - k);
+      for (let j = 0; j < 8; j++) {
+        const a = (j / 8) * Math.PI * 2 + p.i, d = q.s * 0.72 * (1 + 1.1 * k);
+        ctx.fillStyle = `rgba(220, 250, 255, ${0.9 * (1 - k)})`;
+        ctx.beginPath(); ctx.arc(q.x + Math.cos(a) * d, q.y + Math.sin(a) * d, Math.max(1.2, q.s * 0.04), 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    for (const p of shatters) {
+      const k = p.t / 0.6, q = P(p.x, p.y, in3d ? FLY_Y + (p.top ? 1 : 0) : undefined);
+      if (q.off) continue;
+      glow(q.x, q.y, q.s * (0.5 + 1.2 * k), '200, 240, 255', 0.55 * (1 - k));
+    }
+    for (const p of sinks) {
+      const k = p.t / SINK_TIME, q = P(p.x, p.y, in3d ? 0.05 : undefined);
+      if (q.off) continue;
+      // orange ripples spreading over the lava, and the bat going under
+      ctx.save();
+      for (let j = 0; j < 3; j++) {
+        const kk = Math.min(1, k * 1.3 + j * 0.2);
+        ctx.strokeStyle = `rgba(255, ${170 + j * 30}, 80, ${0.8 * (1 - kk)})`; ctx.lineWidth = Math.max(1.5, q.s * 0.06);
+        ctx.beginPath(); ctx.ellipse(q.x, q.y, q.s * (0.3 + 0.9 * kk), q.s * (0.3 + 0.9 * kk) * (in3d ? 0.5 : 0.7), 0, 0, Math.PI * 2); ctx.stroke();
+      }
+      glow(q.x, q.y, q.s * 1.2, '255, 150, 50', 0.5 * (1 - k));
+      if (p.look) {
+        const b = { ...p.look, safe: 0, dead: 0, shield: false, ice: 0, hv: 0, jumpT: 0, held: null, mega: false, power: null, mouth: 0, puff: 0 };
+        const up = in3d ? P(p.x, p.y, FLY_Y * (1 - k)) : q;
+        drawBat(b, up.x, up.y + (in3d ? 0 : q.s * 0.3 * k), { scale: Math.max(0.05, 1 - k * 0.9), rot: 0.001 + Math.sin(k * 20) * 0.2, alpha: 1 - k * 0.7, stunned: true, tag: false });
+      }
+      ctx.restore();
+    }
+  }
   function drawParries(P) {
     ctx.save();
     ctx.lineCap = 'round';
@@ -2541,55 +2930,6 @@
   // ---- Special power effects ------------------------------------------------
   const hash = (n) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
   const easeBack = (t) => { const c = 1.9; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; };
-  // how tall a Stone Wall block stands (0..1, overshooting as it slams up) and how far it has crumbled
-  const blockRise = (bk) => (bk.t < WALL_RISE ? Math.max(0, easeBack(bk.t / WALL_RISE)) : 1);
-  const blockCrumble = (bk) => Math.max(0, Math.min(1, (bk.t - (WALL_LIFE - WALL_CRUMBLE)) / WALL_CRUMBLE));
-
-  // Stone Wall, top-down: blocks pop up from the floor, glow faintly in the
-  // owner's colour, crack and break apart at the end. Everyone can see them.
-  function drawBlocks2D() {
-    for (const bk of blocks) {
-      const rise = blockRise(bk), cr = blockCrumble(bk), rgb = BATS[bk.owner]?.rgb || POWERS.wall.rgb;
-      for (const k of bk.tiles) {
-        const tx = k % arena.w, ty = Math.floor(k / arena.w);
-        const j = cr > 0 ? (hash(k + Math.floor(clock * 30)) - 0.5) * PX * 0.08 : 0;
-        const sz = PX * (0.25 + 0.75 * rise) * (1 - cr * 0.45), cx = X(tx + 0.5) + j, cy = Y(ty + 0.5);
-        ctx.globalAlpha = 1 - cr * 0.6;
-        glow(cx, cy, PX * 1.1, rgb, 0.18);
-        const g = ctx.createLinearGradient(0, cy - sz / 2, 0, cy + sz / 2);
-        g.addColorStop(0, 'rgb(226, 186, 140)'); g.addColorStop(1, 'rgb(128, 88, 62)');
-        ctx.fillStyle = g;
-        roundRect(cx - sz / 2, cy - sz / 2, sz, sz, sz * 0.12); ctx.fill();
-        ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = Math.max(1.5, PX * 0.07); ctx.stroke();
-        // bricks
-        ctx.strokeStyle = 'rgba(70, 44, 30, 0.6)'; ctx.lineWidth = Math.max(1, PX * 0.04);
-        ctx.beginPath();
-        ctx.moveTo(cx - sz / 2, cy - sz / 6); ctx.lineTo(cx + sz / 2, cy - sz / 6);
-        ctx.moveTo(cx - sz / 2, cy + sz / 6); ctx.lineTo(cx + sz / 2, cy + sz / 6);
-        ctx.moveTo(cx, cy - sz / 2); ctx.lineTo(cx, cy - sz / 6);
-        ctx.moveTo(cx - sz / 4, cy - sz / 6); ctx.lineTo(cx - sz / 4, cy + sz / 6);
-        ctx.moveTo(cx + sz / 4, cy - sz / 6); ctx.lineTo(cx + sz / 4, cy + sz / 6);
-        ctx.moveTo(cx, cy + sz / 6); ctx.lineTo(cx, cy + sz / 2);
-        ctx.stroke();
-        if (cr > 0) {
-          // glowing cracks spread across it
-          ctx.strokeStyle = `rgba(255, 220, 160, ${0.9 * (1 - cr * 0.5)})`; ctx.lineWidth = Math.max(1.2, PX * 0.05);
-          ctx.beginPath();
-          for (let c = 0; c < 3; c++) {
-            let px = cx + (hash(k * 3 + c) - 0.5) * sz * 0.3, py = cy + (hash(k * 5 + c) - 0.5) * sz * 0.3;
-            ctx.moveTo(px, py);
-            for (let s2 = 0; s2 < 3; s2++) {
-              const a = hash(k * 7 + c * 11 + s2) * Math.PI * 2, l = sz * 0.22 * Math.min(1, cr * 3);
-              px += Math.cos(a) * l; py += Math.sin(a) * l; ctx.lineTo(px, py);
-            }
-          }
-          ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-      }
-    }
-  }
-
   // Fireball: a flickering comet of flame. P maps arena to screen ({ x, y, s, off }).
   function drawShots(P, in3d) {
     if (!shots.length) return;
@@ -2812,17 +3152,12 @@
   // view3d.js calls this (as v.extra) just before it draws each frame. Arena
   // (x, y) is the 3D point (x, height, y); bats fly at height 0.55.
   const FLY_Y = 0.55, JUMP_LIFT = 1.1;   // (a jump lifts a bat this high in 3D, over the 1-high walls)
+  // how high a bat flies in 3D: up a block's height on the block tops, plus any jump
+  const lift3 = (b) => FLY_Y + JUMP_LIFT * jumpH(b) + (b.hv || 0);
   let x3 = null;
   function build3d(T, scene) {
     const add = (o) => { scene.add(o); return o; };
     const glowMat = (color, opacity = 1) => new T.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, blending: T.AdditiveBlending, side: T.DoubleSide });
-    const MAXB = 48;
-    const bgeo = new T.BoxGeometry(1, 1, 1); bgeo.translate(0, 0.5, 0);
-    const blockMesh = add(new T.InstancedMesh(bgeo, new T.MeshLambertMaterial({ color: 0xffffff, emissive: 0x3a2412 }), MAXB));
-    blockMesh.instanceColor = new T.InstancedBufferAttribute(new Float32Array(MAXB * 3), 3);
-    const rimMesh = add(new T.InstancedMesh(bgeo, new T.MeshBasicMaterial({ color: 0xffffff, wireframe: true, transparent: true, opacity: 0.55 }), MAXB));
-    rimMesh.instanceColor = new T.InstancedBufferAttribute(new Float32Array(MAXB * 3), 3);
-    for (const m of [blockMesh, rimMesh]) { m.frustumCulled = false; m.count = 0; }
     const ball = new T.SphereGeometry(1, 16, 12);
     const fires = Array.from({ length: 12 }, () => {
       const g = new T.Group();
@@ -2853,43 +3188,41 @@
       g.add(ring); g.visible = false; add(g);
       return { g, ring, spikes };
     });
-    const iceGeo = new T.BoxGeometry(0.95, 0.95, 0.95);
+    // Frozen: a cluster of jagged, faceted ice crystals (a lumpy core and
+    // spikes of different lengths), glassy, with bright facet edges
+    const iceParts = [];
+    {
+      const core = new T.IcosahedronGeometry(0.4, 0);
+      core.scale(1, 1.05, 0.95);
+      iceParts.push(core);
+      const spikes = [[0.1, 1, 0.15, 0.62, 0.15], [-0.75, 0.6, 0.2, 0.5, 0.13], [0.8, 0.5, -0.3, 0.46, 0.12], [-0.3, 0.55, -0.85, 0.44, 0.12],
+        [0.45, 0.35, 0.85, 0.4, 0.11], [-0.9, -0.1, 0.4, 0.34, 0.1], [0.95, -0.15, 0.25, 0.32, 0.1], [0.2, -0.5, -0.8, 0.3, 0.1], [-0.35, 0.95, -0.2, 0.42, 0.11]];
+      const up = new T.Vector3(0, 1, 0);
+      for (const [x, y, z, len, rad] of spikes) {
+        const g = new T.ConeGeometry(rad, len, 5, 1);
+        g.translate(0, len / 2 + 0.22, 0);
+        const d = new T.Vector3(x, y, z).normalize();
+        g.applyQuaternion(new T.Quaternion().setFromUnitVectors(up, d));
+        iceParts.push(g);
+      }
+    }
+    const iceEdges = iceParts.map((g) => new T.EdgesGeometry(g, 1));
     const ices = BATS.map(() => {
       const g = new T.Group();
-      const box = new T.Mesh(iceGeo, new T.MeshLambertMaterial({ color: 0xaee6ff, emissive: 0x2a6a90, transparent: true, opacity: 0.45, depthWrite: false }));
-      const edges = new T.LineSegments(new T.EdgesGeometry(iceGeo), new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 }));
-      g.add(box, edges); g.visible = false; add(g);
-      return { g, box, edges };
+      const mat = new T.MeshPhongMaterial({ color: 0x9fdcff, emissive: 0x1d5a8a, specular: 0xffffff, shininess: 120, flatShading: true, transparent: true, opacity: 0.5, depthWrite: false, side: T.DoubleSide });
+      const emat = new T.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.55 });
+      for (const geo of iceParts) g.add(new T.Mesh(geo, mat));
+      for (const geo of iceEdges) g.add(new T.LineSegments(geo, emat));
+      const shine = new T.Mesh(ball, glowMat(0xbfeaff, 0.25)); shine.scale.setScalar(0.75); g.add(shine);
+      g.visible = false; add(g);
+      return { g, box: { material: mat }, edges: { material: emat }, shine };
     });
     const ghosts = BATS.map(() => { const m = add(new T.Mesh(ball, glowMat(0xd6c4ff, 0.18))); m.visible = false; return m; });
-    return { scene, blockMesh, rimMesh, MAXB, fires, fireLights, flashLight, twists, novas3, ices, ghosts, M: new T.Matrix4(), Q: new T.Quaternion(), E: new T.Euler(), V: new T.Vector3(), S: new T.Vector3(), C: new T.Color() };
+    return { scene, fires, fireLights, flashLight, twists, novas3, ices, ghosts, M: new T.Matrix4(), Q: new T.Quaternion(), E: new T.Euler(), V: new T.Vector3(), S: new T.Vector3(), C: new T.Color() };
   }
   function extras3d(T, scene) {
     if (!x3 || x3.scene !== scene) x3 = build3d(T, scene);
-    const { blockMesh, rimMesh, M, Q, E, V, S, C } = x3;
-    // Stone Wall: blocks slam up out of the floor, then shake, sink and tilt as they crumble
-    let n = 0;
-    for (const bk of blocks) {
-      const rise = blockRise(bk), cr = blockCrumble(bk), own = BAT_RGB[bk.owner] || [0.84, 0.63, 0.43];
-      for (const k of bk.tiles) {
-        if (n >= x3.MAXB) break;
-        const tx = k % arena.w, ty = Math.floor(k / arena.w), j = cr > 0 ? (hash(k + Math.floor(clock * 30)) - 0.5) * 0.08 : 0;
-        V.set(tx + 0.5 + j, -0.02 - cr * 0.5, ty + 0.5);
-        Q.setFromEuler(E.set(cr * (hash(k) - 0.5) * 0.8, 0, cr * (hash(k * 3) - 0.5) * 0.8));
-        S.set(0.98 * (1 - cr * 0.25), Math.max(0.01, 1.2 * rise * (1 - cr * 0.4)), 0.98 * (1 - cr * 0.25));
-        M.compose(V, Q, S);
-        blockMesh.setMatrixAt(n, M);
-        const lum = 0.62 + 0.4 * Math.max(0, 1 - bk.t * 2) + 0.08 * hash(k);
-        blockMesh.setColorAt(n, C.setRGB(0.86 * lum, 0.62 * lum, 0.44 * lum));
-        S.multiplyScalar(1.03); M.compose(V, Q, S);
-        rimMesh.setMatrixAt(n, M);
-        rimMesh.setColorAt(n, C.setRGB(own[0], own[1], own[2]).multiplyScalar(1 - cr));
-        n++;
-      }
-    }
-    blockMesh.count = rimMesh.count = n;
-    for (const m of [blockMesh, rimMesh]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
-
+    const { M, Q, E, V, S, C } = x3;
     // fireballs: a glowing ball of flame that lights the walls orange as it passes
     x3.fires.forEach((f, k) => {
       const m = shots[k];
@@ -2957,16 +3290,17 @@
       ic.g.visible = vis > 0.03;
       if (!ic.g.visible) return;
       const pop = Math.min(1, b.ice / 0.3);
-      ic.g.position.set(b.x, FLY_Y + JUMP_LIFT * jumpH(b), b.y);
-      ic.g.rotation.set(0.15, 0.4 + k, 0.1);
-      ic.g.scale.setScalar(0.9 + 0.1 * pop);
-      ic.box.material.opacity = 0.45 * vis * pop; ic.edges.material.opacity = 0.9 * vis * pop;
+      ic.g.position.set(b.x, lift3(b), b.y);
+      ic.g.rotation.set(0.12, 0.4 + k * 1.7, 0.08);
+      ic.g.scale.setScalar(0.7 + 0.5 * pop);
+      ic.box.material.opacity = 0.5 * vis * pop; ic.edges.material.opacity = (0.4 + 0.25 * Math.sin(clock * 3 + k)) * vis * pop;
+      ic.shine.material.opacity = (0.05 + 0.04 * Math.sin(clock * 4 + k)) * vis * pop;
     });
     x3.ghosts.forEach((m, k) => {
       const b = bats[k], vis = b && !b.dead && b.ghostT > 0 ? batVisible(b) : 0;
       m.visible = vis > 0.03;
       if (!m.visible) return;
-      m.position.set(b.x, FLY_Y + JUMP_LIFT * jumpH(b), b.y);
+      m.position.set(b.x, lift3(b), b.y);
       m.scale.setScalar(0.55 + 0.05 * Math.sin(clock * 6));
       m.material.opacity = 0.35 * Math.min(1, vis * 2);
     });
@@ -2989,39 +3323,81 @@
   }
 
   // ---- The controls guide ----------------------------------------------------
-  // Before a match: a glass panel with a card per control (its button or
-  // picture, what it does, and the keys on a keyboard) and a big Start! for
-  // this device (offline) or the host (online); guests see "Waiting for the
-  // host to start". Before each next round in Rounds: a short strip of the
-  // same pictures and Start!.
+  // Before a match (and, in Rounds, before each next round): a compact glass
+  // panel with a row of icons (fly, squeak, bite, jump, power and the map's own
+  // rule) and Start! for this device (offline) or the host (online); guests see
+  // "Waiting for the host to start". Tap an icon for a card with the whole
+  // story and a little looping demo; tap again (anywhere) to close it.
   const GUIDE_RGB = { fly: null, squeak: '255, 226, 120', bite: '166, 139, 255', jump: '143, 220, 255', power: '255, 150, 70' };
+  // the map's own rules, for its icon and card
+  const MAP_INFO = {
+    lava: { title: 'LAVA HOLLOW', rgb: '255, 140, 60', short: 'The floor is lava: hop from block to block',
+      text: 'The floor is lava! Everyone starts up on a block. JUMP to hop from block to block (fly off an edge and you drop). Touch the lava and you are out; in Free-for-all, whoever knocked you in scores the point.' },
+    moss: { title: 'MOSSY DEN', rgb: '130, 235, 120', short: 'BITE·DASH through the bushes; they grow back',
+      text: 'The blocks are bushes on soft grass. BITE·DASH into a bush to chomp right through it and make a shortcut (or an escape). Bushes grow back after a while.' },
+    ice: { title: 'FROZEN CAVERN', rgb: '200, 230, 255', short: 'Slippery ice: you slide, so steer early',
+      text: 'The floor is solid ice: you keep sliding after you let go, and bounce harder off the rock. Fewer blocks, lots of room to skid, so steer early and use the slide to dodge.' },
+    crystal: { title: 'CRYSTAL GROTTO', rgb: '74, 222, 255', short: 'A mirrored crystal cave: every corner is the same',
+      text: 'A crystal cave mirrored in all four quarters, so every start is fair. JUMP onto a crystal block to stand on top of it: bats down on the floor cannot bite you up there (and you cannot bite them).' },
+    xtreme: { title: 'MORPHING XTREME', rgb: '255, 120, 200', short: 'Crystal, lava, ice and moss in turn',
+      text: 'About every 30 seconds the cave turns into the next map: Crystal Grotto, Lava Hollow, Frozen Cavern, Mossy Den, each with its own rules. Before the lava comes a 3-2-1: get on a block!' },
+    morph: { title: 'MORPHING', rgb: '150, 130, 255', short: 'The blocks slowly reshape around you',
+      text: 'A few blocks at a time, the cave slowly reshapes into a new layout (now and then it melts into open sky). The rock never closes on you. JUMP onto a block to stand on top of it.' },
+    sky: { title: 'OPEN SKY', rgb: '255, 236, 190', short: 'No cave at all, just the night',
+      text: 'No cave at all, just the night sky and the moon. With no walls to light up, bats are still only found by sound: squeak to find your rivals.' },
+  };
+  const mapInfoKey = () => (arenaMode === 'xtreme' ? 'xtreme' : arenaMode === 'morph' ? 'morph' : arena?.def.open ? 'sky' : MAP_INFO[styleNow()] ? styleNow() : 'morph');
   function guideCards() {
-    const multi = localCount > 1, keys = !touchUsed;
+    const multi = localCount > 1, keys = !touchUsed, m = MAP_INFO[mapInfoKey()];
+    const specials = powerOn.filter((t) => POWERS[t].special).map((t) => POWERS[t].name), instant = powerOn.filter((t) => !POWERS[t].special).map((t) => POWERS[t].name);
     return [
-      { id: 'fly', title: 'FLY', key: 'WASD / arrows', text: multi ? 'Drag in your part of the screen' : 'Drag anywhere to steer' },
-      { id: 'squeak', title: 'SQUEAK', key: 'F / Space', text: keys ? 'Lights the cave and stuns. Time it to PARRY an echo' : 'Tap: lights the cave and stuns. Time it to PARRY an echo' },
-      { id: 'bite', title: 'BITE·DASH', key: 'G / Shift', text: multi && !keys ? 'Flick to dash into a rival and chomp it' : 'Dash into a rival to chomp it. Jumping bats dodge!' },
-      { id: 'jump', title: 'JUMP ×3', key: 'R', text: 'Hop walls, echoes and bites. Holds 3 jumps' },
-      { id: 'power', title: 'POWER', key: 'E / Q', text: keys ? 'Grab glowing power-ups, use specials with E' : 'Grab glowing power-ups. Specials get this button' },
+      { id: 'fly', title: 'FLY', key: 'WASD / arrows',
+        text: (multi ? 'Drag in your own part of the screen to steer.' : keys ? 'Steer with WASD or the arrow keys.' : 'Drag anywhere on the screen to steer.')
+          + ' The cave is pitch dark: rivals only see you when sound or a light finds you.' },
+      { id: 'squeak', title: 'SQUEAK', key: 'F / Space',
+        text: (keys ? 'Squeak (F) to send out an echo ring.' : 'Tap to squeak: an echo ring goes out.')
+          + ' It lights the cave and STUNS any rival it hits. Squeaks use echoes (top bar); glowing crystals refill them. Squeak just as a rival\'s echo or bite reaches you to PARRY: it bounces back and stuns them.' },
+      { id: 'bite', title: 'BITE·DASH', key: 'G / Shift',
+        text: (multi && !keys ? 'Flick to dash.' : 'Dash forward:') + ' touch a rival to chomp it for a point. Stunned rivals can\'t dodge. Bats mid-jump, or up on a different level (block top or floor), are out of reach. Two dashes meeting bounce apart.' },
+      { id: 'jump', title: 'JUMP ×3', key: 'R',
+        text: 'Hop over rock, echoes, fireballs and bites. Land on a block and you stay up on top: fly along the block tops, and fly off an edge (or jump) to get down. You hold 3 jumps; they refill as you fly.' },
+      { id: 'power', title: 'POWER', key: 'E / Q',
+        text: !powerFreq || !powerOn.length ? 'Power-ups are off this match.'
+          : `Fly into glowing power-ups.${instant.length ? ` ${instant.join(', ')} work at once.` : ''}${specials.length ? ` ${specials.join(', ')} fill your POWER button${keys ? ' (E)' : ''}: use it to unleash them.` : ''}` },
+      { id: 'map', title: m.title, key: '', text: m.text, rgb: m.rgb },
     ];
   }
   function guideLayout() {
     const round = guide && guide.kind === 'round';
-    const ph = Math.max(30, Math.min(40, H * 0.085)), top = 8 + ph + 8, room = H - top - 8;
-    const footer = !round && localCount > 1;
-    const extra = round || touchUsed ? 0 : 12;   // (room for the key chips)
-    const need = round ? 160 : 252 + extra + (footer ? 14 : 0);
-    const u = Math.max(0.75, Math.min(1.3, room / need, (W - 16) / 650));
-    const pw = Math.min(W - 16, (round ? 470 : 740) * Math.min(u, 1.15)), phh = need * u;
+    const ph = Math.max(30, Math.min(40, H * 0.085)), top = 8 + ph + 6, room = H - top - 6;
+    const need = 196;
+    const u = Math.max(0.7, Math.min(1.12, room / need, (W - 16) / 500));
+    const pw = Math.min(W - 16, 500 * u), phh = Math.min(room, need * u);
     const px = (W - pw) / 2, py = top + Math.max(0, (room - phh) / 2);
-    const bw = 168 * u, bh = 38 * u;
-    return { round, u, footer, extra, px, py, pw, ph: phh, start: { x: W / 2 - bw / 2, y: py + phh - bh - 10 * u, w: bw, h: bh } };
+    const bw = 160 * u, bh = 34 * u;
+    const start = { x: W / 2 - bw / 2, y: py + phh - bh - 9 * u, w: bw, h: bh };
+    const cards = guideCards(), n = cards.length, slot = Math.min(80 * u, (pw - 16 * u) / n), r = Math.min(19 * u, slot * 0.3);
+    const iy = py + (round ? 78 : 86) * u;
+    const icons = cards.map((c, k) => ({ id: c.id, x: W / 2 + (k - (n - 1) / 2) * slot, y: iy, r, slot }));
+    const card = { x: px + 8 * u, y: py + 8 * u, w: pw - 16 * u, h: start.y - 7 * u - (py + 8 * u) };
+    return { round, u, px, py, pw, ph: phh, start, icons, card, cards };
   }
-  const inStartButton = (cx, cy) => {
-    if (!guide || !W) return false;
-    const rect = canvas.getBoundingClientRect(), b = guideLayout().start, x = cx - rect.left, y = cy - rect.top;
-    return x > b.x - 10 && x < b.x + b.w + 10 && y > b.y - 10 && y < b.y + b.h + 10;
-  };
+  // what a tap on the guide hits: 'start', an icon's id, or null
+  function guideHit(cx, cy) {
+    if (!guide || !W) return null;
+    const rect = canvas.getBoundingClientRect(), L = guideLayout(), b = L.start, x = cx - rect.left, y = cy - rect.top;
+    if (x > b.x - 10 && x < b.x + b.w + 10 && y > b.y - 8 && y < b.y + b.h + 10) return 'start';
+    if (guide.card) return null;
+    for (const ic of L.icons) if (Math.abs(x - ic.x) < ic.slot / 2 && y > ic.y - ic.r - 10 && y < ic.y + ic.r + 24 * L.u) return ic.id;
+    return null;
+  }
+  const inStartButton = (cx, cy) => guideHit(cx, cy) === 'start';
+  function guideTap(cx, cy) {
+    const hit = guideHit(cx, cy);
+    if (hit === 'start') { if (canStartGuide()) startFromGuide(); return; }
+    if (guide.card) { guide.card = null; return; }
+    if (hit) { guide.card = hit; applyFx({ k: 'sfx', n: 'tick', alt: 'beep' }); }
+  }
   function wrapLines(text, maxW) {
     const out = [];
     let line = '';
@@ -3038,6 +3414,7 @@
     if (id === 'bite') drawBiteButton({ x, y, r }, { dashCd: 0 });
     else if (id === 'jump') drawJumpButton({ x, y, r }, { jumpT: 0, jumpCd: 0, jumps: JUMP_CHARGES });
     else if (id === 'power') drawSpecialFace({ x, y, r }, { held: 'ghost', specialCd: 0, stun: 0, dead: 0, heldLeft: 0 });
+    else if (id === 'map') drawMapIcon(x, y, r);
     else if (id === 'fly') {
       const rgb = me ? me.rgb : '150, 130, 255', a = clock * 1.6, kx = Math.cos(a) * r * 0.42, ky = Math.sin(a) * r * 0.42;
       ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -3062,8 +3439,277 @@
       ctx.beginPath(); ctx.arc(x, y, r * 0.16, 0, Math.PI * 2); ctx.fill();
     }
   }
+  // the map's icon: a little picture of its rule
+  function drawMapIcon(x, y, r) {
+    const key = mapInfoKey(), m = MAP_INFO[key], T = performance.now() / 1000;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    const bg = { lava: 'rgba(120, 30, 6, 0.85)', moss: 'rgba(30, 80, 30, 0.85)', ice: 'rgba(60, 90, 140, 0.8)', crystal: 'rgba(24, 40, 90, 0.85)', sky: 'rgba(16, 20, 60, 0.85)' }[key] || 'rgba(30, 24, 74, 0.85)';
+    ctx.fillStyle = bg; ctx.fill();
+    ctx.save(); ctx.clip();
+    if (key === 'lava') {
+      for (let k = 0; k < 5; k++) glow(x + Math.cos(T * 0.7 + k * 1.3) * r * 0.6, y + Math.sin(T * 0.9 + k * 2.1) * r * 0.6, r * 0.6, k % 2 ? '255, 200, 80' : '255, 100, 20', 0.8);
+      ctx.fillStyle = 'rgb(40, 18, 14)'; ctx.fillRect(x - r * 0.42, y - r * 0.2, r * 0.5, r * 0.5);
+      ctx.strokeStyle = 'rgba(255, 150, 60, 0.9)'; ctx.lineWidth = 1.5; ctx.strokeRect(x - r * 0.42, y - r * 0.2, r * 0.5, r * 0.5);
+    } else if (key === 'moss') {
+      for (const [dx, dy, rr] of [[-0.3, 0.15, 0.32], [0.25, 0.18, 0.3], [0, -0.12, 0.36]]) {
+        const g = ctx.createRadialGradient(x + dx * r - rr * r * 0.3, y + dy * r - rr * r * 0.3, 1, x + dx * r, y + dy * r, rr * r);
+        g.addColorStop(0, 'rgb(170, 245, 120)'); g.addColorStop(1, 'rgb(50, 140, 60)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x + dx * r, y + dy * r, rr * r, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (key === 'ice') {
+      ctx.strokeStyle = 'rgba(235, 248, 255, 0.95)'; ctx.lineWidth = Math.max(1.5, r * 0.09); ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (let k = 0; k < 3; k++) {
+        const a = (k / 3) * Math.PI + T * 0.3, c = Math.cos(a) * r * 0.62, sn = Math.sin(a) * r * 0.62;
+        ctx.moveTo(x - c, y - sn); ctx.lineTo(x + c, y + sn);
+        for (const sg of [-1, 1]) {
+          const bx = x + c * 0.6 * sg, by = y + sn * 0.6 * sg;
+          ctx.moveTo(bx, by); ctx.lineTo(bx + Math.cos(a + 2.4 * sg) * r * 0.2 * sg, by + Math.sin(a + 2.4 * sg) * r * 0.2 * sg);
+        }
+      }
+      ctx.stroke();
+    } else if (key === 'crystal') {
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) gem(x + sx * r * 0.36, y + sy * r * 0.36, r * 0.22, sx * sy > 0 ? '120, 235, 255' : '190, 150, 255');
+    } else if (key === 'sky') {
+      ctx.fillStyle = '#fff6d0'; ctx.beginPath(); ctx.arc(x + r * 0.2, y - r * 0.1, r * 0.4, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(x + r * 0.38, y - r * 0.24, r * 0.36, 0, Math.PI * 2); ctx.fill();
+      for (let k = 0; k < 5; k++) { ctx.fillStyle = `rgba(255, 255, 255, ${0.5 + 0.5 * Math.sin(T * 3 + k)})`; ctx.fillRect(x - r * 0.7 + k * r * 0.3, y + ((k * 37) % 10 - 5) * r * 0.1, 2, 2); }
+    } else {
+      // morphing: blocks flipping on and off
+      const cols = key === 'xtreme' ? ['74, 222, 255', '255, 140, 60', '200, 230, 255', '130, 235, 120'] : [m.rgb];
+      const c = cols[Math.floor(T / 1.2) % cols.length];
+      for (let k = 0; k < 9; k++) {
+        const on = Math.sin(T * 1.6 + k * 2.3) > 0;
+        if (!on) continue;
+        ctx.fillStyle = `rgba(${c}, 0.8)`;
+        ctx.fillRect(x - r * 0.6 + (k % 3) * r * 0.42, y - r * 0.6 + Math.floor(k / 3) * r * 0.42, r * 0.36, r * 0.36);
+      }
+    }
+    ctx.restore();
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+    glowStroke(`rgba(${m.rgb}, 0.8)`, 2, `rgba(${m.rgb}, 1)`, 0.6);
+    ctx.restore();
+  }
+  function gem(x, y, s, rgb) {
+    ctx.beginPath(); ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x + s * 0.75, y); ctx.lineTo(x, y + s * 1.2); ctx.lineTo(x - s * 0.75, y); ctx.closePath();
+    ctx.fillStyle = `rgba(${rgb}, 0.75)`; ctx.fill();
+    ctx.strokeStyle = 'rgba(240, 250, 255, 0.9)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y - s * 1.2); ctx.lineTo(x - s * 0.2, y); ctx.lineTo(x, y + s * 1.2); ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)'; ctx.stroke();
+  }
+
+  // A little bat for the guide's demos: o.stun (X eyes), o.mouth (0..1), o.ph (flap phase)
+  function miniBat(x, y, r, rgb, o = {}) {
+    const T = performance.now() / 1000, flap = o.stun ? 0.2 : Math.sin(T * 16 + (o.ph || 0));
+    ctx.save();
+    ctx.globalAlpha *= o.alpha ?? 1;
+    glow(x, y, r * 2.6, rgb, 0.3);
+    ctx.fillStyle = `rgb(${rgb})`;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x + s * r * 0.5, y - r * 0.15); ctx.lineTo(x + s * r * 2.1, y - r * (0.25 + flap * 0.75));
+      ctx.lineTo(x + s * r * 1.6, y + r * 0.35); ctx.lineTo(x + s * r * 1.15, y + r * 0.1); ctx.lineTo(x + s * r * 0.8, y + r * 0.45);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.75, y - r * 0.5); ctx.lineTo(x - r * 0.45, y - r * 1.35); ctx.lineTo(x - r * 0.1, y - r * 0.8);
+    ctx.moveTo(x + r * 0.75, y - r * 0.5); ctx.lineTo(x + r * 0.45, y - r * 1.35); ctx.lineTo(x + r * 0.1, y - r * 0.8);
+    ctx.fill();
+    if (o.stun) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, r * 0.14);
+      for (const s of [-1, 1]) { const ex = x + s * r * 0.32, ey = y - r * 0.1, k = r * 0.14; ctx.beginPath(); ctx.moveTo(ex - k, ey - k); ctx.lineTo(ex + k, ey + k); ctx.moveTo(ex + k, ey - k); ctx.lineTo(ex - k, ey + k); ctx.stroke(); }
+      for (let k = 0; k < 3; k++) { const a = T * 5 + k * 2.1; ctx.fillStyle = '#ffe278'; ctx.beginPath(); ctx.arc(x + Math.cos(a) * r * 1.3, y - r * 1.5 + Math.sin(a) * r * 0.35, Math.max(1.5, r * 0.18), 0, Math.PI * 2); ctx.fill(); }
+    } else {
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - r * 0.32, y - r * 0.1, r * 0.22, 0, Math.PI * 2); ctx.arc(x + r * 0.32, y - r * 0.1, r * 0.22, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#1a1030';
+      ctx.beginPath(); ctx.arc(x - r * 0.28, y - r * 0.08, r * 0.1, 0, Math.PI * 2); ctx.arc(x + r * 0.36, y - r * 0.08, r * 0.1, 0, Math.PI * 2); ctx.fill();
+    }
+    if (o.mouth > 0) {
+      ctx.fillStyle = '#2a0614';
+      ctx.beginPath(); ctx.ellipse(x, y + r * 0.38, r * 0.5 * o.mouth, r * 0.45 * o.mouth, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // Each card's looping demo, drawn in the box (x, y, w, h)
+  function drawDemo(id, x, y, w, h) {
+    const T = performance.now() / 1000, me = (localBat(0) || bats[viewer] || bats[0])?.rgb || '166, 139, 255', foe = '255, 120, 140';
+    const r = Math.min(w, h) * 0.075, cx = x + w / 2, cy = y + h / 2;
+    const lerp = (a, b, k) => a + (b - a) * k, cl = (v) => Math.max(0, Math.min(1, v)), ease = (k) => k * k * (3 - 2 * k);
+    const block = (bx, by, s, rgb = '74, 222, 255', fill = '18, 52, 80') => {
+      ctx.fillStyle = `rgba(${fill}, 0.9)`; ctx.fillRect(bx, by, s, s);
+      ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.5; ctx.strokeRect(bx, by, s, s);
+    };
+    ctx.save();
+    roundRect(x, y, w, h, 8); ctx.clip();
+    ctx.fillStyle = '#070816'; ctx.fillRect(x, y, w, h);
+    if (id === 'fly') {
+      const t = T * 1.1, bx = cx + Math.cos(t) * w * 0.28, by = cy + Math.sin(t * 2) * h * 0.2;
+      for (let k = 1; k < 14; k++) { const tt = t - k * 0.06; ctx.fillStyle = `rgba(${me}, ${0.25 * (1 - k / 14)})`; ctx.beginPath(); ctx.arc(cx + Math.cos(tt) * w * 0.28, cy + Math.sin(tt * 2) * h * 0.2, r * 0.5, 0, Math.PI * 2); ctx.fill(); }
+      miniBat(bx, by, r, me);
+      // the drag stick that steers it
+      const sx = x + w * 0.16, sy = y + h * 0.76, sr = h * 0.13, vx = -Math.sin(t), vy = 2 * Math.cos(t * 2), vl = Math.hypot(vx, vy) || 1;
+      ctx.strokeStyle = 'rgba(244, 241, 255, 0.4)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.stroke();
+      ctx.fillStyle = 'rgba(244, 241, 255, 0.75)'; ctx.beginPath(); ctx.arc(sx + (vx / vl) * sr * 0.6, sy + (vy / vl) * sr * 0.6, sr * 0.38, 0, Math.PI * 2); ctx.fill();
+    } else if (id === 'squeak') {
+      // odd loops: your echo stuns the rival; even loops: the rival's echo is parried back
+      const P2 = 2.6, n = Math.floor(T / P2), k = (T % P2) / P2, parry = n % 2 === 1;
+      const ax = x + w * 0.25, bx = x + w * 0.75, d = bx - ax;
+      for (let j = 0; j < 6; j++) {
+        const tx = x + w * (0.08 + j * 0.17), lit = 1 - Math.abs((parry ? bx : ax) + (parry ? -1 : 1) * k * d * 1.6 - tx) / (w * 0.15);
+        block(tx, y + 4, w * 0.12, cl(lit) > 0.05 ? GUIDE_RGB.squeak : '60, 60, 110'); block(tx, y + h - 4 - w * 0.12, w * 0.12, cl(lit) > 0.05 ? GUIDE_RGB.squeak : '60, 60, 110');
+      }
+      if (!parry) {
+        const rr = k * d * 1.6;
+        ctx.strokeStyle = `rgba(${me}, ${1 - k})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(ax, cy, rr, 0, Math.PI * 2); ctx.stroke();
+        miniBat(ax, cy, r, me, { ph: 0 });
+        miniBat(bx, cy, r, foe, { stun: rr > d, ph: 2 });
+        if (rr > d) { ctx.font = `700 ${Math.round(h * 0.11)}px ${HEAD}`; ctx.fillStyle = `rgba(255, 226, 120, ${1 - k})`; ctx.fillText('STUNNED!', bx, cy - r * 3); }
+      } else {
+        const hitK = 0.42, back = k > hitK, rr = back ? (k - hitK) * d * 1.9 : k / hitK * d;
+        ctx.strokeStyle = `rgba(${back ? me : foe}, 0.95)`; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(back ? ax : bx, cy, Math.max(1, back ? rr : rr), 0, Math.PI * 2); ctx.stroke();
+        miniBat(ax, cy, r, me);
+        miniBat(bx, cy, r, foe, { stun: back && rr > d, ph: 2 });
+        if (back) {
+          const f = cl(1 - (k - hitK) * 3);
+          ctx.strokeStyle = `rgba(${PARRY_RGB}, ${f})`; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(ax, cy, r * (1.6 + (1 - f)), 0, Math.PI * 2); ctx.stroke();
+          ctx.font = `700 ${Math.round(h * 0.13)}px ${HEAD}`; ctx.fillStyle = `rgba(${PARRY_RGB}, ${cl(1.6 - (k - hitK) * 2.5)})`; ctx.fillText('PARRY!', ax, cy - r * 3);
+        }
+      }
+    } else if (id === 'bite') {
+      const k = (T % 2.2) / 2.2, bx = x + w * 0.74;
+      let ax = x + w * 0.18;
+      if (k < 0.35) ax = lerp(x + w * 0.14, x + w * 0.3, k / 0.35);
+      else if (k < 0.5) ax = lerp(x + w * 0.3, bx - r * 1.6, ease((k - 0.35) / 0.15));
+      else ax = bx - r * 1.6;
+      if (k > 0.35 && k < 0.55) for (let j = 1; j < 6; j++) { ctx.fillStyle = `rgba(${me}, ${0.3 - j * 0.05})`; ctx.beginPath(); ctx.arc(ax - j * r * 0.7, cy, r * 0.8, 0, Math.PI * 2); ctx.fill(); }
+      const eaten = k > 0.55, sw = cl((k - 0.5) / 0.15);
+      if (!eaten || k < 0.62) miniBat(lerp(bx, ax + r, sw), cy, r * (1 - sw * 0.8), foe, { stun: k > 0.3, ph: 2, alpha: 1 - sw * 0.5 });
+      miniBat(ax, cy, r * (1 + (k > 0.6 && k < 0.85 ? 0.3 : 0)), me, { mouth: k > 0.45 && k < 0.62 ? 1 : 0 });
+      if (k < 0.3) { ctx.font = `700 ${Math.round(h * 0.1)}px ${HEAD}`; ctx.fillStyle = 'rgba(255, 226, 120, 0.9)'; ctx.fillText('stunned', bx, cy - r * 3); }
+      if (k > 0.58) { ctx.font = `700 ${Math.round(h * 0.15)}px ${HEAD}`; ctx.fillStyle = `rgba(${GUIDE_RGB.bite}, ${cl((1 - k) * 4)})`; ctx.fillText('CHOMP! +1', cx, y + h * 0.2); }
+    } else if (id === 'jump') {
+      // seen from the side: the floor, a block, a bat that hops up, stays on top, then drops off
+      const gy = y + h * 0.82, bh = h * 0.32, b0 = x + w * 0.38, b1 = x + w * 0.7;
+      ctx.fillStyle = 'rgba(80, 80, 160, 0.4)'; ctx.fillRect(x, gy, w, h - (gy - y));
+      ctx.fillStyle = 'rgba(18, 52, 80, 0.95)'; ctx.fillRect(b0, gy - bh, b1 - b0, bh);
+      ctx.strokeStyle = 'rgba(74, 222, 255, 0.9)'; ctx.lineWidth = 2; ctx.strokeRect(b0, gy - bh, b1 - b0, bh);
+      const k = (T % 3.2) / 3.2, fy = gy - r * 1.4;
+      let bx, by;
+      if (k < 0.18) { bx = lerp(x + w * 0.06, x + w * 0.26, k / 0.18); by = fy; }
+      else if (k < 0.36) { const j = (k - 0.18) / 0.18; bx = lerp(x + w * 0.26, b0 + w * 0.08, j); by = lerp(fy, fy - bh, j) - Math.sin(j * Math.PI) * h * 0.22; }
+      else if (k < 0.7) { bx = lerp(b0 + w * 0.08, b1 - r * 0.2, (k - 0.36) / 0.34); by = fy - bh; }
+      else if (k < 0.8) { const j = (k - 0.7) / 0.1; bx = lerp(b1 - r * 0.2, b1 + w * 0.06, j); by = lerp(fy - bh, fy, j * j); }
+      else { bx = lerp(b1 + w * 0.06, x + w * 0.94, (k - 0.8) / 0.2); by = fy; }
+      const onTop = bx > b0 && bx < b1 && by < fy - bh * 0.5;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'; ctx.beginPath(); ctx.ellipse(bx, (bx > b0 && bx < b1 ? gy - bh : gy) - 1, r * 1.1, r * 0.3, 0, 0, Math.PI * 2); ctx.fill();
+      miniBat(bx, by, r, me);
+      ctx.font = `700 ${Math.round(h * 0.1)}px ${HEAD}`; ctx.fillStyle = 'rgba(143, 220, 255, 0.9)';
+      ctx.fillText(k > 0.18 && k < 0.36 ? 'JUMP!' : onTop ? 'up on the block' : k >= 0.7 && k < 0.85 ? 'off the edge' : '', cx, y + h * 0.13);
+    } else if (id === 'power') {
+      const k = (T % 3) / 3, px = x + w * 0.55, sx = x + w * 0.12;
+      const got = k > 0.35, bx = got ? px : lerp(sx, px, ease(k / 0.35));
+      if (!got) { glow(px, cy, r * 3, POWERS.shield.rgb, 0.5); drawIcon('shield', px, cy, r * 1.1, `rgb(${POWERS.shield.rgb})`); }
+      miniBat(bx, cy, r, me);
+      if (got) {
+        const hit = k > 0.7, f = hit ? cl(1 - (k - 0.7) * 4) : 1;
+        if (f > 0) drawShieldBubble(bx, cy, r * 2.3, f, hit ? 1 - f : 0);
+        // a rival's echo comes in and is soaked up
+        const ex = x + w * 0.95, rr = cl((k - 0.45) / 0.25) * (ex - bx - r * 2);
+        if (k > 0.45 && k < 0.72) { ctx.strokeStyle = `rgba(${foe}, 0.9)`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(ex, cy, rr, Math.PI * 0.7, Math.PI * 1.3); ctx.stroke(); }
+        ctx.font = `700 ${Math.round(h * 0.12)}px ${HEAD}`; ctx.fillStyle = `rgba(${POWERS.shield.rgb}, ${hit ? f : 0.9})`;
+        ctx.fillText(hit ? 'BLOCKED' : 'SHIELD', bx, cy - r * 3.4);
+      }
+    } else if (id === 'map') {
+      drawMapDemo(mapInfoKey(), x, y, w, h, r, me, foe);
+    }
+    ctx.restore();
+  }
+  function drawMapDemo(key, x, y, w, h, r, me, foe) {
+    const T = performance.now() / 1000, cy = y + h / 2, lerp = (a, b, k) => a + (b - a) * k;
+    if (key === 'lava') {
+      const P = floorPatterns();
+      ctx.save(); ctx.translate(x + ((T * 12) % 160) - 160, y + ((T * 5) % 160) - 160); ctx.fillStyle = P.lavaA; ctx.fillRect(0, 0, w + 320, h + 320); ctx.restore();
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.4; ctx.translate(x - ((T * 17) % 128), y + ((T * 9) % 128) - 128); ctx.fillStyle = P.lavaB; ctx.fillRect(0, 0, w + 256, h + 256); ctx.restore();
+      const s = h * 0.3, xs = [0.18, 0.5, 0.82].map((f) => x + w * f), k = (T % 3.6) / 3.6;
+      for (const bx of xs) {
+        ctx.fillStyle = 'rgb(36, 16, 12)'; ctx.fillRect(bx - s / 2, cy - s / 2, s, s);
+        ctx.strokeStyle = 'rgba(255, 150, 60, 0.95)'; ctx.lineWidth = 2; ctx.strokeRect(bx - s / 2, cy - s / 2, s, s);
+      }
+      // hop, hop, then back again
+      const seg = k < 0.5 ? k * 2 : (1 - k) * 2, pos = seg * 2, i = Math.min(1, Math.floor(pos)), j = pos - i;
+      const hop = Math.max(0, Math.min(1, (j - 0.35) / 0.4)), bx = lerp(xs[i], xs[i + 1], hop), up = Math.sin(hop * Math.PI);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'; ctx.beginPath(); ctx.ellipse(bx, cy + r * 0.6, r * (1.1 - up * 0.3), r * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+      miniBat(bx, cy - up * h * 0.18, r * (1 + up * 0.4), me);
+      ctx.font = `700 ${Math.round(h * 0.11)}px ${HEAD}`; ctx.fillStyle = 'rgba(255, 230, 160, 0.95)';
+      ctx.fillText(up > 0.1 ? 'HOP!' : 'the floor is lava', x + w / 2, y + h * 0.12);
+    } else if (key === 'moss') {
+      ctx.fillStyle = 'rgb(40, 90, 40)'; ctx.fillRect(x, y, w, h);
+      ctx.save(); ctx.globalAlpha = 0.5; ctx.fillStyle = floorPatterns().grass; ctx.fillRect(x, y, w, h); ctx.restore();
+      const k = (T % 4) / 4, s = h * 0.24, bush = (bx, by, sc) => {
+        if (sc <= 0.02) return;
+        for (const [dx, dy, rr] of [[-0.22, 0.12, 0.3], [0.22, 0.14, 0.28], [0, -0.14, 0.34]]) {
+          const g = ctx.createRadialGradient(bx + dx * s - s * 0.1, by + dy * s - s * 0.1, 1, bx + dx * s, by + dy * s, rr * s * 1.4 * sc);
+          g.addColorStop(0, 'rgb(170, 245, 120)'); g.addColorStop(1, 'rgb(50, 140, 60)');
+          ctx.fillStyle = g; ctx.beginPath(); ctx.arc(bx + dx * s * sc, by + dy * s * sc, rr * s * 1.4 * sc, 0, Math.PI * 2); ctx.fill();
+        }
+      };
+      const mx = x + w * 0.55, gone = k > 0.3 && k < 0.8, regrow = k >= 0.8 ? (k - 0.8) / 0.2 : 1;
+      for (const yy of [cy - s * 1.3, cy + s * 1.3]) bush(mx, yy, 1);
+      bush(mx, cy, gone ? 0 : regrow);
+      if (k > 0.3 && k < 0.45) for (let j = 0; j < 8; j++) { const a = j * 0.8 + 1, d = (k - 0.3) * w * 0.6; ctx.fillStyle = j % 2 ? 'rgb(170, 255, 120)' : 'rgb(80, 190, 90)'; ctx.beginPath(); ctx.ellipse(mx + Math.cos(a) * d, cy + Math.sin(a) * d, 4, 2, a, 0, Math.PI * 2); ctx.fill(); }
+      const bx = k < 0.22 ? lerp(x + w * 0.1, x + w * 0.3, k / 0.22) : k < 0.36 ? lerp(x + w * 0.3, x + w * 0.82, (k - 0.22) / 0.14) : x + w * 0.82;
+      miniBat(bx, cy, r, me, { mouth: k > 0.25 && k < 0.36 ? 1 : 0 });
+      ctx.font = `700 ${Math.round(h * 0.11)}px ${HEAD}`; ctx.fillStyle = 'rgba(200, 255, 170, 0.95)';
+      ctx.fillText(k > 0.28 && k < 0.5 ? 'CHOMP!' : k >= 0.8 ? 'growing back...' : '', x + w / 2, y + h * 0.12);
+    } else if (key === 'ice') {
+      const g = ctx.createLinearGradient(x, y, x + w, y + h); g.addColorStop(0, 'rgb(120, 160, 220)'); g.addColorStop(1, 'rgb(60, 90, 150)');
+      ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)'; ctx.lineWidth = 3;
+      for (let k = 0; k < 5; k++) { ctx.beginPath(); ctx.moveTo(x + k * w * 0.25, y); ctx.lineTo(x + k * w * 0.25 - h * 0.6, y + h); ctx.stroke(); }
+      // steer right, let go, and keep sliding past the mark
+      const k = (T % 3) / 3, t = k < 0.5 ? k * 2 : 1, bx = x + w * (0.12 + 0.62 * (1 - (1 - t) ** 2.2) + (k > 0.5 ? 0.12 * Math.sin((k - 0.5) * Math.PI) : 0));
+      ctx.strokeStyle = 'rgba(240, 250, 255, 0.6)'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(x + w * 0.12, cy + r * 0.9); ctx.lineTo(bx, cy + r * 0.9); ctx.stroke();
+      ctx.setLineDash([3, 3]); ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)'; ctx.beginPath(); ctx.moveTo(x + w * 0.74, y + h * 0.25); ctx.lineTo(x + w * 0.74, y + h * 0.75); ctx.stroke(); ctx.setLineDash([]);
+      miniBat(bx, cy, r, me);
+      ctx.font = `700 ${Math.round(h * 0.11)}px ${HEAD}`; ctx.fillStyle = 'rgba(235, 248, 255, 0.95)';
+      ctx.fillText(k < 0.5 ? 'fly...' : 'let go: still sliding!', x + w / 2, y + h * 0.13);
+    } else if (key === 'crystal') {
+      ctx.fillStyle = 'rgb(16, 20, 50)'; ctx.fillRect(x, y, w, h);
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        for (const [dx, dy] of [[0.28, 0.25], [0.12, 0.3]]) gem(x + w / 2 + sx * dx * w, cy + sy * dy * h, h * 0.07, (dx > 0.2) ? '120, 235, 255' : '190, 150, 255');
+      }
+      ctx.strokeStyle = 'rgba(150, 200, 255, 0.25)'; ctx.setLineDash([4, 4]); ctx.beginPath(); ctx.moveTo(x + w / 2, y); ctx.lineTo(x + w / 2, y + h); ctx.moveTo(x, cy); ctx.lineTo(x + w, cy); ctx.stroke(); ctx.setLineDash([]);
+      const a = T * 0.9;
+      for (const [sx, sy, rgb] of [[1, 1, me], [-1, 1, foe], [1, -1, '120, 230, 160'], [-1, -1, '255, 210, 90']]) miniBat(x + w / 2 + sx * Math.cos(a) * w * 0.2, cy + sy * Math.sin(a) * h * 0.18, r * 0.8, rgb);
+      ctx.font = `700 ${Math.round(h * 0.1)}px ${HEAD}`; ctx.fillStyle = 'rgba(200, 240, 255, 0.9)'; ctx.fillText('every quarter the same', x + w / 2, y + h * 0.1);
+    } else if (key === 'sky') {
+      ctx.fillStyle = 'rgb(10, 14, 40)'; ctx.fillRect(x, y, w, h);
+      for (let k = 0; k < 30; k++) { ctx.fillStyle = `rgba(255, 255, 255, ${0.4 + 0.4 * Math.sin(T * 2 + k)})`; ctx.fillRect(x + hash(k) * w, y + hash(k + 50) * h, 1.5, 1.5); }
+      ctx.fillStyle = '#fff6d0'; ctx.beginPath(); ctx.arc(x + w * 0.8, y + h * 0.25, h * 0.12, 0, Math.PI * 2); ctx.fill();
+      miniBat(x + w * 0.5 + Math.cos(T) * w * 0.25, cy + Math.sin(T * 1.3) * h * 0.2, r, me);
+    } else {
+      // morphing: a grid of blocks reshaping (Xtreme: in each map's colours, with its name)
+      const names = ['Crystal Grotto', 'Lava Hollow', 'Frozen Cavern', 'Mossy Den'], cols = ['74, 222, 255', '255, 140, 60', '200, 230, 255', '130, 235, 120'];
+      const stage = Math.floor(T / 2.5), k = (T % 2.5) / 2.5, xt = key === 'xtreme';
+      const rgb = xt ? cols[stage % 4] : '120, 200, 255', s = h / 6;
+      for (let gy = 0; gy < 5; gy++) for (let gx = 0; gx < Math.floor(w / s) - 1; gx++) {
+        const h1 = hash(gx * 7 + gy * 13 + stage * 31), h0 = hash(gx * 7 + gy * 13 + (stage - 1) * 31), sw = hash(gx * 3 + gy * 5) < k * 1.3;
+        if ((sw ? h1 : h0) < 0.7) continue;
+        ctx.fillStyle = `rgba(${rgb}, 0.28)`; ctx.fillRect(x + s * 0.5 + gx * s, y + s * 0.5 + gy * s, s - 2, s - 2);
+        ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.2; ctx.strokeRect(x + s * 0.5 + gx * s, y + s * 0.5 + gy * s, s - 2, s - 2);
+      }
+      miniBat(x + w * 0.5 + Math.cos(T * 0.8) * w * 0.3, cy + Math.sin(T * 1.6) * h * 0.25, r * 0.85, me);
+      if (xt) { ctx.font = `700 ${Math.round(h * 0.12)}px ${HEAD}`; ctx.fillStyle = `rgb(${rgb})`; ctx.fillText(names[stage % 4], x + w / 2, y + h * 0.1); }
+    }
+  }
+
   function drawGuide() {
-    const L = guideLayout(), u = L.u, cards = guideCards();
+    const L = guideLayout(), u = L.u, cards = L.cards, T = performance.now() / 1000;
     ctx.save();
     ctx.fillStyle = 'rgba(4, 3, 16, 0.55)';
     ctx.fillRect(0, 0, W, H);
@@ -3074,66 +3720,67 @@
     roundRect(L.px, L.py, L.pw, L.ph, 16 * u); ctx.fill();
     glowStroke('rgba(150, 130, 255, 0.85)', 2, 'rgba(150, 130, 255, 1)', 1.2);
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    if (L.round) {
-      ctx.font = `700 ${Math.round(24 * u)}px ${HEAD}`;
-      ctx.fillStyle = '#ffe278';
-      ctx.fillText(`ROUND ${round}`, W / 2, L.py + 24 * u);
-      // the controls in a row, small, with their names
-      const n = cards.length, slot = Math.min(84 * u, (L.pw - 20 * u) / n), r = Math.min(17 * u, slot * 0.3), cy = L.py + 64 * u;
-      cards.forEach((c, k) => {
-        const cx = W / 2 + (k - (n - 1) / 2) * slot;
-        guideIcon(c.id, cx, cy, r);
-        ctx.font = `700 ${Math.round(10 * u)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillStyle = c.id === 'fly' ? '#f4f1ff' : `rgb(${GUIDE_RGB[c.id]})`;
-        ctx.fillText(touchUsed || c.id === 'fly' ? c.title : `${c.title} (${c.key.split(' ')[0]})`, cx, cy + r + 10 * u);
-      });
+    const open = guide.card && cards.find((c) => c.id === guide.card);
+    if (open) {
+      // the detail card: a demo on the left, the whole story on the right
+      const C = L.card, rgb = open.rgb || GUIDE_RGB[open.id] || (localBat(0) || bats[viewer] || bats[0]).rgb;
+      const dh = C.h - 12 * u, dw = Math.min(C.w * 0.42, dh * 1.45), dx = C.x + 6 * u, dy = C.y + 6 * u;
+      drawDemo(open.id, dx, dy, dw, dh);
+      roundRect(dx, dy, dw, dh, 8); ctx.strokeStyle = `rgba(${rgb}, 0.6)`; ctx.lineWidth = 1.5; ctx.stroke();
+      const tx = dx + dw + 12 * u, tw = C.x + C.w - tx - 26 * u;
+      ctx.textAlign = 'left';
+      ctx.font = `700 ${Math.round(15 * u)}px ${HEAD}`;
+      ctx.fillStyle = `rgb(${rgb})`;
+      ctx.fillText(open.title, tx, C.y + 15 * u);
+      if (!touchUsed && open.key) {
+        const t1 = ctx.measureText(open.title).width;
+        ctx.font = `700 ${Math.round(9.5 * u)}px ${FONT}`;
+        const kw = ctx.measureText(open.key).width + 10 * u, kh = 14 * u, kx = tx + t1 + 8 * u;
+        roundRect(kx, C.y + 15 * u - kh / 2, kw, kh, 4 * u);
+        ctx.fillStyle = 'rgba(244, 241, 255, 0.12)'; ctx.fill();
+        ctx.strokeStyle = 'rgba(244, 241, 255, 0.5)'; ctx.lineWidth = 1; ctx.stroke();
+        ctx.fillStyle = '#f4f1ff'; ctx.fillText(open.key, kx + 5 * u, C.y + 15 * u + 1);
+      }
+      ctx.font = `600 ${Math.round(10.5 * u)}px ${FONT}`;
+      ctx.fillStyle = 'rgba(234, 230, 255, 0.94)';
+      const lh = 13 * u, maxL = Math.max(2, Math.floor((C.h - 34 * u) / lh));
+      let ty = C.y + 34 * u;
+      for (const line of wrapLines(open.text, tw).slice(0, maxL)) { ctx.fillText(line, tx, ty); ty += lh; }
+      // close (a tap anywhere does it too)
+      const xx = C.x + C.w - 10 * u, xy = C.y + 10 * u, xr = 8 * u;
+      ctx.strokeStyle = 'rgba(244, 241, 255, 0.75)'; ctx.lineWidth = Math.max(1.5, 2 * u); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(xx - xr * 0.55, xy - xr * 0.55); ctx.lineTo(xx + xr * 0.55, xy + xr * 0.55); ctx.moveTo(xx + xr * 0.55, xy - xr * 0.55); ctx.lineTo(xx - xr * 0.55, xy + xr * 0.55); ctx.stroke();
+      ctx.lineCap = 'butt';
+      ctx.textAlign = 'center';
     } else {
       ctx.font = `700 ${Math.round(19 * u)}px ${HEAD}`;
       ctx.fillStyle = '#ffe278';
-      ctx.fillText('HOW TO PLAY', W / 2, L.py + 18 * u);
-      ctx.font = `600 ${Math.round(11.5 * u)}px ${FONT}`;
-      ctx.fillStyle = 'rgba(232, 236, 255, 0.85)';
-      ctx.fillText(rule === 'survivor'
-        ? `Rounds: get chomped and you're out for the round · first to ${winScore} round win${winScore === 1 ? '' : 's'}`
-        : `Free-for-all: bite rivals to score · first to ${winScore} bite${winScore === 1 ? '' : 's'} wins`, W / 2, L.py + 37 * u);
-      // the cards
-      const n = cards.length, gap = 7 * u, pad = 10 * u, cw = (L.pw - pad * 2 - gap * (n - 1)) / n, ch = (140 + L.extra) * u, cy0 = L.py + 50 * u;
-      cards.forEach((c, k) => {
-        const x = L.px + pad + k * (cw + gap), rgb = GUIDE_RGB[c.id] || (localBat(0) || bats[viewer] || bats[0]).rgb;
-        const g = ctx.createLinearGradient(0, cy0, 0, cy0 + ch);
-        g.addColorStop(0, `rgba(${rgb}, 0.16)`); g.addColorStop(1, 'rgba(10, 8, 30, 0.5)');
-        ctx.fillStyle = g;
-        roundRect(x, cy0, cw, ch, 10 * u); ctx.fill();
-        glowStroke(`rgba(${rgb}, 0.55)`, 1.5, null);
-        const r = Math.min(23 * u, cw * 0.22);
-        guideIcon(c.id, x + cw / 2, cy0 + 8 * u + r, r);
-        let ty = cy0 + 16 * u + r * 2 + 8 * u;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.font = `700 ${Math.round(12.5 * u)}px ${HEAD}`;
-        ctx.fillStyle = `rgb(${rgb})`;
-        ctx.fillText(c.title, x + cw / 2, ty);
-        ty += 15 * u;
-        ctx.font = `600 ${Math.round(10.5 * u)}px ${FONT}`;
-        ctx.fillStyle = 'rgba(234, 230, 255, 0.92)';
-        for (const line of wrapLines(c.text, cw - 10 * u).slice(0, touchUsed ? 4 : 3)) { ctx.fillText(line, x + cw / 2, ty); ty += 12.5 * u; }
-        if (!touchUsed) {
-          // the keys, on a little keycap chip at the bottom of the card
-          ctx.font = `700 ${Math.round(10 * u)}px ${FONT}`;
-          const kw = ctx.measureText(c.key).width + 12 * u, kh = 15 * u, ky = cy0 + ch - kh - 6 * u;
-          roundRect(x + cw / 2 - kw / 2, ky, kw, kh, 4 * u);
-          ctx.fillStyle = 'rgba(244, 241, 255, 0.12)'; ctx.fill();
-          ctx.strokeStyle = 'rgba(244, 241, 255, 0.5)'; ctx.lineWidth = 1; ctx.stroke();
-          ctx.fillStyle = '#f4f1ff';
-          ctx.fillText(c.key, x + cw / 2, ky + kh / 2 + 1);
-        }
-      });
-      if (L.footer) {
-        ctx.font = `600 ${Math.round(10.5 * u)}px ${FONT}`;
-        ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
-        const part = ['', 'the screen', 'half', 'a third', 'a quarter'][localCount];
-        ctx.fillText(touchUsed ? `Each player owns ${part} of the screen: tap to squeak, flick to dash`
-          : 'Keys above are player 1 · P2: arrows, Enter, Shift, M · P3: IJKL, H, U, O · P4: numpad', W / 2, cy0 + ch + 10 * u);
+      ctx.fillText(L.round ? `ROUND ${round}` : 'HOW TO PLAY', W / 2, L.py + 20 * u);
+      const m = MAP_INFO[mapInfoKey()];
+      let ly = L.py + 39 * u;
+      if (!L.round) {
+        ctx.font = `600 ${Math.round(11 * u)}px ${FONT}`;
+        ctx.fillStyle = 'rgba(232, 236, 255, 0.85)';
+        ctx.fillText(rule === 'survivor'
+          ? `Rounds: get chomped and you're out for the round · first to ${winScore} round win${winScore === 1 ? '' : 's'}`
+          : `Free-for-all: bite rivals to score · first to ${winScore} bite${winScore === 1 ? '' : 's'} wins`, W / 2, ly);
+        ly += 15 * u;
       }
+      ctx.font = `700 ${Math.round(10.5 * u)}px ${FONT}`;
+      ctx.fillStyle = `rgb(${m.rgb})`;
+      ctx.fillText(`${m.title.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())}: ${m.short}`, W / 2, ly);
+      // the controls in a row, with their names
+      for (const [k, ic] of L.icons.entries()) {
+        const c = cards[k];
+        guideIcon(c.id, ic.x, ic.y, ic.r);
+        ctx.font = `700 ${Math.round(9.5 * u)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillStyle = c.id === 'fly' ? '#f4f1ff' : `rgb(${c.rgb || GUIDE_RGB[c.id]})`;
+        const label = c.id === 'map' ? 'MAP' : c.title;
+        ctx.fillText(label, ic.x, ic.y + ic.r + 10 * u);
+      }
+      ctx.font = `600 ${Math.round(10 * u)}px ${FONT}`;
+      ctx.fillStyle = `rgba(232, 236, 255, ${0.55 + 0.25 * Math.sin(T * 3)})`;
+      ctx.fillText(touchUsed ? 'Tap an icon to learn more' : 'Click an icon to learn more', W / 2, L.icons[0].y + L.icons[0].r + 25 * u);
     }
     // Start! (this device offline, or the host online), or a wait for the host
     const b = L.start;
@@ -3155,7 +3802,7 @@
         ctx.textAlign = 'center';
       }
     } else {
-      ctx.font = `700 ${Math.round(14 * u)}px ${FONT}`;
+      ctx.font = `700 ${Math.round(13 * u)}px ${FONT}`;
       const text = 'Waiting for the host to start' + '.'.repeat(1 + (Math.floor(clock * 2.5) % 3));
       const tw = ctx.measureText('Waiting for the host to start...').width + 36 * u;
       pill(W / 2 - tw / 2, b.y, tw, b.h, 'rgba(150, 130, 255, 0.75)', 6);
@@ -3220,17 +3867,6 @@
       ctx.moveTo(x + 0.2 * s, y - 0.95 * s); ctx.lineTo(x - 0.5 * s, y + 0.12 * s); ctx.lineTo(x - 0.02 * s, y + 0.12 * s);
       ctx.lineTo(x - 0.22 * s, y + 0.95 * s); ctx.lineTo(x + 0.52 * s, y - 0.16 * s); ctx.lineTo(x + 0.06 * s, y - 0.16 * s); ctx.closePath();
       ctx.fill();
-    } else if (type === 'wall') {
-      ctx.lineWidth = Math.max(1.2, s * 0.13);
-      const w = s * 1.5, h = s * 1.15, x0 = x - w / 2, y0 = y - h / 2;
-      ctx.globalAlpha *= 0.35; ctx.fillRect(x0, y0, w, h); ctx.globalAlpha /= 0.35;
-      ctx.strokeRect(x0, y0, w, h);
-      for (let r = 1; r < 3; r++) { ctx.moveTo(x0, y0 + (h * r) / 3); ctx.lineTo(x0 + w, y0 + (h * r) / 3); }
-      for (let r = 0; r < 3; r++) {
-        const xs = r % 2 ? [0.5] : [0.25, 0.75];
-        for (const f of xs) { ctx.moveTo(x0 + w * f, y0 + (h * r) / 3); ctx.lineTo(x0 + w * f, y0 + (h * (r + 1)) / 3); }
-      }
-      ctx.stroke();
     } else if (type === 'freeze') {
       ctx.lineWidth = Math.max(1.3, s * 0.15);
       for (let k = 0; k < 3; k++) {
@@ -3282,7 +3918,14 @@
       ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
       y -= hj * PX * 0.95;
     }
-    const r = PX * R * scale * (1 + 0.6 * hj), flap = stunned ? 0.2 : Math.sin(clock * (b.dashT > 0 ? 40 : 18) + b.i);
+    // up on a block: a little bigger (nearer you), with a shadow on the block top
+    const up = o.rot ? 0 : Math.max(0, Math.min(1, b.hv || 0));
+    if (up > 0.02 && hj <= 0) {
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.45 * up * (o.alpha ?? 1)})`;
+      ctx.beginPath(); ctx.ellipse(x + PX * 0.08, y + PX * 0.2, PX * 0.42, PX * 0.2, 0, 0, Math.PI * 2); ctx.fill();
+      y -= up * PX * 0.18;
+    }
+    const r = PX * R * scale * (1 + 0.6 * hj + 0.16 * up), flap = stunned ? 0.2 : Math.sin(clock * (b.dashT > 0 ? 40 : 18) + b.i);
     // a ghost is half see-through (rivals' alpha already has it, via batVisible)
     const alpha = o.alpha ?? (b.ghostT > 0 && !o.rot ? ghostAlpha(b) : 1);
     ctx.save();
@@ -3357,11 +4000,7 @@
       ctx.lineWidth = Math.max(2, PX * 0.07);
       ctx.beginPath(); ctx.arc(0, 0, r * 1.8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, b.heldLeft / TIMED_LIFE)); ctx.stroke();
     }
-    if (b.shield && !o.rot) {
-      ctx.strokeStyle = `rgba(${POWERS.shield.rgb}, 0.8)`;
-      ctx.lineWidth = Math.max(1.5, PX * 0.06);
-      ctx.beginPath(); ctx.arc(0, 0, r * 2.4, 0, Math.PI * 2); ctx.stroke();
-    }
+    if (b.shield && !o.rot) drawShieldBubble(0, 0, r * 2.4, 1);
     if (b.mega && !o.rot) {
       ctx.strokeStyle = `rgba(${POWERS.mega.rgb}, ${0.5 + 0.4 * Math.sin(clock * 8)})`;
       ctx.lineWidth = Math.max(1.5, PX * 0.05);
@@ -3474,19 +4113,92 @@
     ctx.fillStyle = c;
     ctx.fillText('JUMP', b.x, b.y + s * 0.58);
   }
+  // Frozen: the bat is locked in a cluster of jagged ice crystals, glassy and
+  // see-through, with bright facet edges, a sheen sweeping over them and a
+  // little frost. (r: the bat's radius; k: 0..1 as it freezes over)
+  const ICE_SHARDS = [
+    // [angle, length, width] of each crystal spike around the core
+    [-1.75, 1.55, 0.42], [-1.05, 1.25, 0.36], [-2.5, 1.2, 0.34], [-0.3, 1.05, 0.32], [2.75, 1.0, 0.32],
+    [0.55, 0.95, 0.3], [2.1, 0.9, 0.3], [1.3, 0.85, 0.28], [-3.05, 0.8, 0.26],
+  ];
   function drawIceBlock(r, k) {
-    const s = r * 2.5 * (0.9 + 0.1 * k);
+    const T = clock, s = r * (0.95 + 0.15 * k);
     ctx.save();
-    ctx.rotate(0.12);
-    roundRect(-s / 2, -s / 2, s, s, s * 0.14);
-    ctx.fillStyle = `rgba(170, 230, 255, ${0.38 * k})`; ctx.fill();
-    ctx.strokeStyle = `rgba(235, 250, 255, ${0.9 * k})`; ctx.lineWidth = Math.max(1.5, r * 0.12); ctx.stroke();
-    ctx.strokeStyle = `rgba(255, 255, 255, ${0.7 * k})`; ctx.lineWidth = Math.max(1, r * 0.08);
+    ctx.lineJoin = 'round';
+    glow(0, 0, s * 2.6, '150, 220, 255', 0.3 * k);
+    // the core: a chunky faceted lump of ice around the bat
+    const core = [];
+    for (let j = 0; j < 7; j++) { const a = (j / 7) * Math.PI * 2 + 0.3, l = s * (1.25 + 0.18 * Math.sin(j * 2.7)); core.push([Math.cos(a) * l, Math.sin(a) * l * 0.95]); }
+    const fillIce = (pts, a) => {
+      ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath();
+      const g = ctx.createLinearGradient(-s, -s * 1.5, s, s * 1.2);
+      g.addColorStop(0, `rgba(235, 250, 255, ${0.55 * a})`); g.addColorStop(0.45, `rgba(150, 215, 255, ${0.3 * a})`); g.addColorStop(1, `rgba(90, 160, 235, ${0.5 * a})`);
+      ctx.fillStyle = g; ctx.fill();
+      ctx.strokeStyle = `rgba(240, 252, 255, ${0.85 * a})`; ctx.lineWidth = Math.max(1, r * 0.09); ctx.stroke();
+    };
+    // spikes behind, the core, spikes in front (the long ones point up)
+    const spike = ([ang, len, wid], front) => {
+      const L = s * len * (0.4 + 0.6 * k), c = Math.cos(ang), sn = Math.sin(ang), px = -sn, py = c, base = s * 0.7;
+      const pts = [[c * base + px * s * wid, sn * base + py * s * wid], [c * (base + L), sn * (base + L)], [c * base - px * s * wid, sn * base - py * s * wid]];
+      fillIce(pts, front ? k : k * 0.8);
+      // a bright facet line down the middle
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * k})`; ctx.lineWidth = Math.max(0.8, r * 0.05);
+      ctx.beginPath(); ctx.moveTo(c * base, sn * base); ctx.lineTo(c * (base + L), sn * (base + L)); ctx.stroke();
+    };
+    ICE_SHARDS.forEach((sh, j) => { if (j % 2) spike(sh, false); });
+    fillIce(core, k);
+    // facets inside the core
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.35 * k})`; ctx.lineWidth = Math.max(0.8, r * 0.05);
     ctx.beginPath();
-    ctx.moveTo(-s * 0.36, -s * 0.12); ctx.lineTo(-s * 0.12, -s * 0.36);
-    ctx.moveTo(-s * 0.36, s * 0.08); ctx.lineTo(s * 0.08, -s * 0.36);
-    ctx.moveTo(s * 0.2, s * 0.36); ctx.lineTo(s * 0.36, s * 0.2);
+    for (let j = 0; j < core.length; j += 2) { ctx.moveTo(core[j][0], core[j][1]); ctx.lineTo(core[j][0] * 0.25, core[j][1] * 0.25 - s * 0.15); }
     ctx.stroke();
+    ICE_SHARDS.forEach((sh, j) => { if (!(j % 2)) spike(sh, true); });
+    // a sheen that sweeps across now and then
+    const sw = ((T * 0.7) % 1.6) - 0.3;
+    if (sw > 0 && sw < 1) {
+      ctx.save();
+      ctx.beginPath(); core.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.clip();
+      const x0 = -s * 1.6 + sw * s * 3.2, g = ctx.createLinearGradient(x0 - s * 0.4, 0, x0 + s * 0.4, 0);
+      g.addColorStop(0, 'rgba(255, 255, 255, 0)'); g.addColorStop(0.5, `rgba(255, 255, 255, ${0.45 * k})`); g.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = g; ctx.fillRect(-s * 2, -s * 2, s * 4, s * 4);
+      ctx.restore();
+    }
+    // frost glints
+    for (let j = 0; j < 3; j++) {
+      const a = Math.max(0, Math.sin(T * 3 + j * 2.1)), gx = Math.cos(j * 2.3 + 0.5) * s * 0.9, gy = Math.sin(j * 2.3 + 0.5) * s * 0.8, g = s * 0.28 * a;
+      if (a < 0.2) continue;
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * a * k})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(gx - g, gy); ctx.lineTo(gx + g, gy); ctx.moveTo(gx, gy - g); ctx.lineTo(gx, gy + g); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Shield: a soft glowing bubble of light, brightest at its rim, a slow
+  // shimmer drifting over it and a little highlight up top. flash (0..1)
+  // brightens it as it soaks up a hit. No outlines.
+  function drawShieldBubble(x, y, R2, a = 1, flash = 0) {
+    const rgb = POWERS.shield.rgb, T = clock || performance.now() / 1000;
+    const R = R2 * (1 + 0.03 * Math.sin(T * 4) + 0.15 * flash);
+    ctx.save();
+    // the bubble: clear in the middle, glowing toward the rim, fading outside it
+    const g = ctx.createRadialGradient(x, y, R * 0.2, x, y, R * 1.12);
+    g.addColorStop(0, `rgba(${rgb}, ${0.03 * a})`);
+    g.addColorStop(0.62, `rgba(${rgb}, ${(0.08 + 0.2 * flash) * a})`);
+    g.addColorStop(0.86, `rgba(${rgb}, ${(0.32 + 0.4 * flash) * a})`);
+    g.addColorStop(0.93, `rgba(235, 252, 255, ${(0.32 + 0.4 * flash) * a})`);
+    g.addColorStop(1, `rgba(${rgb}, 0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, R * 1.12, 0, Math.PI * 2); ctx.fill();
+    // a shimmer band drifting round (soft, a gradient not a line)
+    ctx.beginPath(); ctx.arc(x, y, R, 0, Math.PI * 2); ctx.clip();
+    const sa = T * 1.3, sx = x + Math.cos(sa) * R * 0.55, sy = y + Math.sin(sa) * R * 0.35;
+    const sh = ctx.createRadialGradient(sx, sy, 0, sx, sy, R * 0.6);
+    sh.addColorStop(0, `rgba(220, 250, 255, ${0.16 * a})`); sh.addColorStop(1, 'rgba(220, 250, 255, 0)');
+    ctx.fillStyle = sh; ctx.fillRect(x - R, y - R, R * 2, R * 2);
+    // the highlight, top left
+    const hx = x - R * 0.38, hy = y - R * 0.45, hl = ctx.createRadialGradient(hx, hy, 0, hx, hy, R * 0.32);
+    hl.addColorStop(0, `rgba(255, 255, 255, ${0.6 * a})`); hl.addColorStop(1, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = hl; ctx.beginPath(); ctx.ellipse(hx, hy, R * 0.32, R * 0.2, -0.6, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
@@ -3746,10 +4458,12 @@
           : 'WASD or arrows to fly · F to squeak · G to bite·dash · R to jump (3 jumps) · E to use a power · Esc to pause')
         : `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap to squeak · flick to dash`;
       ctx.fillText(how, W / 2, mid + size * 2.7);
-      ctx.fillText(powerFreq && powerOn.some((t) => POWERS[t].special)
+      const mk = mapInfoKey();
+      if (['lava', 'moss', 'ice', 'xtreme'].includes(mk)) ctx.fillText(`${MAP_INFO[mk].title}: ${MAP_INFO[mk].short}`, W / 2, mid + size * 3.9);
+      else ctx.fillText(powerFreq && powerOn.some((t) => POWERS[t].special)
         ? 'Squeak just before a rival\'s echo hits you to PARRY it · special power-ups get their own POWER button'
         : 'Squeak just before a rival\'s echo hits you to PARRY it · grab glowing power-ups', W / 2, mid + size * 3.9);
-    } else if (banner) {
+    } else if (banner && !(lavaWarn > 0 && countdown <= 0)) {   // (the lava's 3-2-1 has the screen to itself)
       const pop = banner.big ? 1 + 0.25 * Math.max(0, 1 - (5.2 - 3 - banner.t) * 4) : 1;
       ctx.font = `700 ${size * 2 * pop}px ${HEAD}`;
       ctx.fillStyle = `rgba(5, 6, 15, ${Math.min(0.9, banner.t * 2)})`;
@@ -3759,15 +4473,40 @@
       ctx.fillStyle = `rgba(${rgb}, ${Math.min(1, banner.t * 2)})`;
       ctx.fillText(banner.text, W / 2, mid);
     }
+    // into the lava (Xtreme): GET ON A BLOCK! and a big 3-2-1
+    if (lavaWarn > 0 && countdown <= 0 && !over) {
+      const n = Math.ceil(lavaWarn), f = lavaWarn - Math.floor(lavaWarn), pop = 1 + 0.35 * Math.max(0, f - 0.7) / 0.3;
+      const ty = mid - size * 2.2;
+      ctx.font = `800 ${size * 1.5}px ${HEAD}`;
+      ctx.fillStyle = 'rgba(20, 4, 0, 0.85)'; ctx.fillText('GET ON A BLOCK!', W / 2, ty + 3);
+      ctx.fillStyle = `rgba(255, ${150 + Math.floor(60 * Math.sin(clock * 12))}, 60, 1)`; ctx.fillText('GET ON A BLOCK!', W / 2, ty);
+      ctx.font = `800 ${size * 3.6 * pop}px ${HEAD}`;
+      ctx.fillStyle = 'rgba(20, 4, 0, 0.85)'; ctx.fillText(String(n), W / 2, ty + size * 3 + 4);
+      ctx.fillStyle = '#ffe0a0'; ctx.fillText(String(n), W / 2, ty + size * 3);
+    }
     // out of this round: say so, and whose flight we're following
     if (countdown <= 0 && spectating() && !roundEnd) {
       const w = watched();
       ctx.font = `700 ${size * 0.95}px ${HEAD}`;
-      const text = w ? `You're out · watching ${w.name}` : "You're out · watching";
-      const tw = ctx.measureText(text).width + 36, th = size * 1.8, ty = Math.max(H * 0.2, 8 + Math.max(30, Math.min(40, H * 0.085)) + 14);
+      const more = bats.filter((b) => !b.out).length > 1;
+      const text = w ? `Watching ${w.name}` : "You're out · watching";
+      const hint = more ? (touchUsed ? 'tap to switch' : 'Space / click to switch') : '';
+      ctx.font = `700 ${size * 0.9}px ${HEAD}`;
+      const t1 = ctx.measureText(text).width;
+      ctx.font = `600 ${size * 0.75}px ${FONT}`;
+      const t2 = hint ? ctx.measureText(' · ' + hint).width : 0;
+      const tw = t1 + t2 + 30, th = size * 1.7, ty = Math.max(H * 0.2, 8 + Math.max(30, Math.min(40, H * 0.085)) + 14);
       pill(W / 2 - tw / 2, ty, tw, th, w ? `rgba(${w.rgb}, 0.8)` : 'rgba(150, 130, 255, 0.75)', 6);
-      ctx.fillStyle = '#f4f1ff';
-      ctx.fillText(text, W / 2, ty + th / 2 + 1);
+      ctx.textAlign = 'left';
+      ctx.font = `700 ${size * 0.9}px ${HEAD}`;
+      ctx.fillStyle = w ? `rgb(${w.rgb})` : '#f4f1ff';
+      ctx.fillText(text, W / 2 - tw / 2 + 15, ty + th / 2 + 1);
+      if (hint) {
+        ctx.font = `600 ${size * 0.75}px ${FONT}`;
+        ctx.fillStyle = 'rgba(232, 236, 255, 0.8)';
+        ctx.fillText(' · ' + hint, W / 2 - tw / 2 + 15 + t1, ty + th / 2 + 1);
+      }
+      ctx.textAlign = 'center';
     }
     if (localCount > 1 && countdown > 0) {
       ctx.strokeStyle = 'rgba(232, 236, 255, 0.18)';
@@ -3816,7 +4555,6 @@
     get powerOptions() { return { on: Object.fromEntries(POWER_TYPES.map((t) => [t, powerOn.includes(t)])), freq: Object.keys(POWER_FREQ).find((k) => POWER_FREQ[k] === powerFreq) }; },
     get shots() { return shots; },
     get twisters() { return twisters; },
-    get blocks() { return blocks; },
     get bolts() { return bolts; },
     get novas() { return novas; },
     get specialCount() { return specialCount; },
@@ -3870,5 +4608,11 @@
     get theme() { return { from: themeFrom, to: themeTo, k: themeK, title: TH().title, ice: iceNow(), lava: TH().look?.lava || 0 }; },
     // tests: morph into arena i as soon as possible (morph mode only)
     morphTo: (i) => { if (morph) { morph.next = i; morph.pause = Math.min(morph.pause, 0.01); } },
+    watchNext: () => watchNext(),
+    // map rules in play: { style, lavaOn, lavaWarn, regrowing (bushes waiting to grow back), koCount, bushCount }
+    get mapState() { return { style: styleNow(), lavaOn, lavaWarn, regrowing: regrow.length, koCount, bushCount }; },
+    // the guide's detail card (an id from the icon row) or null; tests can open one
+    get guideCard() { return guide?.card || null; },
+    openGuideCard: (id) => { if (guide) guide.card = id || null; },
   };
 })();
