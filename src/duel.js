@@ -14,7 +14,7 @@
   'use strict';
 
   const R = 0.3, ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4, STUN_DRAG = 7;
-  const RING_SPEED = 11, RING_MAX = 5.6, MEGA_RING = 8.8, COOLDOWN = 0.45, FRENZY_COOLDOWN = 0.22;
+  const RING_SPEED = 11, RING_MAX = 4.5, MEGA_RING = 7, COOLDOWN = 0.45, FRENZY_COOLDOWN = 0.22;
   const STUN_TIME = 1.8, MEGA_STUN = 2.6, SPAWN_SAFE = 1.6, RESPAWN_DELAY = 1.4;
   const START_ECHOES = 4, MAX_ECHOES = 6, CRYSTAL_ECHOES = 2;
   // Dash is the attack: dashing into any rival chomps it (stunned or not).
@@ -60,7 +60,7 @@
   const SNAPSHOT_EVERY = 0.05;
   // Power-ups. The first four work the moment you grab them. The "special"
   // ones are held (one at a time; grabbing another swaps it) and used with
-  // the POWER button (E or Q on a keyboard).
+  // the POWER button above BITE·DASH (E or Q on a keyboard).
   const POWERS = {
     mega: { label: 'MEGA SCREECH', rgb: '255, 226, 120', name: 'Mega Screech', desc: 'Your next squeak is huge and stuns longer' },
     speed: { label: 'SPEED', rgb: '120, 255, 170', name: 'Speed', desc: '6 seconds of faster flying' },
@@ -411,10 +411,19 @@
     return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 8;
   };
 
-  // The BITE button turns into your special power while you hold one (on
-  // computers it only shows up then, since G bites)
-  const specialShown = () => localCount === 1 && countdown <= 0 && !spectating() && !!localBat(0)?.held;
-  const actionShown = () => localCount === 1 && countdown <= 0 && !spectating() && (touchUsed || !!localBat(0)?.held);
+  // While you hold a special power a smaller POWER button pops up above
+  // BITE·DASH, so you can still bite (on computers BITE·DASH stays hidden,
+  // since G bites; the power button shows up there too, with E)
+  const powerButton = () => { const b = dashButton(), r = 36; return { x: b.x, y: b.y - b.r - 14 - r, r }; };
+  const inPowerButton = (cx, cy) => {
+    if (localCount !== 1) return false;
+    const rect = canvas.getBoundingClientRect(), b = powerButton();
+    return Math.hypot(cx - rect.left - b.x, cy - rect.top - b.y) < b.r + 6;
+  };
+  const buttonsShown = () => localCount === 1 && countdown <= 0 && !spectating();
+  const specialShown = () => buttonsShown() && !!localBat(0)?.held;
+  const biteShown = () => buttonsShown() && touchUsed;
+  const actionShown = () => specialShown() || biteShown();
 
   // Touch zones: one player owns the screen, 2–3 split it into columns, 4 into quarters
   function zoneAt(clientX, clientY) {
@@ -430,7 +439,8 @@
     e.preventDefault();
     window.EchoAudio?.unlock();
     if (e.pointerType === 'touch') touchUsed = true;
-    if (actionShown() && inDashButton(e.clientX, e.clientY)) { act(0, specialShown() ? 'special' : 'dash'); return; }
+    if (specialShown() && inPowerButton(e.clientX, e.clientY)) { act(0, 'special'); return; }
+    if (biteShown() && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
     const owner = zoneAt(e.clientX, e.clientY);
     if ([...sticks.values()].some((s) => s.owner === owner)) { chargers.set(e.pointerId, owner); act(owner, 'charge'); return; }
     sticks.set(e.pointerId, { owner, sx: e.clientX, sy: e.clientY, x: e.clientX, y: e.clientY, t: performance.now(), moved: false });
@@ -2468,18 +2478,20 @@
     ctx.restore();
   }
 
-  // The big action button: BITE, or the special power you hold (glowing when
-  // it's ready). It pops with a little bounce whenever it changes face.
+  // The big BITE·DASH button, and above it the special power you hold
+  // (glowing when it's ready). The power button pops in with a little bounce.
   let specialSeen = null, specialPopAt = -1;
   function drawActionButton() {
-    const bt = dashButton(), me = localBat(0);
+    const me = localBat(0);
     if (!me) return;
+    if (biteShown()) drawBiteButton(dashButton(), me);
     if (me.held !== specialSeen) { specialSeen = me.held; specialPopAt = clock; }
+    if (!specialShown()) return;
+    const bt = powerButton();
     const u = Math.min(1, (clock - specialPopAt) / 0.35), pop = u < 1 ? 1 + Math.sin(u * Math.PI) * 0.35 - (1 - u) * 0.6 : 1;
     ctx.save();
     ctx.translate(bt.x, bt.y); ctx.scale(pop, pop); ctx.translate(-bt.x, -bt.y);
-    if (me.held) drawSpecialFace(bt, me);
-    else drawBiteButton(bt, me);
+    drawSpecialFace(bt, me);
     ctx.restore();
   }
   function drawSpecialFace(bt, me) {
@@ -2517,12 +2529,13 @@
       ctx.lineCap = 'butt';
       const txt = going ? `${Math.ceil(me.heldLeft)}s` : `${TIMED_LIFE}s`, fs = Math.round(bt.r * 0.3);
       ctx.font = `700 ${fs}px ${FONT}`;
-      const tw = ctx.measureText(txt).width + fs * 0.9, ty = bt.y - bt.r - 5 - fs * 0.95;
+      // the seconds sit to the left of the button, clear of the score pills up top
+      const tw = ctx.measureText(txt).width + fs * 0.9, ty = bt.y - bt.r * 0.55, tx = bt.x - bt.r - 9 - tw / 2;
       ctx.fillStyle = 'rgba(10, 8, 30, 0.8)';
-      roundRect(bt.x - tw / 2, ty - fs * 0.65, tw, fs * 1.3, fs * 0.65); ctx.fill();
+      roundRect(tx - tw / 2, ty - fs * 0.65, tw, fs * 1.3, fs * 0.65); ctx.fill();
       ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.5; ctx.stroke();
       ctx.fillStyle = '#f4f1ff';
-      ctx.fillText(txt, bt.x, ty + 1);
+      ctx.fillText(txt, tx, ty + 1);
     }
     if (!touchUsed && pw) {
       ctx.font = `700 ${Math.round(bt.r * 0.28)}px ${FONT}`;

@@ -8,7 +8,7 @@
   const VIEW_TILES = 9;        // how many tiles fit vertically on screen
   const MOKA_R = 0.28;         // Moka's collision radius, in tiles
   const ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4;
-  const RING_SPEED = 11, RING_MAX = 6.8, SQUEAK_COOLDOWN = 0.45;   // echo reach (20% smaller than it was)
+  const RING_SPEED = 11, RING_MAX = 5.4, SQUEAK_COOLDOWN = 0.45;   // echo reach (kept small on purpose)
   const LIGHT_FADE = 0.7;      // lit walls fade over ~1.4s
   const MAX_HEARTS = 3, HURT_TIME = 1.3;
   const MAX_ECHOES = 15, CRYSTAL_ECHOES = 3;
