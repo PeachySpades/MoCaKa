@@ -32,7 +32,7 @@
 
   // ---- Tuning ------------------------------------------------------------
   const R = 0.28, ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4, GHOST_SPEED = 3.4;
-  const RING_SPEED = 11, RING_MAX = 7.5, SQUEAK_COOLDOWN = 0.45, LIGHT_FADE = 0.7, LOUD_TIME = 2.5;
+  const RING_SPEED = 11, RING_MAX = 6, SQUEAK_COOLDOWN = 0.45, LIGHT_FADE = 0.7, LOUD_TIME = 2.5;
   const MAX_HEARTS = 3, HURT_TIME = 1.4, REVIVE_SAFE = 2.5;
   const START_ECHOES = 8, MAX_ECHOES = 12, CRYSTAL_ECHOES = 3;
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6, BITE_GRACE = 0.12;
