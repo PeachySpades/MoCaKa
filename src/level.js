@@ -274,7 +274,7 @@ window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', varia
   for (let x = 14; x < LEN - 6; x++) {
     if (rand() < 1 / 11) { const y = pick(T[x], B[x] - 1); if (free(x, y)) cols[x][y] = 'm'; }
   }
-  for (let x = 20; x < LEN - 8; x += pick(17, 25)) {
+  for (let x = 20; x < LEN - 8; x += pick(13, 19)) {   // (an echo crystal every 13-19 columns)
     const y = pick(T[x], B[x] - 1);
     if (free(x, y)) cols[x][y] = 'e'; else if (free(x, midRow(x))) cols[x][midRow(x)] = 'e';
   }
@@ -698,7 +698,7 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     }
   });
   for (let n = Math.round(openTiles.length / 110); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'm'; n--; } }
-  for (let n = Math.round(openTiles.length / 150); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'e'; n--; } }
+  for (let n = Math.round(openTiles.length / 115); n > 0;) { const [x, y] = any(); if (free(x, y) && !near(x, y, [[sx, sy]], 3)) { g[y][x] = 'e'; n--; } }
 
   // monsters, spaced out (closer together toward the exit and on harder levels)
   const kindsFor = (sec) => (variant === 'escape'
