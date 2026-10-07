@@ -2007,7 +2007,7 @@
         if (b.dead || Math.hypot(c.x - b.x, c.y - b.y) > 0.6 || (!airborne(b) && lvl(b) !== (c.top || 0))) continue;
         b.echoes = Math.min(MAX_ECHOES, b.echoes + CRYSTAL_ECHOES);
         c.on = false;
-        c.timer = 4 + Math.random() * 3;
+        c.timer = 3.4 + Math.random() * 2.6;   // (about 17% more crystals than the old 4-7 s)
         fx({ k: 'burst', x: c.x, y: c.y, rgb: '150, 240, 255', n: 12 });
         fx({ k: 'sfx', n: 'crystal' });
         break;

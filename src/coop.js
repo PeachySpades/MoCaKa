@@ -73,6 +73,8 @@
   // within EXIT_R of the cave mouth's middle once every key is found; the team then flies off
   // (EXIT_IN s into the mouth, then the night sky: EXIT_NEXT s in all between caves, EXIT_FINAL after the last).
   const TEAM_HEARTS = 5, REVIVE_R = 1.15, REVIVE_HEARTS = 2, EXIT_R = 1.6, MOUTH_R = 2.4;
+  // staying near a fallen teammate brings it back: quickly with one of the team's hearts, slowly without
+  const REVIVE_NEAR = 2.3, REVIVE_HOLD = 0.6, REVIVE_HOLD_FREE = 2.5;
   const EXIT_IN = 1.4, EXIT_NEXT = 4.4, EXIT_FINAL = 8.5, SWITCH_R = 0.42;
   // Power-ups, with Battle's names, colours and icons. Speed, Shield, Mega Screech and Echo Frenzy
   // work the moment you grab them (a Mega Screech or a Frenzy only lights the cave: echoes never
@@ -579,7 +581,12 @@
 
   function localInput(slot) {
     let ix = 0, iy = 0;
-    if (slot === 0 && spectating()) return { ix, iy };   // the ghost waits while you watch a teammate
+    if (slot === 0 && spectating()) {
+      // while you watch a teammate, your ghost drifts over to them so they can revive you
+      const t = watchTarget(), me = myBat();
+      const dx = t && me ? t.x - me.x : 0, dy = t && me ? t.y - me.y : 0, d = Math.hypot(dx, dy);
+      return d > 1.2 ? { ix: (dx / d) * 0.7, iy: (dy / d) * 0.7 } : { ix, iy };
+    }
     const down = (w) => keysFor(slot, w).some((k) => keys.has(k));
     if (down('left')) ix -= 1;
     if (down('right')) ix += 1;
@@ -806,17 +813,17 @@
     gotDirty = true;
   }
   // a living bat reaches a fallen teammate: one of the team's hearts brings it back
-  function revive(d, r) {
-    teamHearts--;
+  function revive(d, r, paid = true) {
+    if (paid) teamHearts--;
     r.st.revives++;
-    Object.assign(d, { ko: false, hearts: REVIVE_HEARTS, safe: REVIVE_SAFE, vx: 0, vy: 0, hurt: 0 });
+    Object.assign(d, { ko: false, hearts: paid ? REVIVE_HEARTS : 1, safe: REVIVE_SAFE, vx: 0, vy: 0, hurt: 0, revT: 0, revK: 0 });
     if (hitsWall(d.x, d.y, R)) {
       const spot = [[0, -0.9], [0, 0.9], [-0.9, 0], [0.9, 0], [0, 0]].map(([ox2, oy2]) => ({ x: r.x + ox2, y: r.y + oy2 })).find((p) => !hitsWall(p.x, p.y, R + 0.05));
       d.x = spot ? spot.x : r.x; d.y = spot ? spot.y : r.y;
     }
     fx({ k: 'revive', b: d.i, x: r2(d.x), y: r2(d.y) });
     fx({ k: 'sfx', n: 'revive', alt: 'heartUp' });
-    fx({ k: 'banner', text: `${d.name} is back!`, sub: `${r.name} used a heart${teamHearts ? ` · ${teamHearts} left` : ''}`, rgb: d.rgb, t: 1.8 });
+    fx({ k: 'banner', text: `${d.name} is back!`, sub: paid ? `${r.name} used a heart${teamHearts ? ` · ${teamHearts} left` : ''}` : `${r.name} stayed close and pulled them through`, rgb: d.rgb, t: 1.8 });
   }
   // Explore pickups and the switches, for a living bat
   function explorePickups(b) {
@@ -920,7 +927,7 @@
     fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: crushed ? 'CAUGHT!' : 'KO!', rgb: COL.danger, life: 1.4 });
     b.held = null; b.heldLeft = 0; b.power = null; b.shield = false; b.mega = false; b.ghostT = 0;
     const team = bats.filter((o) => !o.ko);
-    const sub = !explore ? 'Reach the next lantern to revive' : teamHearts > 0 ? 'Fly to them to spend a heart and revive them' : 'Find a heart to revive them, or reach the next lantern';
+    const sub = explore && teamHearts > 0 ? 'Fly close to them to spend a heart and revive them' : 'Stay close to them for a few seconds to revive them';
     if (team.length) fx({ k: 'banner', text: `${b.name} is down!`, sub, rgb: b.rgb, t: 2 });
     else wipe();
   }
@@ -1146,13 +1153,16 @@
       }
       if (explore) explorePickups(b);
     }
-    // Explore: a living bat that reaches a fallen teammate spends one of the team's hearts on it
-    if (explore && teamHearts > 0) {
-      for (const d of bats) {
-        if (!d.ko || teamHearts <= 0) continue;
-        const r = bats.find((o) => !o.ko && Math.hypot(o.x - d.x, o.y - d.y) < REVIVE_R);
-        if (r) revive(d, r);
-      }
+    // a living bat staying near a fallen teammate brings it back: in Explore it spends one of the
+    // team's hearts after a moment; with no heart to spend (or outside Explore) it just takes longer
+    for (const d of bats) {
+      if (!d.ko) { d.revT = 0; d.revK = 0; continue; }
+      const r = bats.filter((o) => !o.ko).sort((p, q) => Math.hypot(p.x - d.x, p.y - d.y) - Math.hypot(q.x - d.x, q.y - d.y))[0];
+      const paid = explore && teamHearts > 0, need = paid ? REVIVE_HOLD : REVIVE_HOLD_FREE;
+      if (r && Math.hypot(r.x - d.x, r.y - d.y) < REVIVE_NEAR) d.revT = (d.revT || 0) + dt;
+      else d.revT = Math.max(0, (d.revT || 0) - dt * 2);
+      d.revK = Math.min(1, d.revT / need);
+      if (d.revT >= need) revive(d, r, paid);
     }
 
     // checkpoint lanterns: a living bat reaching one revives everyone who is down.
@@ -1882,7 +1892,7 @@
     for (const gt of L.gates) if (!gt.open) addGoal(gt.sw.x, gt.sw.y, 16);
     if (teamHearts < TEAM_HEARTS) for (const o of L.hearts) if (!o.got) addGoal(o.x, o.y, 12);
     for (const o of L.powers) if (!o.got && !(PW[o.type].special && (b.held || o.type === 'ghost'))) addGoal(o.x, o.y, 12);
-    if (teamHearts > 0) for (const o of bats) if (o.ko) for (const [dx, dy] of [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8]]) addGoal(o.x + dx, o.y + dy, 60);
+    for (const o of bats) if (o.ko) for (const [dx, dy] of [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8]]) addGoal(o.x + dx, o.y + dy, 60);
     while (qh < qt) {
       const k = q[qh++], x = k % w, y = (k - x) / w;
       if (follow) { if (k === leadK) { best = k; break; } }
@@ -2084,7 +2094,7 @@
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
         r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd),
         // power-ups: held special (index + 1), its clock, the timed one (index + 1) and its clock, shield, mega, ghost
-        b.held ? PTYPES.indexOf(b.held) + 1 : 0, r2(b.heldLeft), b.power ? PTYPES.indexOf(b.power) + 1 : 0, r2(b.powerT), b.shield ? 1 : 0, b.mega ? 1 : 0, r2(b.ghostT), r2(b.specialCd)]),
+        b.held ? PTYPES.indexOf(b.held) + 1 : 0, r2(b.heldLeft), b.power ? PTYPES.indexOf(b.power) + 1 : 0, r2(b.powerT), b.shield ? 1 : 0, b.mega ? 1 : 0, r2(b.ghostT), r2(b.specialCd), r2(b.ko ? b.revK || 0 : 0)]),
       // wave monsters also carry their kind, home row and floor so a guest can make them
       m: L.monsters.filter(sendM)
         .map((m) => {
@@ -2177,7 +2187,7 @@
       if (v[16] > 0.1 && !(b.slashT > 0)) b.slashT = v[16];   // a wing slash: the guest plays it out itself
       b.slashA = v[17] || 0; b.slashCd = v[18] || 0;
       b.held = PTYPES[(v[19] | 0) - 1] || null; b.heldLeft = v[20] || 0; b.power = PTYPES[(v[21] | 0) - 1] || null; b.powerT = v[22] || 0;
-      b.shield = !!v[23]; b.mega = !!v[24]; b.ghostT = v[25] || 0; b.specialCd = v[26] || 0;
+      b.shield = !!v[23]; b.mega = !!v[24]; b.ghostT = v[25] || 0; b.specialCd = v[26] || 0; b.revK = v[27] || 0;
       if (s.lk && window.EchoLooks) { try { b.look = window.EchoLooks.clean(s.lk[i]); } catch { /* keep the old look */ } }
       if (first || Math.hypot(b.tx - b.x, b.ty - b.y) > 3) { b.x = b.tx; b.y = b.ty; }
     });
@@ -3288,6 +3298,17 @@
       glow(x + r * 2.2, y - r * 2.2, PX * 0.5, HEART_RGB, 0.45 * p);
       heart(x + r * 2.2, y - r * 2.2, PX * 0.13 * (0.9 + 0.2 * p), true);
     }
+    // a teammate close by is reviving it: a ring fills up around the fallen bat
+    if (b.ko && b.revK > 0 && phase === 'play') {
+      const rr = PX * 0.85;
+      glow(x, y, rr * 1.6, HEART_RGB, 0.25 + 0.35 * b.revK);
+      ctx.lineCap = 'round';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'; ctx.lineWidth = Math.max(3, PX * 0.12);
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = `rgba(${HEART_RGB}, 0.95)`;
+      ctx.beginPath(); ctx.arc(x, y, rr, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * b.revK); ctx.stroke();
+      ctx.lineCap = 'butt';
+    }
     if (b.shield && !b.ko && !into) {
       // a shimmering bubble (3D draws its own)
       if (!threeD) { ctx.strokeStyle = `rgba(${PW.shield.rgb}, ${0.55 + 0.2 * Math.sin(clock * 5)})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, r * 2.3, 0, Math.PI * 2); ctx.stroke(); }
@@ -3609,7 +3630,7 @@
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
         : [...intro,
-          explore ? 'Grab hearts: fly to a fallen teammate to revive them.' : 'Reach a lantern to revive fallen teammates.',
+          'Stay close to a fallen teammate to revive them.',
           localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash · keys: slash`
             : touchUsed ? 'Drag to fly · tap to squeak · DASH bites · SLASH swats' : 'WASD/arrows fly · F/Space squeak · G dash-bite · X/H wing slash · Esc pause'];
       lines.forEach((t, k) => {
@@ -3635,8 +3656,7 @@
     if (me && me.ko && phase === 'play' && !(banner && banner.t > 0)) {
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
-      const ghostTip = !explore ? 'You\'re a ghost. Your team revives you at the next lantern.'
-        : teamHearts > 0 ? 'You\'re a ghost. Fly to a teammate: they have a heart to revive you!' : 'You\'re a ghost. A teammate with a heart (or the next lantern) revives you.';
+      const ghostTip = 'You\'re a ghost. Stay close to a teammate and they\'ll revive you.';
       ctx.fillText(bats.some((b) => !b.ko) ? ghostTip : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
     }
   }
