@@ -350,7 +350,9 @@ window.makeCoopLevel = function makeCoopLevel(seed, difficulty = 'normal', varia
 // Classic and Escape fly a run of three caves (`stage` 0, 1, 2: crystal, lava, ice, see
 // COOP_STAGES); Hunt is one crystal cave. Each cave also has, in the hard-to-reach spots:
 //   k  a key (stage + 1 of them; the exit stays locked until the team has them all; none in Hunt)
-//   h  a heart (the team keeps them to revive fallen bats)
+//   h  a heart (the team keeps them to revive fallen bats): six or seven of them, in side spots and along the way
+//   f  the Phoenix Feather: one per cave, in a secret den dug off a tunnel (never behind a gate).
+//      Flown into while a teammate is down, it brings every fallen bat back beside whoever found it
 //   p  a power-up (its type in def.powers['x,y'])
 //   G  a gate: solid rock until its switch (w) is hit. def.gates: [{ tiles: [[x, y]...], sw: [x, y] }]
 // Hard-to-reach means: dead-end chambers (the farthest from the way through first), pockets
@@ -527,7 +529,7 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     }
     return true;
   }
-  function switchDen(d, t) {
+  function switchDen(d, t, allow = () => true) {
     const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     // [leg width, first leg, second leg, den across, den deep]
     const SHAPES = [[2, 3, 3, 4, 3], [2, 3, 2, 4, 3], [2, 3, 2, 3, 3], [1, 3, 2, 3, 3], [1, 2, 2, 3, 2], [1, 2, 1, 2, 2]];
@@ -535,7 +537,7 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     for (let k = 0; k < W * H; k++) {
       if (d[k] < t + 3 || d[k] > t + 26 || inPocket[k]) continue;
       const x = k % W, y = (k - x) / W;
-      if (g[y][x] !== '.' || safe(x, y) || near(x, y, items, 4) || near(x, y, gateTiles, 4)) continue;
+      if (g[y][x] !== '.' || safe(x, y) || near(x, y, items, 4) || near(x, y, gateTiles, 4) || !allow(x, y)) continue;
       tiers[routeSet.has(k) ? 2 : fromRoute[k] >= 2 && d[k] <= t + 18 ? 0 : 1].push([x, y]);
     }
     for (const list of tiers) for (let i = list.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [list[i], list[j]] = [list[j], list[i]]; }
@@ -575,7 +577,8 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
               if (floor && roof && deep > sd) { sd = deep; sw = [tx, ty]; }
             }
             if (!sw || !hidden(sw, dug, gap)) continue;
-            for (const [u, v] of own.values()) carve(...at(u, v));
+            // (only rock is dug: a mouth tile already open stays as it is, with whatever is on it)
+            for (const [u, v] of own.values()) if (rock(...at(u, v))) carve(...at(u, v));
             return sw;
           }
         }
@@ -618,10 +621,10 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     return { id, x: cx, y: cy };
   }
   // a little nook at the end of a one-tile-wide crawl into the rock (it never breaks into another cave)
-  function makeNook() {
+  function makeNook(allow = () => true) {
     for (let tries = 0; tries < 400; tries++) {
       const [x, y] = any();
-      if (safe(x, y) || inPocket[y * W + x] || g[y][x] !== '.' || near(x, y, items, 6)) continue;
+      if (safe(x, y) || inPocket[y * W + x] || g[y][x] !== '.' || near(x, y, items, 6) || !allow(x, y)) continue;
       const [dx, dy] = [[1, 0], [-1, 0], [0, 1], [0, -1]][Math.floor(rand() * 4)], px = -dy, py = dx;
       if (!rock(x + dx, y + dy)) continue;
       const n = pick(3, 5), path = [], nook = [];
@@ -744,6 +747,28 @@ window.makeCoopExplore = function makeCoopExplore(seed, difficulty = 'normal', v
     if (near(x, y, shards, shardGap[section(x, y)] * shardK) || near(x, y, gateTiles, 2) || [-1, 0, 1].some((k) => g[y][x + k] === 's')) continue;
     g[y][x] = 'v'; shards.push([x, y]);
   }
+
+  // Added last, so the rest of each cave (moths, monsters, crystals) comes out as before, and kept
+  // clear of the monsters and loose crystals already placed:
+  const clearOf = (x, y) => !near(x, y, placed, 3) && !near(x, y, shards, 2.5) && !near(x, y, gateTiles, 3);
+  // the Phoenix Feather: in a secret den dug off a tunnel, round a corner (like a switch's den), never
+  // on the way through or behind a gate; else at the end of a crawl, else well off the way
+  const feather = items.length;
+  putAt(switchDen(fromRoute, 0, clearOf) || makeNook(clearOf) || farSpot(), 'f');
+  const awayOf = (x, y) => clearOf(x, y) && !near(x, y, items.slice(feather), 9);
+  // more hearts: another one at the end of a crawl, and two along the way (beside the way through,
+  // not on it), one in each half of the cave
+  const wayHeart = (lo, hi) => {
+    for (let tries = 0; tries < 3000; tries++) {
+      const [x, y] = any(), k = y * W + x, a = along(x, y);
+      if (a < lo || a > hi || safe(x, y) || !free(x, y) || inPocket[k] || fromRoute[k] < 1 || fromRoute[k] > 4 || near(x, y, items, 6) || !awayOf(x, y)) continue;
+      return [x, y];
+    }
+    return null;
+  };
+  putAt(makeNook(awayOf) || farSpot(), 'h');
+  putAt(wayHeart(0.12, 0.5) || farSpot(), 'h');
+  putAt(wayHeart(0.5, 0.92) || farSpot(), 'h');
 
   g[sy][sx] = 'S';
   g[ey][ex] = 'E';

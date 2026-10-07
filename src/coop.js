@@ -5,9 +5,11 @@
 // the dive bite (a dash) knocks out any monster it hits, and the wing slash swats
 // everything in an arc in front of the bat. A knocked-out monster tumbles to the
 // floor, lies there dizzy and fades away.
-// Each bat has 3 hearts. A bat that runs out (or gets pinned against the left
-// edge by a wall) is knocked out and drifts along as a ghost until a living
-// teammate reaches the next checkpoint lantern, which revives it with 1 heart.
+// Each bat has 4 hearts. A bat that runs out (or gets pinned against the left
+// edge by a wall) is knocked out: its ghost stays put where it fell (on Side-scroll
+// the screen's left edge carries it along) until a living teammate flies over and
+// stays close to it for a moment, or reaches the next checkpoint lantern, which
+// revives it with 1 heart.
 // If every bat is knocked out the team starts again from the last checkpoint;
 // after 3 tries it's game over. Any bat reaching the green light wins.
 //
@@ -28,9 +30,15 @@
 // slippery ice cave. Each cave's exit is a big cave mouth out to the night sky, locked until the
 // team has found the cave's keys (1, 2, then 3), which are hidden in out-of-the-way spots. Gates
 // seal off some dead ends until someone hits their switch (fly into it, bite it or shoot it).
-// Power-ups (like Battle's) and hearts wait in the hard-to-reach spots: a living bat that flies
-// to a fallen teammate spends one of the team's hearts to revive it. Out of the last cave, the
+// Power-ups (like Battle's) and hearts wait in the hard-to-reach spots (and a few hearts along the
+// way): a living bat that flies to a fallen teammate spends one of the team's hearts to revive it.
+// Each cave also hides a secret, the Phoenix Feather: flown into while a teammate is down, it brings
+// every fallen bat back (with 2 hearts) right beside whoever found it. Out of the last cave, the
 // bats fly off into the night. Hunt stays one crystal cave (its exit opens on monsters, not keys).
+//
+// Before the first countdown a short animated how-to-play guide loops (findGuide / drawGuide):
+// a few little scenes showing what the map is about. START (this device offline, the host online;
+// Enter or Space too) begins the countdown. Tests can skip it (window.__echoNoGuide, skipGuide()).
 //
 // Same shape as duel.js, so the lobby can launch it the same way:
 //   local   everyone on one device (split touch zones / shared keyboard), plus CPU bats
@@ -42,7 +50,7 @@
   // ---- Tuning ------------------------------------------------------------
   const R = 0.28, ACCEL = 30, MAX_SPEED = 4.6, DRAG = 3.4, GHOST_SPEED = 3.4;
   const RING_SPEED = 11, RING_MAX = 4.8, SQUEAK_COOLDOWN = 0.45, LIGHT_FADE = 0.7, LOUD_TIME = 2.5;
-  const MAX_HEARTS = 3, HURT_TIME = 1.4, REVIVE_SAFE = 2.5;
+  const MAX_HEARTS = 4, HURT_TIME = 1.4, REVIVE_SAFE = 2.5;
   const START_ECHOES = 8, MAX_ECHOES = 12, CRYSTAL_ECHOES = 3;
   const DASH_SPEED = 12, DASH_TIME = 0.16, DASH_COOLDOWN = 1.6, BITE_GRACE = 0.12;
   // the wing slash: an arc SLASH_ARC radians wide (±75°), SLASH_R tiles out, in front of the bat
@@ -96,6 +104,8 @@
   const SPEED_TIME = 6, FRENZY_TIME = 5;
   const GATE_COLS = ['255, 204, 90', '120, 255, 210', '255, 140, 235'];
   const KEY_RGB = '255, 214, 90', HEART_RGB = '255, 107, 138';
+  // the Phoenix Feather: flame orange, with a gold core; a fallen bat's marker pulses in its own colour
+  const FEATHER_RGB = '255, 140, 50', FEATHER_GOLD = '255, 222, 120', FEATHER_R = 0.7, FEATHER_HEARTS = 2;
   // Explore: the Hunt clock runs this much longer (the cave is big); monsters farther than WAKE_X / WAKE_Y
   // tiles from every bat sleep; a lantern lights when a living bat comes within LANTERN_R
   const HUNT_EXPLORE = 1.6, WAKE_X = 15, WAKE_Y = 10, LANTERN_R = 2.4;
@@ -160,15 +170,17 @@
   // crystal bursts in flight: { id (the shard's), seed, by (whose echo), age, dead (bitmask), bits }
   let bursts = [];
   let chomps = [];   // dive-bite mouths snapping shut (cosmetic)
-  let novas = [], revives = [];   // freeze blasts and revive rings (cosmetic)
+  let novas = [], revives = [], phoenixes = [];   // freeze blasts, revive rings and Phoenix Feather bursts (cosmetic)
   let scroll = { x: 0, speed: 0 }, cpIndex = -1, tries = TRIES, phase = 'count', phaseT = 0, countdown = 3;
   let clock = 0, playTime = 0, shake = 0, banner = null, over = false, ended = false, result = null;
   let ringId = 0, snapTimer = 0, gotDirty = true, shardDirty = true, snapCount = 0, lastDead = '', fogT = 0;
   const remoteInput = new Map();
   // Spectating: while this device's only bat is knocked out, the camera watches a living teammate
-  // (tap, Space or the arrow keys pick the next one). The ghost waits where it fell, so teammates
-  // can fly to it with a heart (Explore) or the next lantern brings it back.
+  // (tap, Space or the arrow keys pick the next one). The ghost stays put where it fell: a teammate
+  // has to fly to it (or reach the next lantern, or find the Phoenix Feather) to bring it back.
   let watch = -1, watchFlash = 0;
+  // the how-to-play guide before the first countdown: { t, k (scene), kt (time in the scene) } or null
+  let guide = null, noGuide = false;
 
   // ---- Level -------------------------------------------------------------
   function loadLevel(def) {
@@ -176,7 +188,7 @@
     const lv = {
       def, w, h, grid: new Uint8Array(w * h), lit: new Float32Array(w * h),
       start: { x: 5.5, y: 6.5 }, goal: { x: w - 6.5, y: 6.5 }, moths: [], crystals: [], checkpoints: [], monsters: [], shards: [],
-      keys: [], hearts: [], powers: [], gates: [], gateAt: new Int16Array(w * h).fill(-1),
+      keys: [], hearts: [], powers: [], feathers: [], gates: [], gateAt: new Int16Array(w * h).fill(-1),
     };
     const ch = (x, y) => (x < 0 || y < 0 || x >= w || y >= h) ? '#' : (rows[y][x] || '#');
     const specs = [];
@@ -190,6 +202,7 @@
         else if (c === 'e') lv.crystals.push({ x: cx, y: cy, got: false, phase: (x * 3 + y) % 6 });
         else if (c === 'k') lv.keys.push({ x: cx, y: cy, got: false, phase: (x * 5 + y) % 6 });
         else if (c === 'h') lv.hearts.push({ x: cx, y: cy, got: false, phase: (x * 3 + y * 7) % 6 });
+        else if (c === 'f') lv.feathers.push({ x: cx, y: cy, got: false, phase: (x + y) % 6, nag: -9, fa: 0 });
         else if (c === 'p') lv.powers.push({ x: cx, y: cy, got: false, phase: (x + y * 5) % 6, type: PW[(def.powers || {})[`${x},${y}`]] ? def.powers[`${x},${y}`] : 'speed' });
         else if (c === 'v') lv.shards.push(resetShard({ id: lv.shards.length, x: cx, y, seed: (x * 7 + y * 13) % 10 }));
         else if (c === 'K') lv.checkpoints.push({ x: cx, y: cy, floor: floorBelow(ch, x, y) });
@@ -269,6 +282,7 @@
   const slipK = () => (explore && TH && TH.look && TH.look.ice ? TH.look.ice : 0);
   const keysLeft = () => (L ? L.keys.reduce((n, k) => n + (k.got ? 0 : 1), 0) : 0);
   const switchSeen = (gt) => !!(L.fog && window.EchoMap.has(L.fog, Math.floor(gt.sw.y) * L.w + Math.floor(gt.sw.x)));
+  const featherSeen = (f) => !!(L.fog && window.EchoMap.has(L.fog, Math.floor(f.y) * L.w + Math.floor(f.x)));
   function setMap(m) { mapKind = MAPS.includes(m) ? m : 'scroll'; explore = mapKind === 'explore'; }
   function floorBelow(ch, x, y) { let b = y; while (ch(x, b + 1) !== '#' && ch(x, b + 1) !== 'G') b++; return b + 1; }
   // a loose ceiling crystal: y is the ceiling line it hangs from (its tip is at y + SHARD_LEN)
@@ -375,6 +389,8 @@
     setPhase('count', 3);
     banner = { text: TITLES[variant], rgb: COL.exit, t: 0 };
     keys.clear(); sticks.clear();
+    // the how-to-play guide waits on START before the countdown (a guest's follows the host's)
+    guide = guideOff() ? null : newGuide();
     active = true;
   }
   function stop() { active = false; }
@@ -478,6 +494,24 @@
         particles.push({ x: ev.x + Math.cos(a) * 0.4, y: ev.y + Math.sin(a) * 0.4, vx: Math.cos(a) * 1.6, vy: Math.sin(a) * 1.6 - 1.4, life: 1 + Math.random() * 0.4, rgb: HEART_RGB, heart: true });
       }
       burst(ev.x, ev.y, HEART_RGB, 16, 3);
+    } else if (ev.k === 'phoenix') {
+      // the Phoenix Feather: a burst of flame and gold where it was, flaming streaks from it to
+      // each bat it brings back, and a rising ring of fire round the one who found it
+      const fb = bats[ev.b];
+      phoenixes.push({ x: ev.x, y: ev.y, t: 0, b: ev.b });
+      if (L) { L.feathers.forEach((f) => { if (Math.hypot(f.x - ev.x, f.y - ev.y) < 0.6) f.got = true; }); lightAround(ev.x, ev.y, 5); if (fb) lightAround(fb.x, fb.y, 4); }
+      burst(ev.x, ev.y, FEATHER_RGB, 30, 5); burst(ev.x, ev.y, FEATHER_GOLD, 20, 3.5);
+      for (let k = 0; k < 26; k++) {
+        const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 2.5;
+        particles.push({ x: ev.x + Math.cos(a) * 0.3, y: ev.y + Math.sin(a) * 0.3, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 2.5, g: -1.5, life: 0.9 + Math.random() * 0.6, rgb: k % 3 ? FEATHER_RGB : FEATHER_GOLD, s: 5 });
+      }
+      // where each fallen bat was: a flare of its colour there, as it's whisked away to the finder
+      for (const [i, x0, y0] of ev.n || []) {
+        const d = bats[i];
+        if (!d) continue;
+        burst(x0, y0, d.rgb, 12, 2.5);
+        for (let k = 0; k < 8; k++) particles.push({ x: x0, y: y0, vx: (Math.random() - 0.5) * 1.2, vy: -1 - Math.random() * 1.5, g: -1, life: 0.7 + Math.random() * 0.4, rgb: FEATHER_GOLD, s: 4 });
+      }
     } else if (ev.k === 'cut') {
       // a snapped spider thread: where it broke, for the two halves springing back
       const m = L && L.monsters[ev.id];
@@ -507,6 +541,14 @@
   addEventListener('keydown', (e) => {
     if (!active || paused) return;
     if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    // the how-to-play guide: Enter or Space starts (host / offline), the arrows flip through the scenes
+    if (guide) {
+      if (e.repeat) return;
+      if (['Enter', 'NumpadEnter', 'Space'].includes(e.code)) startGuide();
+      else if (['ArrowLeft', 'KeyA'].includes(e.code)) guideGo(guide.k - 1);
+      else if (['ArrowRight', 'KeyD'].includes(e.code)) guideGo(guide.k + 1);
+      return;
+    }
     keys.add(e.code);
     if (e.repeat) return;
     if (spectating()) {
@@ -551,6 +593,7 @@
     e.preventDefault();
     window.EchoAudio?.unlock?.();
     if (e.pointerType === 'touch') touchUsed = true;
+    if (guide) { guideTap(e.clientX, e.clientY); return; }
     if (spectating()) { cycleWatch(1); return; }
     if (powerShown() && inButton(powerButton(), e.clientX, e.clientY)) { act(0, 'special'); return; }
     if (touchUsed && inDashButton(e.clientX, e.clientY)) { act(0, 'dash'); return; }
@@ -581,12 +624,8 @@
 
   function localInput(slot) {
     let ix = 0, iy = 0;
-    if (slot === 0 && spectating()) {
-      // while you watch a teammate, your ghost drifts over to them so they can revive you
-      const t = watchTarget(), me = myBat();
-      const dx = t && me ? t.x - me.x : 0, dy = t && me ? t.y - me.y : 0, d = Math.hypot(dx, dy);
-      return d > 1.2 ? { ix: (dx / d) * 0.7, iy: (dy / d) * 0.7 } : { ix, iy };
-    }
+    // while you watch a teammate your ghost stays put (a fallen bat doesn't move: a teammate comes to it)
+    if (slot === 0 && spectating()) return { ix, iy };
     const down = (w) => keysFor(slot, w).some((k) => keys.has(k));
     if (down('left')) ix -= 1;
     if (down('right')) ix += 1;
@@ -850,6 +889,7 @@
       fx({ k: 'sfx', n: 'heartUp', alt: 'moth' });
     }
     for (const p of L.powers) if (!p.got && close(p)) grabPower(b, p);
+    for (const f of L.feathers) if (!f.got && close(f, FEATHER_R)) phoenix(b, f);
     for (const gt of L.gates) {
       if (gt.open) continue;
       if (Math.hypot(gt.sw.x - b.x, gt.sw.y - b.y) < R + SWITCH_R) hitSwitch(gt, b);
@@ -860,6 +900,43 @@
         fx({ k: 'popup', x: x + 0.5, y: y - 0.3, text: 'Find the switch!', rgb: GATE_COLS[gt.id % GATE_COLS.length], life: 1.6 });
       }
     }
+  }
+  // the Phoenix Feather: with a teammate down, every fallen bat comes back (FEATHER_HEARTS each),
+  // right beside whoever found it, and the feather is gone for this cave. With nobody down it waits.
+  function phoenix(b, f) {
+    const down = bats.filter((o) => o.ko);
+    if (!down.length) {
+      if (clock - f.nag > 3) { f.nag = clock; fx({ k: 'popup', x: f.x, y: f.y - 0.8, text: 'Save it for when a friend is down', rgb: FEATHER_RGB, life: 1.8 }); }
+      return;
+    }
+    f.got = true; gotDirty = true;
+    const spots = freeSpotsAround(b.x, b.y, down.length), from = down.map((d) => [d.i, r2(d.x), r2(d.y)]);
+    down.forEach((d, k) => {
+      const at = spots[k] || { x: b.x, y: b.y };
+      Object.assign(d, { ko: false, hearts: FEATHER_HEARTS, safe: REVIVE_SAFE, x: at.x, y: at.y, vx: 0, vy: 0, hurt: 0, revT: 0, revK: 0, face: b.face });
+      if (d.ai) d.ai.path = [];
+      fx({ k: 'revive', b: d.i, x: r2(d.x), y: r2(d.y) });
+    });
+    b.st.revives += down.length;
+    fx({ k: 'phoenix', b: b.i, x: r2(f.x), y: r2(f.y), n: from });
+    fx({ k: 'sfx', n: 'phoenix', alt: 'revive' });
+    fx({ k: 'shake', v: 0.3 });
+    fx({ k: 'banner', text: `${b.name} found the Phoenix Feather!`, sub: 'Everyone\'s back!', rgb: FEATHER_GOLD, t: 2.6 });
+  }
+  // up to n spots (a bat apart) around x, y that aren't in rock, nearest first
+  function freeSpotsAround(x, y, n) {
+    const out = [];
+    for (const rr of [0.85, 1.7, 2.5]) {
+      for (let k = 0; k < 8 && out.length < n; k++) {
+        const a = -Math.PI / 2 + (k * Math.PI) / 4, p = { x: x + Math.cos(a) * rr, y: y + Math.sin(a) * rr };
+        if (hitsWall(p.x, p.y, R + 0.05) || out.some((q) => Math.hypot(q.x - p.x, q.y - p.y) < 0.75)) continue;
+        // (and in the same open space: nothing solid on the way from the finder)
+        let clear = true;
+        for (let t = 0.2; t < 1 && clear; t += 0.2) if (solidAt(x + (p.x - x) * t, y + (p.y - y) * t)) clear = false;
+        if (clear) out.push(p);
+      }
+    }
+    return out;
   }
   // a fallen bat's ghost that a heart can bring back, and a bat stuck in rock after Ghost wears off
   function unGhost(b) {
@@ -920,14 +997,14 @@
   }
   function knockOut(b, crushed = false) {
     if (b.ko) return;
-    b.ko = true; b.hearts = 0; b.dashT = 0; b.biteT = 0; b.hurt = 0;
+    b.ko = true; b.hearts = 0; b.dashT = 0; b.biteT = 0; b.hurt = 0; b.vx = 0; b.vy = 0;
     b.st.kos++;
     fx({ k: 'burst', x: b.x, y: b.y, rgb: b.rgb, n: 22, sp: 4 });
     fx({ k: 'sfx', n: 'crash' });
     fx({ k: 'popup', x: b.x, y: b.y - 0.8, text: crushed ? 'CAUGHT!' : 'KO!', rgb: COL.danger, life: 1.4 });
     b.held = null; b.heldLeft = 0; b.power = null; b.shield = false; b.mega = false; b.ghostT = 0;
     const team = bats.filter((o) => !o.ko);
-    const sub = explore && teamHearts > 0 ? 'Fly close to them to spend a heart and revive them' : 'Stay close to them for a few seconds to revive them';
+    const sub = explore && teamHearts > 0 ? 'They stay put: fly to them to spend a heart and revive them' : 'They stay put: fly to them and stay close to revive them';
     if (team.length) fx({ k: 'banner', text: `${b.name} is down!`, sub, rgb: b.rgb, t: 2 });
     else wipe();
   }
@@ -1069,6 +1146,8 @@
       return;
     }
     if (phase === 'count') {
+      // the how-to-play guide is up: the countdown waits for START
+      if (guide) { fadeLight(dt); broadcast(dt); return; }
       const before = Math.ceil(countdown);
       countdown -= dt;
       if (Math.ceil(countdown) !== before) fx({ k: 'sfx', n: countdown <= 0 ? 'go' : 'beep' });
@@ -1264,12 +1343,12 @@
       b.x += (tx - b.x) * e; b.y += (ty - b.y) * e;
     });
   }
-  // knocked-out bats drift through rock as ghosts, kept on screen
+  // a knocked-out bat's ghost stays put where it fell (no steering, no drift: a teammate has to come
+  // to it). On Side-scroll the screen's left edge still carries it along so it stays on screen.
   function moveGhost(b, ix, iy, dt) {
     if (!b.ko) return;
-    const tvx = ix * GHOST_SPEED + (phase === 'play' ? scroll.speed * 0.6 : 0), tvy = iy * GHOST_SPEED;
     const k = 1 - Math.exp(-dt * 5);
-    b.vx += (tvx - b.vx) * k; b.vy += (tvy - b.vy) * k;
+    b.vx -= b.vx * k; b.vy -= b.vy * k;
     const lo = explore ? 0.8 : scroll.x + 0.6, hi = explore ? L.w - 0.8 : scroll.x + VIEW_W - 0.6;
     b.x = Math.max(lo, Math.min(hi, b.x + b.vx * dt));
     b.y = Math.max(0.8, Math.min(L.h - 0.8, b.y + b.vy * dt));
@@ -1845,6 +1924,18 @@
       }
     }
     if (crystal >= 0 && crystalD < 14) best = crystal;
+    // a fallen teammate on the screen: fly back to it (its ghost stays put, the screen's edge carries it)
+    let fallen = -1, fallenD = 1e9;
+    for (const o of bats) {
+      if (!o.ko || o === b) continue;
+      for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [2, 0], [0, 2], [0, -2]]) {
+        const tx = Math.floor(o.x) + dx, ty = Math.floor(o.y) + dy;
+        if (tx < x0 || tx > x1 || ty < 0 || ty >= L.h) continue;
+        const k = idx(tx, ty);
+        if (dist[k] >= 0 && dist[k] < fallenD) { fallenD = dist[k]; fallen = k; }
+      }
+    }
+    if (fallen >= 0 && fallenD < 40) best = fallen;
     const path = [];
     for (let k = best; k >= 0 && prev[k] !== -1; k = prev[k]) path.push({ x: (k % wN) + x0 + 0.5, y: Math.floor(k / wN) + 0.5 });
     return path.reverse();
@@ -1893,6 +1984,8 @@
     if (teamHearts < TEAM_HEARTS) for (const o of L.hearts) if (!o.got) addGoal(o.x, o.y, 12);
     for (const o of L.powers) if (!o.got && !(PW[o.type].special && (b.held || o.type === 'ghost'))) addGoal(o.x, o.y, 12);
     for (const o of bats) if (o.ko) for (const [dx, dy] of [[0, 0], [0.8, 0], [-0.8, 0], [0, 0.8], [0, -0.8]]) addGoal(o.x + dx, o.y + dy, 60);
+    // the Phoenix Feather, once seen, only while someone is down (it would be wasted otherwise)
+    if (bats.some((o) => o.ko)) for (const f of L.feathers) if (!f.got && featherSeen(f)) addGoal(f.x, f.y, 40);
     while (qh < qt) {
       const k = q[qh++], x = k % w, y = (k - x) / w;
       if (follow) { if (k === leadK) { best = k; break; } }
@@ -1930,14 +2023,8 @@
     const ai = b.ai || (b.ai = newAi(buddyLevel(b.i)));
     const S = BUDDY[ai.skill] || BUDDY.normal;
     ai.think -= dt; ai.sq -= dt; ai.dw -= dt; ai.sl -= dt;
-    if (b.ko) {
-      // a ghost tags along with the team
-      const team = livingBats();
-      const tx = team.length ? team.reduce((s, o) => s + o.x, 0) / team.length - 1 : explore ? b.x : scroll.x + VIEW_W / 2;
-      const ty = team.length ? team.reduce((s, o) => s + o.y, 0) / team.length : L.h / 2;
-      const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
-      return d > 0.8 ? { ix: dx / d, iy: dy / d } : { ix: 0, iy: 0 };
-    }
+    // a fallen buddy's ghost stays put, like everyone's: the team comes to it
+    if (b.ko) return { ix: 0, iy: 0 };
     // daydreaming: for a moment it stops flying (this is how buddies get left behind)
     if (ai.daze > 0) { ai.daze -= dt; return { ix: 0, iy: 0 }; }
     if (S.daze && Math.random() < S.daze * dt) { ai.daze = 0.35 + Math.random() * 0.5; return { ix: 0, iy: 0 }; }
@@ -2060,6 +2147,10 @@
     novas = novas.filter((n) => n.t < 0.6);
     for (const r of revives) r.t += dt;
     revives = revives.filter((r) => r.t < 1.2);
+    for (const r of phoenixes) r.t += dt;
+    phoenixes = phoenixes.filter((r) => r.t < 1.6);
+    // the Phoenix Feather shows once it has been seen (lit by an echo or flown close to): it's a secret
+    if (L && L.feathers) for (const f of L.feathers) if (f.fa < 1 && featherSeen(f)) f.fa = Math.min(1, f.fa + dt * 2);
     if (L) for (const sh of shots) lightAround(sh.x, sh.y, 1.7);
     if (L && L.gates) for (const gt of L.gates) if (gt.open && gt.t < 2) gt.t += dt;
     if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
@@ -2090,7 +2181,7 @@
       : (m) => m.hx > x0 - 6 && m.hx < x1 && (m.x > x0 || m.dead) && m.x < x1 + 6 && !(m.gone && (m.goneSent = (m.goneSent || 0) + 1) > 30);
     const s = {
       t: 's', sd: seed, lv: difficulty, vr: VARIANTS.indexOf(variant), mp: MAPS.indexOf(mapKind), ph: PHASES.indexOf(phase), pt: r2(phaseT), cd: r2(countdown),
-      sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime),
+      sx: r2(scroll.x), sp: r2(scroll.speed), cp: cpIndex, tr: tries, pl: r2(playTime), gd: guide ? 1 : 0,
       b: bats.map((b) => [r2(b.x), r2(b.y), r2(b.vx), r2(b.vy), b.face, b.hearts, b.echoes, r2(b.hurt), b.ko ? 1 : 0,
         r2(b.dashT), r2(b.dashCd), r2(b.safe), b.ctrl === 'cpu' && !b.was ? 1 : 0, r2(b.loud), b.st.points, b.combo, r2(b.slashT), r2(b.slashA), r2(b.slashCd),
         // power-ups: held special (index + 1), its clock, the timed one (index + 1) and its clock, shield, mega, ghost
@@ -2127,7 +2218,7 @@
       const bits = (a) => a.map((o) => (o.got ? 1 : 0)).join('');
       s.g = bits(L.moths) + '|' + bits(L.crystals);
       // Explore: keys, hearts and power-ups too, and which gates are open
-      if (explore) { s.g += '|' + bits(L.keys) + '|' + bits(L.hearts) + '|' + bits(L.powers); s.gt = L.gates.map((gt) => (gt.open ? 1 : 0)).join(''); }
+      if (explore) { s.g += '|' + bits(L.keys) + '|' + bits(L.hearts) + '|' + bits(L.powers) + '|' + bits(L.feathers); s.gt = L.gates.map((gt) => (gt.open ? 1 : 0)).join(''); }
       gotDirty = false;
     }
     // loose crystals (0 hanging, 1 cracked and shaking, 2 burst), and the bursts in flight:
@@ -2174,6 +2265,9 @@
       }
     }
     phase = PHASES[s.ph] || 'play'; phaseT = s.pt; countdown = s.cd;
+    // the host's how-to-play guide: shown here too until the host starts (unless turned off here)
+    if (s.gd && !guide && !guideOff() && phase === 'count') guide = newGuide();
+    else if (!s.gd && guide) guide = null;
     if (s.sx < scroll.x - 2) for (let k = 0; k < L.lit.length; k++) L.lit[k] = 0;   // the team went back to a lantern
     scroll.tx = s.sx; scroll.speed = s.sp;
     if (Math.abs(s.sx - scroll.x) > 3) scroll.x = s.sx;
@@ -2203,12 +2297,13 @@
       m.tx = x; m.ty = y; m.st = MSTATES[st] || m.st; m.t = t; m.stun = stun; m.ax = ax; m.ay = ay; m.dead = !!dead; m.face = face;
     }
     if (s.g) {
-      const [mg, cg, kg = '', hg = '', pg = ''] = s.g.split('|');
+      const [mg, cg, kg = '', hg = '', pg = '', fg = ''] = s.g.split('|');
       L.moths.forEach((m, k) => { m.got = mg[k] === '1'; });
       L.crystals.forEach((c, k) => { c.got = cg[k] === '1'; });
       L.keys.forEach((o, k) => { o.got = kg[k] === '1'; });
       L.hearts.forEach((o, k) => { o.got = hg[k] === '1'; });
       L.powers.forEach((o, k) => { o.got = pg[k] === '1'; });
+      L.feathers.forEach((o, k) => { o.got = fg[k] === '1'; });
     }
     if (s.sh) {
       L.shards.forEach((c, k) => {
@@ -2509,7 +2604,9 @@
       ctx.font = `700 ${Math.max(11, PX * 0.42)}px ${FONT}`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillStyle = `rgba(${p.rgb}, ${1 - k * k})`;
-      ctx.fillText(p.text, X(p.x), Y(p.y - k * 0.6));
+      // (kept on the screen: a long one near the edge slides in)
+      const hw = ctx.measureText(p.text).width / 2 + 6;
+      ctx.fillText(p.text, Math.max(hw, Math.min(W - hw, X(p.x))), Y(p.y - k * 0.6));
     }
 
     // the creeping dark at the left edge, and the dark beyond the shared screen (not in Explore)
@@ -2528,6 +2625,7 @@
     drawHud();
     if (touchUsed && localCount === 1 && phase === 'play') { drawDashButton(); drawSlashButton(); }
     if (powerShown()) drawPowerButton();
+    if (guide) { drawGuide(); return; }
     drawSticks();
   }
 
@@ -2769,6 +2867,42 @@
       heart(x, y, PX * 0.2 * beat, true);
     }
     for (const p of L.powers) if (!p.got && visX(p.x, p.y)) drawPowerup(p);
+    for (const f of L.feathers) if (!f.got && f.fa > 0 && visX(f.x, f.y)) drawFeather(X(f.x), Y(f.y + Math.sin(clock * 1.8 + f.phase) * 0.12), PX * 0.42, f.fa, clock + f.phase);
+  }
+  // the Phoenix Feather: a flame-coloured plume curling on a fiery glow, with sparks rising off it
+  function drawFeather(x, y, s, a = 1, t = clock) {
+    ctx.save();
+    ctx.globalAlpha *= a;
+    const p = 0.75 + 0.25 * Math.sin(t * 4);
+    glow(x, y, s * 3.2, FEATHER_RGB, 0.45 * p);
+    glow(x, y, s * 1.4, FEATHER_GOLD, 0.35);
+    for (let k = 0; k < 4; k++) {
+      const f = (t * 0.7 + k / 4) % 1;
+      ctx.fillStyle = `rgba(${k % 2 ? FEATHER_GOLD : FEATHER_RGB}, ${0.9 * (1 - f)})`;
+      ctx.beginPath(); ctx.arc(x + Math.sin(t * 3 + k * 2) * s * 0.5, y - s * 0.4 - f * s * 1.8, Math.max(1, s * 0.09 * (1 - f) + 0.8), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.translate(x, y); ctx.rotate(-0.55 + Math.sin(t * 1.6) * 0.08);
+    // the vane: a curved plume, deep orange at the edge, gold at the heart
+    const vane = (k) => {
+      ctx.beginPath();
+      ctx.moveTo(0, s * 1.05);
+      ctx.bezierCurveTo(-s * 0.75 * k, s * 0.5, -s * 0.6 * k, -s * 0.55, s * 0.1, -s * 1.15);
+      ctx.bezierCurveTo(s * 0.62 * k, -s * 0.45, s * 0.5 * k, s * 0.45, 0, s * 1.05);
+      ctx.closePath();
+    };
+    const gr = ctx.createLinearGradient(0, -s * 1.1, 0, s);
+    gr.addColorStop(0, 'rgb(255, 236, 160)'); gr.addColorStop(0.45, `rgb(${FEATHER_RGB})`); gr.addColorStop(1, 'rgb(200, 50, 40)');
+    vane(1); ctx.fillStyle = gr; ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 245, 210, 0.85)'; ctx.lineWidth = Math.max(1, s * 0.06); ctx.stroke();
+    vane(0.45); ctx.fillStyle = `rgba(${FEATHER_GOLD}, 0.85)`; ctx.fill();
+    // the shaft, and a few barbs
+    ctx.strokeStyle = 'rgba(255, 250, 230, 0.95)'; ctx.lineWidth = Math.max(1, s * 0.08); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(0, s * 1.4); ctx.quadraticCurveTo(-s * 0.05, 0, s * 0.1, -s * 1.1); ctx.stroke();
+    ctx.lineWidth = Math.max(0.8, s * 0.04); ctx.strokeStyle = 'rgba(120, 30, 10, 0.55)';
+    ctx.beginPath();
+    for (let k = -2; k <= 2; k++) { const yy = k * s * 0.32; ctx.moveTo(0, yy); ctx.lineTo(-s * 0.4, yy - s * 0.22); ctx.moveTo(0, yy); ctx.lineTo(s * 0.36, yy - s * 0.22); }
+    ctx.stroke();
+    ctx.restore();
   }
   // fireballs, freeze blasts and revive rings
   function drawPowerFx() {
@@ -2794,6 +2928,17 @@
       for (let j = 0; j < 12; j++) {
         const a = (j / 12) * Math.PI * 2 + 0.2, r0 = R0 * 0.82, r1 = R0 * 1.12, w = 0.09;
         ctx.beginPath(); ctx.moveTo(x + Math.cos(a - w) * r0, y + Math.sin(a - w) * r0); ctx.lineTo(x + Math.cos(a) * r1, y + Math.sin(a) * r1); ctx.lineTo(x + Math.cos(a + w) * r0, y + Math.sin(a + w) * r0); ctx.fill();
+      }
+    }
+    for (const r of phoenixes) {
+      // the feather bursts: a wide ring of fire from where it was, and a gold ring round the finder
+      const k = r.t / 1.6, x = X(r.x), y = Y(r.y), fb = bats[r.b];
+      glow(x, y, PX * (1.5 + k * 4), FEATHER_RGB, 0.6 * (1 - k));
+      ctx.strokeStyle = `rgba(${FEATHER_RGB}, ${1 - k})`; ctx.lineWidth = Math.max(2, PX * 0.18 * (1 - k));
+      ctx.beginPath(); ctx.arc(x, y, PX * (0.4 + k * 4), 0, Math.PI * 2); ctx.stroke();
+      if (fb) {
+        ctx.strokeStyle = `rgba(${FEATHER_GOLD}, ${0.9 * (1 - k)})`; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(X(fb.x), Y(fb.y), PX * (0.6 + k * 2.2), 0, Math.PI * 2); ctx.stroke();
       }
     }
     for (const r of revives) {
@@ -3292,11 +3437,15 @@
 
   function drawBat(b, threeD, into = 0) {
     const x = X(b.x), y = Y(b.y + (b.ko ? Math.sin(clock * 2.4 + b.i) * 0.12 : 0)), r = PX * R * (1 - into * 0.75);
-    // Explore: a fallen bat the team can revive (it has a heart to spend) shows a pulsing heart
-    if (b.ko && explore && teamHearts > 0 && phase === 'play') {
-      const p = 0.75 + 0.25 * Math.sin(clock * 6);
-      glow(x + r * 2.2, y - r * 2.2, PX * 0.5, HEART_RGB, 0.45 * p);
-      heart(x + r * 2.2, y - r * 2.2, PX * 0.13 * (0.9 + 0.2 * p), true);
+    // a fallen bat stays put until a teammate comes: a beacon in its colour pulses out from it, with
+    // a heart over it (pink when the team has a heart to spend on it, else in its own colour)
+    if (b.ko && phase === 'play') {
+      const p = 0.75 + 0.25 * Math.sin(clock * 6), f = (clock * 0.8 + b.i * 0.25) % 1;
+      ctx.strokeStyle = `rgba(${b.rgb}, ${0.7 * (1 - f)})`; ctx.lineWidth = Math.max(1.5, PX * 0.06 * (1 - f) + 1);
+      ctx.beginPath(); ctx.arc(x, y, PX * (0.5 + f * 1.6), 0, Math.PI * 2); ctx.stroke();
+      const paid = explore && teamHearts > 0, hx = x + r * 2.2, hy = y - r * 2.2;
+      glow(hx, hy, PX * 0.5, paid ? HEART_RGB : b.rgb, 0.45 * p);
+      heart(hx, hy, PX * 0.13 * (0.9 + 0.2 * p), true, paid ? null : b.color);
     }
     // a teammate close by is reviving it: a ring fills up around the fallen bat
     if (b.ko && b.revK > 0 && phase === 'play') {
@@ -3402,19 +3551,35 @@
     ctx.restore();
   }
 
-  // teammates out of the close-up show as little arrows of their colour at the screen's edge
+  // teammates out of the close-up show as little arrows of their colour at the screen's edge; a fallen
+  // one (it stays put until someone comes) as a bigger pulsing badge with a heart, pointing the way
   function drawOffscreenMates() {
     const m = 26;
     for (const b of bats) {
       const x = X(b.x), y = Y(b.y);
       if (x > -PX * 0.3 && x < W + PX * 0.3 && y > -PX * 0.3 && y < H + PX * 0.3) continue;
-      const cx = Math.max(m, Math.min(W - m, x)), cy = Math.max(m + 40, Math.min(H - m, y)), a = Math.atan2(y - cy, x - cx);
+      const fallen = b.ko && phase === 'play', mm = fallen ? 30 : m;
+      const cx = Math.max(mm, Math.min(W - mm, x)), cy = Math.max(mm + 40, Math.min(H - mm - (fallen && explore ? 40 : 0), y)), a = Math.atan2(y - cy, x - cx);
       ctx.save();
-      ctx.translate(cx, cy); ctx.rotate(a);
-      ctx.globalAlpha = b.ko ? 0.45 : 0.9;
-      ctx.fillStyle = b.color;
-      ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.translate(cx, cy);
+      if (fallen) {
+        const p = 0.5 + 0.5 * Math.sin(clock * 5 + b.i);
+        glow(0, 0, 26, b.rgb, 0.3 + 0.25 * p);
+        ctx.rotate(a);
+        ctx.fillStyle = b.color; ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(22, 0); ctx.lineTo(12, -7); ctx.lineTo(12, 7); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.rotate(-a);
+        ctx.beginPath(); ctx.arc(0, 0, 12 + p * 1.5, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(12, 10, 32, 0.88)'; ctx.fill();
+        ctx.strokeStyle = b.color; ctx.lineWidth = 2.5; ctx.stroke();
+        heart(0, 1, 5.5 + p, true, explore && teamHearts > 0 ? null : b.color);
+      } else {
+        ctx.rotate(a);
+        ctx.globalAlpha = b.ko ? 0.45 : 0.9;
+        ctx.fillStyle = b.color;
+        ctx.beginPath(); ctx.moveTo(12, 0); ctx.lineTo(-6, -9); ctx.lineTo(-2, 0); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
       ctx.restore();
     }
   }
@@ -3451,12 +3616,12 @@
     roundRect(x, y, w, h, h / 2); ctx.fill();
     glowStroke(edge, 2, edge, glowAmt / 10);
   }
-  function heart(x, y, s, full) {
+  function heart(x, y, s, full, color) {
     ctx.beginPath();
     ctx.moveTo(x, y + s * 0.8);
     ctx.bezierCurveTo(x - s * 1.2, y - s * 0.1, x - s * 0.6, y - s * 1.1, x, y - s * 0.35);
     ctx.bezierCurveTo(x + s * 0.6, y - s * 1.1, x + s * 1.2, y - s * 0.1, x, y + s * 0.8);
-    if (full) { ctx.fillStyle = '#ff6b8a'; ctx.fill(); }
+    if (full) { ctx.fillStyle = color || '#ff6b8a'; ctx.fill(); }
     else { ctx.strokeStyle = 'rgba(255, 120, 150, 0.45)'; ctx.lineWidth = 1.5; ctx.stroke(); }
   }
 
@@ -3609,6 +3774,7 @@
   function drawMiddle() {
     const size = Math.max(13, Math.min(20, H / 26)), mid = H * 0.45;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    if (guide) return;   // (the how-to-play guide is drawn over everything instead)
     if (phase === 'count' && countdown > 0) {
       // to the right of centre: the team lines up on the left
       const cx = W * 0.6;
@@ -3630,7 +3796,7 @@
       const lines = tries < TRIES
         ? [`Try ${TRIES - tries + 1} of ${TRIES}`, 'Stick together. Lanterns bring fallen bats back.']
         : [...intro,
-          'Stay close to a fallen teammate to revive them.',
+          'Fallen bats stay put: fly to them and stay close to revive them.',
           localCount > 1 ? `Each player owns ${['', 'the screen', 'half', 'a third', 'a quarter'][localCount]} of the screen · tap: squeak · flick: dash · keys: slash`
             : touchUsed ? 'Drag to fly · tap to squeak · DASH bites · SLASH swats' : 'WASD/arrows fly · F/Space squeak · G dash-bite · X/H wing slash · Esc pause'];
       lines.forEach((t, k) => {
@@ -3656,7 +3822,7 @@
     if (me && me.ko && phase === 'play' && !(banner && banner.t > 0)) {
       ctx.font = `600 ${size * 0.8}px ${FONT}`;
       ctx.fillStyle = 'rgba(232, 236, 255, 0.75)';
-      const ghostTip = 'You\'re a ghost. Stay close to a teammate and they\'ll revive you.';
+      const ghostTip = 'You\'re down and stay put. A teammate has to fly to you to revive you.';
       ctx.fillText(bats.some((b) => !b.ko) ? ghostTip : '', W / 2, H - size * (variant === 'hunt' ? 5.3 : 3.6));
     }
   }
@@ -3674,8 +3840,8 @@
       ctx.restore();
     }
     const many = watchable().length > 1;
-    const tip = !many ? 'Your ghost waits where it fell' : touchUsed ? 'Tap to switch' : 'Space or arrows to switch';
-    const sub = !explore ? 'The next lantern brings you back' : teamHearts > 0 ? 'A teammate with a heart can fly to your ghost' : 'Find a heart or reach the next lantern';
+    const tip = !many ? 'You stay put where you fell' : touchUsed ? 'Tap to switch' : 'Space or arrows to switch';
+    const sub = explore && teamHearts > 0 ? 'A teammate has to fly to you (they have a heart)' : 'A teammate has to fly to you, or reach the next lantern';
     ctx.font = `700 ${size * 0.95}px ${FONT}`;
     const lab = 'Watching: ', wl = ctx.measureText(lab).width, wn = ctx.measureText(t.name).width;
     ctx.font = `600 ${size * 0.68}px ${FONT}`;
@@ -3815,10 +3981,530 @@
     }
   }
 
+  // ---- The how-to-play guide -----------------------------------------------------
+  // Before the first countdown: a glass panel (like Battle's guide) that auto-plays a loop of little
+  // animated scenes, SCENE_T s each, with a big caption: what this map is about (keys, switches and
+  // gates, hearts and reviving, the Phoenix Feather, the cave mouth; or, on Side-scroll, keeping up,
+  // squeaking and biting, lanterns and reviving). Dots show the scene (tap one, or the scene's left or
+  // right half, or press the arrow keys, to jump). START (this device offline, the host online; Enter
+  // or Space too) begins the countdown; guests see "Waiting for the host" until the host starts.
+  const SCENE_T = 3.2;
+  const newGuide = () => ({ t: 0, k: 0, kt: 0 });
+  const guideOff = () => noGuide || !!window.__echoNoGuide;
+  const canStartGuide = () => mode !== 'client';
+  function guideScenes() {
+    const n = Math.max(1, L ? L.keys.length : 1), hunt = variant === 'hunt', esc = variant === 'escape';
+    const ht = Math.round(HUNT_TIME * (explore ? HUNT_EXPLORE : 1)), clockText = `${Math.floor(ht / 60)}:${String(ht % 60).padStart(2, '0')}`;
+    const smash = { id: 'smash', text: 'Smash monsters for points', sub: `Quick knockouts in a row build a combo · ${clockText} on the clock` };
+    if (explore) {
+      return [
+        hunt ? smash : { id: 'keys', text: n > 1 ? `Find the ${n} keys` : 'Find the key', sub: `${n > 1 ? `${n} keys are` : 'It\'s'} hidden in this cave: squeak to light the dark` },
+        { id: 'switch', text: 'Hit a switch to open its gate', sub: 'Fly into the lever (or bite it): the bars slide up' },
+        { id: 'revive', text: 'Grab hearts · stay near a fallen friend to revive them', sub: 'A fallen bat stays put: someone has to fly over to it' },
+        { id: 'feather', text: 'Secret: the Phoenix Feather brings everyone back', sub: 'One is hidden in each cave: fallen friends come back beside you' },
+        hunt ? { id: 'exit', text: `Knock out ${huntGoal} monsters, then fly out the cave mouth!`, sub: 'The mouth opens once enough monsters are down' }
+          : { id: 'exit', text: 'Then fly out the cave mouth!', sub: `Its bars drop once ${n > 1 ? 'every key is' : 'the key is'} found` },
+      ];
+    }
+    return [
+      { id: 'scroll', text: 'Keep up with the screen', sub: 'It keeps moving: don\'t get squashed against the rock at the left edge' },
+      hunt ? smash : { id: 'squeak', text: 'Squeak to see, bite monsters', sub: esc ? 'In Escape a bite only knocks them back: keep flying!' : 'Echoes light the cave · DASH bites · BITE swats' },
+      { id: 'lantern', text: 'Reach lanterns to revive fallen friends', sub: 'Lanterns are checkpoints too' },
+      { id: 'revive', text: 'Stay near a fallen friend to revive them', sub: 'A fallen bat stays put at the edge: fly back to it' },
+    ];
+  }
+  function startGuide() {
+    if (!guide || !canStartGuide()) return;
+    guide = null;
+    setPhase('count', 3);
+    fx({ k: 'sfx', n: 'tick', alt: 'beep' });
+  }
+  function guideGo(k) {
+    if (!guide) return;
+    const n = guideScenes().length;
+    guide.k = ((k % n) + n) % n; guide.kt = 0;
+    applyFx({ k: 'sfx', n: 'tick' });
+  }
+  function tickGuide(dt) {
+    if (!guide) return;
+    guide.t += dt; guide.kt += dt;
+    if (guide.kt >= SCENE_T) { guide.kt -= SCENE_T; guide.k = (guide.k + 1) % guideScenes().length; }
+  }
+  function guideLayout() {
+    const ph = Math.max(30, Math.min(40, H * 0.085)), top = 8 + ph + 6, room = H - top - 6;
+    const u = Math.max(0.7, Math.min(1.3, room / 252, (W - 16) / 520));
+    const pw = Math.min(W - 16, 560 * u), phh = Math.min(room, 252 * u);
+    const px = (W - pw) / 2, py = top + Math.max(0, (room - phh) / 2);
+    const bw = 150 * u, bh = 30 * u, start = { x: W / 2 - bw / 2, y: py + phh - bh - 8 * u, w: bw, h: bh };
+    const dotY = start.y - 8 * u, capY = dotY - 37 * u;
+    const box = { x: px + 12 * u, y: py + 30 * u, w: pw - 24 * u, h: 0 };
+    box.h = Math.max(40, capY - 4 * u - box.y);
+    const scenes = guideScenes(), gap = 18 * u;
+    const dots = scenes.map((sc, k) => ({ x: W / 2 + (k - (scenes.length - 1) / 2) * gap, y: dotY }));
+    return { u, px, py, pw, ph: phh, start, box, capY, dotY, dots, gap, scenes };
+  }
+  // a tap on the guide: START, a dot, or the scene's left or right half
+  function guideTap(cx, cy) {
+    if (!guide || !W) return;
+    const rect = canvas.getBoundingClientRect(), G = guideLayout(), x = cx - rect.left, y = cy - rect.top, b = G.start;
+    if (x > b.x - 10 && x < b.x + b.w + 10 && y > b.y - 6 && y < b.y + b.h + 10) { startGuide(); return; }
+    for (const [k, d] of G.dots.entries()) if (Math.abs(x - d.x) < G.gap / 2 && Math.abs(y - d.y) < 12) { guideGo(k); return; }
+    const B = G.box;
+    if (x > B.x && x < B.x + B.w && y > B.y && y < G.dotY - 6) guideGo(guide.k + (x < B.x + B.w / 2 ? -1 : 1));
+  }
+
+  // a little bat for the scenes: o.ko (a fallen ghost: faded, X eyes), o.mouth (0..1), o.alpha
+  function miniBat(x, y, r, rgb, o = {}) {
+    const flap = Math.sin((guide ? guide.t : clock) * (o.ko ? 6 : 16) + (o.ph || 0));
+    ctx.save();
+    ctx.globalAlpha *= (o.alpha ?? 1) * (o.ko ? 0.45 : 1);
+    glow(x, y, r * 2.6, rgb, o.ko ? 0.2 : 0.32);
+    ctx.fillStyle = `rgb(${rgb})`;
+    for (const s of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(x + s * r * 0.5, y - r * 0.15); ctx.lineTo(x + s * r * 2.1, y - r * (0.25 + flap * 0.75));
+      ctx.lineTo(x + s * r * 1.6, y + r * 0.35); ctx.lineTo(x + s * r * 1.15, y + r * 0.1); ctx.lineTo(x + s * r * 0.8, y + r * 0.45);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x - r * 0.75, y - r * 0.5); ctx.lineTo(x - r * 0.45, y - r * 1.35); ctx.lineTo(x - r * 0.1, y - r * 0.8);
+    ctx.moveTo(x + r * 0.75, y - r * 0.5); ctx.lineTo(x + r * 0.45, y - r * 1.35); ctx.lineTo(x + r * 0.1, y - r * 0.8);
+    ctx.fill();
+    if (o.ko) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, r * 0.14);
+      for (const s of [-1, 1]) { const ex = x + s * r * 0.32, ey = y - r * 0.1, k = r * 0.14; ctx.beginPath(); ctx.moveTo(ex - k, ey - k); ctx.lineTo(ex + k, ey + k); ctx.moveTo(ex + k, ey - k); ctx.lineTo(ex - k, ey + k); ctx.stroke(); }
+    } else {
+      const lx = (o.face || 1) * r * 0.08;
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(x - r * 0.32 + lx, y - r * 0.1, r * 0.22, 0, Math.PI * 2); ctx.arc(x + r * 0.32 + lx, y - r * 0.1, r * 0.22, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#1a1030';
+      ctx.beginPath(); ctx.arc(x - r * 0.28 + lx * 1.5, y - r * 0.08, r * 0.1, 0, Math.PI * 2); ctx.arc(x + r * 0.36 + lx * 1.5, y - r * 0.08, r * 0.1, 0, Math.PI * 2); ctx.fill();
+    }
+    if (o.mouth > 0) {
+      ctx.fillStyle = '#2a0614';
+      ctx.beginPath(); ctx.ellipse(x, y + r * 0.38, r * 0.5 * o.mouth, r * 0.45 * o.mouth, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+    if (o.ko) {
+      // a fallen bat stays put: its dashed ring and a beacon pulsing out
+      const f = ((guide ? guide.t : clock) * 0.8) % 1;
+      ctx.strokeStyle = `rgba(${rgb}, 0.55)`; ctx.lineWidth = 1.5; ctx.setLineDash([3, 4]);
+      ctx.beginPath(); ctx.arc(x, y, r * 2.3, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+      ctx.strokeStyle = `rgba(${rgb}, ${0.7 * (1 - f)})`; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(x, y, r * (1.6 + f * 2.6), 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+  // a cave spider on its thread (o.ko: knocked out, X eyes; o.daze: stars)
+  function miniSpider(x, y, s, top, o = {}) {
+    const a = o.alpha ?? 1;
+    if (a <= 0.01) return;
+    ctx.save();
+    ctx.globalAlpha *= a;
+    if (top != null && !o.ko) { ctx.strokeStyle = 'rgba(220, 230, 255, 0.5)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, y); ctx.stroke(); }
+    ctx.strokeStyle = `rgba(${o.ko || o.daze ? COL.stun : COL.danger}, 1)`; ctx.lineWidth = Math.max(1.5, s * 0.1);
+    const flip = o.ko ? -1 : 1;
+    for (const side of [-1, 1]) {
+      for (let i = 0; i < 4; i++) {
+        const ang = (-0.6 + i * 0.4 + Math.sin((guide ? guide.t : clock) * 12) * 0.06) * side;
+        ctx.beginPath(); ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(x + side * s * 0.9, y + flip * (ang - 0.3) * s * 0.9, x + side * s * 1.2, y + flip * (ang * s + s * 0.35));
+        ctx.stroke();
+      }
+    }
+    ctx.fillStyle = 'rgb(70, 16, 32)';
+    ctx.beginPath(); ctx.arc(x, y, s * 0.62, 0, Math.PI * 2); ctx.fill();
+    if (o.ko) {
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(1, s * 0.1);
+      for (const sd of [-1, 1]) { const ex = x + sd * s * 0.22, ey = y - s * 0.05, k = s * 0.1; ctx.beginPath(); ctx.moveTo(ex - k, ey - k); ctx.lineTo(ex + k, ey + k); ctx.moveTo(ex + k, ey - k); ctx.lineTo(ex - k, ey + k); ctx.stroke(); }
+    } else {
+      ctx.fillStyle = `rgb(${COL.danger})`;
+      ctx.beginPath(); ctx.arc(x - s * 0.2, y - s * 0.08, s * 0.12, 0, Math.PI * 2); ctx.arc(x + s * 0.2, y - s * 0.08, s * 0.12, 0, Math.PI * 2); ctx.fill();
+    }
+    if (o.daze || o.ko) {
+      const t = guide ? guide.t : clock;
+      for (let k = 0; k < 3; k++) { const an = t * 5 + k * 2.1; ctx.fillStyle = '#ffe278'; ctx.beginPath(); ctx.arc(x + Math.cos(an) * s * 1.1, y - s * 1.2 + Math.sin(an) * s * 0.3, Math.max(1.2, s * 0.13), 0, Math.PI * 2); ctx.fill(); }
+    }
+    ctx.restore();
+  }
+  // a text pop in a scene
+  function scenePop(text, x, y, size, rgb, a = 1) {
+    if (a <= 0.01) return;
+    ctx.font = `700 ${Math.round(size)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = `rgba(5, 6, 15, ${0.8 * a})`; ctx.fillText(text, x + 1, y + 2);
+    ctx.fillStyle = `rgba(${rgb}, ${a})`; ctx.fillText(text, x, y);
+  }
+  // sparkles flying out from x, y (f: 0..1 since it burst)
+  function sceneBurst(x, y, f, rgb, rad, n = 12) {
+    if (f <= 0 || f >= 1) return;
+    for (let j = 0; j < n; j++) {
+      const an = (j / n) * Math.PI * 2 + j * 0.37, d = rad * (0.2 + f) * (0.7 + (j % 3) * 0.2);
+      ctx.fillStyle = `rgba(${j % 2 ? rgb : '255, 255, 240'}, ${1 - f})`;
+      ctx.beginPath(); ctx.arc(x + Math.cos(an) * d, y + Math.sin(an) * d, Math.max(1.2, rad * 0.06 * (1 - f) + 1), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // One scene of the guide in the box (x, y, w, h); k is 0..1 through the scene
+  function drawScene(id, x, y, w, h, k) {
+    const T = guide ? guide.t : clock, r = Math.min(h * 0.085, w * 0.04), wall = explore ? wallRgb() : COL.wall;
+    const meB = localBat(0) || bats[viewer] || bats[0], me = meB ? meB.rgb : BATS[0].rgb;
+    const others = bats.filter((b) => b !== meB).map((b) => b.rgb).concat(BATS.map((b) => b.rgb).filter((c) => c !== me));
+    const m1 = others[0], m2 = others[1] || BATS[2].rgb;
+    const lerp = (a, b, t) => a + (b - a) * t, cl = (v) => Math.max(0, Math.min(1, v)), ease = (t) => t * t * (3 - 2 * t);
+    const seg = (a, b) => ease(cl((k - a) / (b - a)));
+    const mid = y + h * 0.5, fs = Math.max(10, h * 0.1);
+    ctx.save();
+    roundRect(x, y, w, h, 10); ctx.clip();
+    ctx.fillStyle = explore && TH ? TH.bg : CAVE_BG; ctx.fillRect(x, y, w, h);
+    // the tunnel: a wavy ceiling and floor with neon edges (lit(px, py) sets how bright an edge is)
+    const ceilAt = (px, off) => y + h * (0.13 + 0.04 * Math.sin((px + off) * 0.035) + 0.025 * Math.sin((px + off) * 0.09));
+    const floorAt = (px, off) => y + h * (0.87 - 0.04 * Math.sin((px + off) * 0.03 + 2) - 0.025 * Math.sin((px + off) * 0.11));
+    const strip = (off = 0, lit = null) => {
+      ctx.fillStyle = 'rgba(18, 22, 50, 0.96)';
+      for (const [f, edge] of [[ceilAt, y], [floorAt, y + h]]) {
+        ctx.beginPath(); ctx.moveTo(x, edge);
+        for (let px = x; px <= x + w + 8; px += 8) ctx.lineTo(px, f(px, off));
+        ctx.lineTo(x + w + 8, edge); ctx.closePath(); ctx.fill();
+      }
+      // (one path per brightness, a few brightness steps: cheap to draw)
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const runs = new Map();
+      for (const f of [ceilAt, floorAt]) {
+        for (let px = x; px < x + w; px += 8) {
+          const a = lit ? Math.round(lit(px + 4, f(px + 4, off)) * 5) / 5 : 0.85;
+          if (a < 0.03) continue;
+          if (!runs.has(a)) runs.set(a, []);
+          runs.get(a).push(px, f(px, off), px + 8, f(px + 8, off));
+        }
+      }
+      for (const [a, sg] of runs) {
+        ctx.beginPath();
+        for (let j = 0; j < sg.length; j += 4) { if (j === 0 || sg[j] !== sg[j - 2]) ctx.moveTo(sg[j], sg[j + 1]); ctx.lineTo(sg[j + 2], sg[j + 3]); }
+        ctx.strokeStyle = `rgba(${wall}, ${a * 0.22})`; ctx.lineWidth = 6; ctx.stroke();
+        ctx.strokeStyle = `rgba(${wall}, ${a * 0.95})`; ctx.lineWidth = 2; ctx.stroke();
+      }
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    };
+    const ring = (cx, cy, rad, rgb, a) => { if (a <= 0.01 || rad <= 0) return; ctx.strokeStyle = `rgba(${rgb}, ${a})`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(cx, cy, rad, 0, Math.PI * 2); ctx.stroke(); };
+    // a counter pill in the scene's top right corner
+    const corner = (draw, wd) => {
+      const ph2 = fs * 1.6, px2 = x + w - wd - 8, py2 = y + 7;
+      ctx.fillStyle = 'rgba(8, 8, 26, 0.85)'; roundRect(px2, py2, wd, ph2, ph2 / 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(150, 130, 255, 0.6)'; ctx.lineWidth = 1.5; ctx.stroke();
+      draw(px2, py2 + ph2 / 2, ph2);
+    };
+
+    if (id === 'keys') {
+      strip();
+      const n = Math.max(1, L ? L.keys.length : 1), sx = x + w * 0.1, kx = x + w * 0.78, ky = mid + Math.sin(T * 2) * h * 0.04;
+      const ringR = cl((k - 0.04) / 0.4) * (kx - sx + r * 4), seen = ringR >= kx - sx, got = k > 0.58;
+      ring(sx, mid, ringR, me, 1 - cl((k - 0.04) / 0.4));
+      const fly = seg(0.18, 0.58), bx = lerp(sx, kx - r * 0.4, fly), by = mid + Math.sin(fly * 6) * h * 0.08 * (1 - fly);
+      if (!got) { const a = seen ? 1 : 0.18; glow(kx, ky, r * 3.4, KEY_RGB, 0.5 * a); drawKey(kx, ky, r * 1.15, KEY_RGB, a); }
+      sceneBurst(kx, ky, (k - 0.58) / 0.35, KEY_RGB, r * 5, 14);
+      miniBat(bx, by, r, me, { face: 1 });
+      if (got) scenePop(`KEY 1/${n}`, kx, ky - r * 3 - (k - 0.58) * h * 0.3, fs * 1.2, KEY_RGB, cl((1 - k) * 4));
+      if (k < 0.3) scenePop('squeak!', sx, mid - r * 3, fs, me, cl((0.3 - k) * 6));
+      corner((px, cy) => {
+        for (let j = 0; j < n; j++) drawKey(px + fs * 1.2 + j * fs * 1.5, cy, fs * 0.5, j === 0 && got ? KEY_RGB : '150, 140, 120', j === 0 && got ? 1 : 0.55);
+      }, fs * 1.5 * n + fs * 0.9);
+    } else if (id === 'smash') {
+      strip();
+      const xs = [0.38, 0.6, 0.82].map((f) => x + w * f), hits = [0.22, 0.47, 0.72], sy = mid - h * 0.05;
+      let bx = x + w * 0.1, score = 0;
+      hits.forEach((t, j) => { const from = j ? xs[j - 1] - r * 1.6 : x + w * 0.1; if (k > t - 0.14) bx = lerp(from, xs[j] - r * 1.6, seg(t - 0.14, t)); if (k > t) score += 15 * (j + 1) * (j + 1); });
+      xs.forEach((mx, j) => {
+        const t = hits[j], hit = k > t, f = cl((k - t) / 0.25);
+        miniSpider(mx, hit ? sy + f * h * 0.3 : sy + Math.sin(T * 2 + j) * h * 0.03, r * 1.1, ceilAt(mx, 0), { ko: hit, alpha: hit ? 1 - f : 1 });
+        if (hit) scenePop(j ? `+${15 * (j + 1)} ×${j + 1}` : '+15', mx, sy - r * 3 - f * h * 0.15, fs * 1.15, COL.owl, 1 - f);
+      });
+      const dashing = hits.some((t) => k > t - 0.14 && k < t);
+      if (dashing) for (let j = 1; j < 5; j++) { ctx.fillStyle = `rgba(${me}, ${0.3 - j * 0.06})`; ctx.beginPath(); ctx.arc(bx - j * r * 0.8, sy, r * 0.8, 0, Math.PI * 2); ctx.fill(); }
+      miniBat(bx, sy, r, me, { mouth: dashing ? 1 : 0 });
+      corner((px, cy) => { ctx.font = `700 ${Math.round(fs)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff3c4'; ctx.fillText(`SCORE ${score}`, px + fs * 3.4, cy + 1); }, fs * 6.8);
+    } else if (id === 'switch') {
+      strip();
+      const lx = x + w * 0.3, fy = floorAt(lx, 0), gx = x + w * 0.62, rgb = GATE_COLS[0];
+      const on = k > 0.34, lift = seg(0.4, 0.6);
+      // the lever on its stone base
+      const ang = on ? 0.6 : -0.6, len = h * 0.14, kx = lx + Math.sin(ang) * len, ky2 = fy - h * 0.04 - Math.cos(ang) * len;
+      glow(lx, fy - h * 0.1, r * 3, rgb, on ? 0.25 : 0.35 + 0.2 * Math.sin(T * 5));
+      ctx.strokeStyle = 'rgba(220, 220, 240, 0.9)'; ctx.lineWidth = Math.max(2, r * 0.25); ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(lx, fy - h * 0.04); ctx.lineTo(kx, ky2); ctx.stroke(); ctx.lineCap = 'butt';
+      ctx.fillStyle = `rgb(${rgb})`; ctx.beginPath(); ctx.arc(kx, ky2, r * 0.45, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(40, 36, 70, 0.95)'; roundRect(lx - r * 1.1, fy - h * 0.06, r * 2.2, h * 0.06, 3); ctx.fill();
+      ctx.strokeStyle = `rgba(${rgb}, 0.9)`; ctx.lineWidth = 1.5; ctx.stroke();
+      // sparks run from the lever to the gate
+      if (k > 0.34 && k < 0.6) for (let j = 0; j <= 10; j++) { const f = j / 10, a = cl(1 - Math.abs((k - 0.34) / 0.18 - f) * 3); if (a > 0) { ctx.fillStyle = `rgba(${rgb}, ${a})`; ctx.beginPath(); ctx.arc(lerp(kx, gx, f), lerp(ky2, mid, f) - Math.sin(f * Math.PI) * h * 0.15, 2.5, 0, Math.PI * 2); ctx.fill(); } }
+      // the chamber beyond, with a key (Hunt: a power-up) in it
+      const ix = x + w * 0.84, iy = mid + Math.sin(T * 2.2) * h * 0.04, got = k > 0.9;
+      if (!got) {
+        if (variant === 'hunt') { glow(ix, iy, r * 3, PW.fire.rgb, 0.4); ctx.strokeStyle = `rgb(${PW.fire.rgb})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(ix, iy, r * 1.3, 0, Math.PI * 2); ctx.stroke(); drawIcon('fire', ix, iy, r * 1.05, `rgb(${PW.fire.rgb})`); }
+        else { glow(ix, iy, r * 3.2, KEY_RGB, 0.45); drawKey(ix, iy, r * 1.1, KEY_RGB); }
+      } else sceneBurst(ix, iy, (k - 0.9) / 0.1, variant === 'hunt' ? PW.fire.rgb : KEY_RGB, r * 4);
+      // the gate: glowing bars across the tunnel, sliding up into the rock
+      const top = ceilAt(gx, 0), bot = floorAt(gx, 0), gh = bot - top, up = lift * gh;
+      if (lift < 1) {
+        ctx.save(); ctx.globalAlpha = 1 - lift;
+        ctx.fillStyle = 'rgba(20, 14, 44, 0.6)'; ctx.fillRect(gx - r * 1.2, top - up, r * 2.4, gh);
+        for (let j = -1; j <= 1; j++) {
+          const bxx = gx + j * r * 0.75;
+          ctx.strokeStyle = `rgba(${rgb}, 0.4)`; ctx.lineWidth = r * 0.45; ctx.beginPath(); ctx.moveTo(bxx, top - up); ctx.lineTo(bxx, bot - up); ctx.stroke();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)'; ctx.lineWidth = Math.max(1, r * 0.12); ctx.stroke();
+        }
+        glow(gx, mid - up, r * 3, rgb, 0.25);
+        ctx.restore();
+      }
+      if (k > 0.42 && k < 0.7) scenePop('A gate opened!', gx, y + h * 0.28, fs * 1.15, rgb, cl((0.7 - k) * 5));
+      // the bat: to the lever, a bump, then through the open gate to the prize
+      let bx, by;
+      if (k < 0.32) { const f = seg(0, 0.32); bx = lerp(x + w * 0.06, lx - r * 0.2, f); by = lerp(mid, ky2 - r * 1.2, f); }
+      else if (k < 0.62) { bx = lx - r * 0.2 - Math.sin(cl((k - 0.32) / 0.08) * Math.PI) * r * 0.6; by = ky2 - r * 1.2 + Math.sin(T * 3) * 2; }
+      else { const f = seg(0.62, 0.9); bx = lerp(lx - r * 0.2, ix - r * 0.3, f); by = lerp(ky2 - r * 1.2, iy, f) - Math.sin(f * Math.PI) * h * 0.08; }
+      miniBat(bx, by, r, me);
+    } else if (id === 'revive') {
+      strip();
+      // (Side-scroll: the fallen bat waits at the screen's left edge, so the bat flies back to it)
+      const back = !explore, gxp = back ? x + w * 0.14 : x + w * 0.72, gyp = mid + h * 0.04, hx = x + w * 0.33, hy = mid - h * 0.06, withHeart = explore;
+      if (back) { const g = ctx.createLinearGradient(x, 0, x + w * 0.08, 0); g.addColorStop(0, 'rgba(255, 84, 104, 0.4)'); g.addColorStop(1, 'rgba(255, 84, 104, 0)'); ctx.fillStyle = g; ctx.fillRect(x, y, w * 0.08, h); }
+      const tGet = 0.26, tNear = 0.5, tUp = withHeart ? 0.72 : 0.86, up = k > tUp, stop = gxp + (back ? 1 : -1) * r * 3.4;
+      let bx, by;
+      if (withHeart && k < tGet) { const f = seg(0.02, tGet); bx = lerp(x + w * 0.06, hx, f); by = lerp(mid, hy, f); }
+      else { const f = seg(withHeart ? tGet : 0.05, tNear); bx = lerp(withHeart ? hx : back ? x + w * 0.66 : x + w * 0.06, stop, f); by = lerp(withHeart ? hy : mid, gyp - r * 0.4, f) + (k > tNear ? Math.sin(T * 3) * 2 : 0); }
+      if (withHeart && k < tGet) { glow(hx, hy, r * 2.6, HEART_RGB, 0.45); heart(hx, hy, r * 0.75 * (1 + 0.12 * Math.max(0, Math.sin(T * 6))), true); }
+      if (withHeart) sceneBurst(hx, hy, (k - tGet) / 0.3, HEART_RGB, r * 3);
+      if (withHeart && k > tGet && k < tGet + 0.25) scenePop('+1 ♥', hx, hy - r * 2.5, fs * 1.1, HEART_RGB, cl((tGet + 0.25 - k) * 5));
+      if (!up) {
+        miniBat(gxp, gyp + Math.sin(T * 2.4) * h * 0.02, r, m1, { ko: true });
+        if (k < tNear) scenePop('stays put', gxp, gyp + r * 3.6, fs * 0.9, m1, 0.9);
+        const rk = cl((k - tNear) / (tUp - tNear));
+        if (rk > 0) {
+          const rr = r * 2.4;
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)'; ctx.lineWidth = Math.max(3, r * 0.4); ctx.beginPath(); ctx.arc(gxp, gyp, rr, 0, Math.PI * 2); ctx.stroke();
+          ctx.strokeStyle = `rgba(${HEART_RGB}, 0.95)`; ctx.beginPath(); ctx.arc(gxp, gyp, rr, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * rk); ctx.stroke();
+          ctx.lineCap = 'butt';
+          glow(gxp, gyp, rr * 1.6, HEART_RGB, 0.15 + 0.3 * rk);
+        }
+      } else {
+        const f = cl((k - tUp) / 0.25);
+        miniBat(gxp, gyp - f * h * 0.04, r, m1);
+        ring(gxp, gyp, r * (1 + f * 5), HEART_RGB, 1 - f);
+        for (let j = 0; j < 6; j++) { const an = j * 1.05; heart(gxp + Math.cos(an) * r * (1.5 + f * 3), gyp + Math.sin(an) * r * (1.5 + f * 3) - f * h * 0.15, r * 0.35 * (1 - f) + 0.5, true); }
+        scenePop(withHeart ? 'Back with 2 hearts!' : 'Back!', gxp, y + h * 0.25, fs * 1.15, HEART_RGB, cl((1 - k) * 5));
+      }
+      miniBat(bx, by, r, me, { face: back ? -1 : 1 });
+      if (withHeart) {
+        const bag = k < tGet ? 0 : up ? 0 : 1;
+        corner((px, cy) => { heart(px + fs * 1, cy, fs * 0.45, bag > 0); ctx.font = `700 ${Math.round(fs)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = `rgb(${HEART_RGB})`; ctx.fillText(String(bag), px + fs * 1.8, cy + 1); }, fs * 3);
+      }
+    } else if (id === 'feather') {
+      strip();
+      // a secret den dug into the rock on the right, round a bend
+      const rx0 = x + w * 0.64, dx = x + w * 0.86, dy = mid - h * 0.02, tw = h * 0.12, dr = h * 0.2;
+      ctx.fillStyle = 'rgba(18, 22, 50, 0.98)'; ctx.fillRect(rx0, y, x + w - rx0, h);
+      ctx.fillStyle = explore && TH ? TH.bg : CAVE_BG;
+      ctx.fillRect(rx0 - 2, dy - tw, dx - rx0, tw * 2);
+      ctx.beginPath(); ctx.arc(dx, dy, dr, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = `rgba(${wall}, 0.85)`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(rx0, ceilAt(rx0, 0)); ctx.lineTo(rx0, dy - tw); ctx.lineTo(dx - dr * 0.8, dy - tw); ctx.moveTo(rx0, floorAt(rx0, 0)); ctx.lineTo(rx0, dy + tw); ctx.lineTo(dx - dr * 0.8, dy + tw); ctx.stroke();
+      ctx.beginPath(); ctx.arc(dx, dy, dr, Math.PI + 0.62, Math.PI * 3 - 0.62); ctx.stroke();
+      // two fallen friends, far back, staying put
+      const gs = [[x + w * 0.1, mid - h * 0.16, m1], [x + w * 0.2, mid + h * 0.18, m2]], tGet = 0.52, got = k > tGet;
+      const fx2 = dx + r * 0.6, fy2 = dy + Math.sin(T * 1.8) * h * 0.03;
+      const ringR = cl((k - 0.06) / 0.35) * w * 0.5, seen = ringR > fx2 - (x + w * 0.42);
+      ring(x + w * 0.42, mid, ringR, me, 1 - cl((k - 0.06) / 0.35));
+      if (!got) drawFeather(fx2, fy2, r * 1.5, seen ? 1 : 0.12, T);
+      const f = seg(0.12, tGet), bx = f < 0.5 ? lerp(x + w * 0.42, rx0 + r, f * 2) : lerp(rx0 + r, fx2 - r * 0.8, (f - 0.5) * 2), by = f < 0.5 ? lerp(mid, dy, f * 2) : dy;
+      if (got) {
+        const e = cl((k - tGet) / 0.4);
+        glow(fx2, fy2, r * (3 + e * 8), FEATHER_RGB, 0.7 * (1 - e));
+        ring(fx2, fy2, r * (1 + e * 9), FEATHER_RGB, 1 - e);
+        sceneBurst(fx2, fy2, e, FEATHER_GOLD, r * 6, 16);
+      }
+      // the fallen bats: until it's found they wait where they fell; then they're whisked over
+      gs.forEach(([gx2, gy2, rgb], j) => {
+        if (!got) { miniBat(gx2, gy2, r, rgb, { ko: true }); return; }
+        const e = cl((k - tGet) / 0.15);
+        if (e < 1) { glow(gx2, gy2, r * 3, FEATHER_GOLD, 0.6 * (1 - e)); sceneBurst(gx2, gy2, e, FEATHER_GOLD, r * 3); }
+        const nx = bx - r * (3 + j * 2.8), ny = by;
+        if (k > tGet + 0.06) miniBat(nx, ny, r, rgb, { alpha: cl((k - tGet - 0.06) / 0.08) });
+      });
+      miniBat(bx, by, r, me);
+      if (got) scenePop('Everyone\'s back!', x + w * 0.4, y + h * 0.24, fs * 1.3, FEATHER_GOLD, cl((1 - k) * 4));
+      else if (!seen) scenePop('?', fx2, fy2, fs * 1.4, FEATHER_RGB, 0.35 + 0.2 * Math.sin(T * 4));
+    } else if (id === 'exit') {
+      strip();
+      const mx = x + w * 0.76, my = mid, mr = h * 0.3, hunt = variant === 'hunt', n = Math.max(1, L ? L.keys.length : 1);
+      ctx.save(); ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.clip();
+      ctx.drawImage(mouthCanvas(), mx - mr * 1.15, my - mr * 1.15, mr * 2.3, mr * 2.3);
+      ctx.restore();
+      const open = k > 0.3, drop = seg(0.3, 0.45), rgb = open ? COL.exit : hunt ? COL.owl : KEY_RGB;
+      glow(mx, my, mr * 1.5, rgb, 0.3);
+      ctx.strokeStyle = `rgba(${rgb}, 0.8)`; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(mx, my, mr, 0, Math.PI * 2); ctx.stroke();
+      if (drop < 1) {
+        ctx.save(); ctx.beginPath(); ctx.arc(mx, my, mr * 0.96, 0, Math.PI * 2); ctx.clip(); ctx.globalAlpha = 1 - drop;
+        for (let j = -3; j <= 3; j++) {
+          const bxx = mx + j * mr * 0.28;
+          ctx.strokeStyle = `rgba(${hunt ? COL.owl : KEY_RGB}, 0.3)`; ctx.lineWidth = r * 0.7; ctx.beginPath(); ctx.moveTo(bxx, my - mr + drop * mr * 2); ctx.lineTo(bxx, my + mr + drop * mr * 2); ctx.stroke();
+          ctx.strokeStyle = 'rgba(255, 240, 200, 0.8)'; ctx.lineWidth = Math.max(1, r * 0.2); ctx.stroke();
+        }
+        ctx.restore();
+      }
+      if (k < 0.45) {
+        // the keys (Hunt: the monsters left to knock out) on the mouth: the last one fills in
+        ctx.save(); ctx.globalAlpha = 1 - drop;
+        if (hunt) scenePop(k < 0.15 ? '1' : '✓', mx, my, fs * 1.6, k < 0.15 ? COL.owl : COL.exit);
+        else {
+          const sz = fs * 0.6, gp = sz * 2.4;
+          ctx.fillStyle = 'rgba(10, 8, 30, 0.8)'; roundRect(mx - (n * gp) / 2 - 4, my - sz * 1.2, n * gp + 8, sz * 2.4, sz); ctx.fill();
+          for (let j = 0; j < n; j++) { const on2 = j < n - 1 || k > 0.14; drawKey(mx - (n * gp) / 2 + gp * (j + 0.5), my, sz * 0.9, on2 ? KEY_RGB : '120, 110, 90', on2 ? 1 : 0.7); }
+        }
+        ctx.restore();
+      }
+      if (open && k < 0.6) scenePop('The exit is open!', x + w * 0.4, y + h * 0.24, fs * 1.2, COL.exit, cl((0.6 - k) * 5));
+      // the team flies in, swirling and shrinking away into the night
+      [[me, -0.12, 0], [m1, 0.05, 0.7], [m2, -0.02, 1.4]].forEach(([rgb, oy, ph], j) => {
+        const f = seg(0.42 + j * 0.03, 0.9 + j * 0.03), sx = x + w * (0.12 + j * 0.07), sy = mid + h * oy + Math.sin(T * 3 + ph) * h * 0.03;
+        const an = ph + f * 6, rr = mr * 0.5 * (1 - f);
+        const bx = lerp(sx, mx + Math.cos(an) * rr, f), by = lerp(sy, my + Math.sin(an) * rr * 0.6, f);
+        if (f < 0.98) miniBat(bx, by, r * (1 - f * 0.8), rgb, { alpha: 1 - f * 0.6 });
+      });
+    } else if (id === 'scroll') {
+      const off = T * 70;
+      strip(off);
+      // dust streaming past, and the creeping red edge
+      for (let j = 0; j < 14; j++) { const px = x + ((j * 97 - off * 1.4) % w + w) % w, py = y + h * (0.25 + ((j * 37) % 50) / 100); ctx.fillStyle = 'rgba(190, 200, 230, 0.35)'; ctx.fillRect(px, py, 6, 1.5); }
+      const g = ctx.createLinearGradient(x, 0, x + w * 0.1, 0);
+      g.addColorStop(0, `rgba(255, 84, 104, ${0.45 + 0.15 * Math.sin(T * 5)})`); g.addColorStop(1, 'rgba(255, 84, 104, 0)');
+      ctx.fillStyle = g; ctx.fillRect(x, y, w * 0.1, h);
+      // one bat lags toward the edge, then dashes to catch up
+      const lagX = k < 0.5 ? lerp(x + w * 0.32, x + w * 0.09, seg(0, 0.5)) : lerp(x + w * 0.09, x + w * 0.4, seg(0.5, 0.68));
+      if (k > 0.5 && k < 0.68) for (let j = 1; j < 5; j++) { ctx.fillStyle = `rgba(${m1}, ${0.3 - j * 0.06})`; ctx.beginPath(); ctx.arc(lagX - j * r * 0.8, mid + h * 0.15, r * 0.8, 0, Math.PI * 2); ctx.fill(); }
+      miniBat(lagX, mid + h * 0.15, r, m1);
+      miniBat(x + w * 0.55, mid - h * 0.1 + Math.sin(T * 2) * h * 0.05, r, me);
+      if (k > 0.25 && k < 0.5) scenePop('Hurry!', lagX + r * 3, mid + h * 0.15 - r * 3, fs, COL.danger, 1);
+      scenePop('→', x + w * 0.85, mid, fs * 2, '232, 236, 255', 0.35 + 0.25 * Math.sin(T * 6));
+    } else if (id === 'squeak') {
+      const sx = x + w * 0.16, mxS = x + w * 0.72, esc = variant === 'escape';
+      const rk = cl((k - 0.06) / 0.42), ringR = rk * w * 0.8;
+      const lit = (px, py) => { const d = Math.hypot(px - sx, py - mid); return Math.max(0.08, d < ringR ? 0.95 - rk * 0.5 : 0); };
+      strip(0, lit);
+      ring(sx, mid, ringR, me, 1 - rk);
+      const seenM = ringR > mxS - sx, hitT = 0.68, hit = k > hitT, f = cl((k - hitT) / 0.3);
+      const dash = seg(0.55, hitT), bx = lerp(sx, mxS - r * 1.6, dash), by = mid;
+      const my2 = mid - h * 0.02 + (hit && !esc ? f * h * 0.3 : 0), mxx = mxS + (hit && esc ? f * w * 0.08 : 0);
+      miniSpider(mxx, my2, r * 1.1, hit && !esc ? null : ceilAt(mxx, 0), { ko: hit && !esc, daze: hit && esc, alpha: (seenM ? 1 : 0.1) * (hit && !esc ? 1 - f : 1) });
+      if (k > 0.55 && k < hitT) for (let j = 1; j < 5; j++) { ctx.fillStyle = `rgba(${me}, ${0.3 - j * 0.06})`; ctx.beginPath(); ctx.arc(bx - j * r * 0.8, by, r * 0.8, 0, Math.PI * 2); ctx.fill(); }
+      miniBat(bx, by, r, me, { mouth: k > 0.6 && k < 0.75 ? 1 : 0 });
+      if (k < 0.3) scenePop('squeak!', sx, mid - r * 3, fs, me, cl((0.3 - k) * 6));
+      if (hit) scenePop(esc ? 'KNOCKED BACK!' : 'KO!', mxS, y + h * 0.26, fs * 1.3, esc ? COL.stun : COL.danger, 1 - f);
+    } else if (id === 'lantern') {
+      strip();
+      const gx2 = x + w * 0.12, gy2 = mid + h * 0.05, lx = x + w * 0.7, ly = mid - h * 0.12, lit2 = k > 0.5, f = cl((k - 0.5) / 0.3);
+      const bot = floorAt(lx, 0), rgb = lit2 ? COL.exit : COL.crystal;
+      ctx.strokeStyle = `rgba(${rgb}, ${lit2 ? 0.7 : 0.4})`; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(lx, bot); ctx.lineTo(lx, ly); ctx.stroke();
+      glow(lx, ly, r * (lit2 ? 4 + f * 3 : 2.5), rgb, lit2 ? 0.55 : 0.3);
+      ctx.fillStyle = `rgba(${rgb}, ${lit2 ? 0.95 : 0.65})`;
+      ctx.beginPath(); ctx.moveTo(lx, ly - r * 0.9); ctx.lineTo(lx + r * 0.55, ly); ctx.lineTo(lx, ly + r * 0.9); ctx.lineTo(lx - r * 0.55, ly); ctx.closePath(); ctx.fill();
+      if (lit2) { ring(lx, ly, r * (1 + f * 6), COL.exit, 1 - f); scenePop('Checkpoint!', lx, y + h * 0.24, fs * 1.2, COL.exit, cl((1 - k) * 4)); }
+      const fl = seg(0.1, 0.5), bx = lerp(x + w * 0.34, lx - r * 2, fl), by = lerp(mid, ly + r * 0.5, fl);
+      if (!lit2) { miniBat(gx2, gy2, r, m1, { ko: true }); if (k < 0.45) scenePop('stays put', gx2 + r, gy2 + r * 3.6, fs * 0.9, m1, 0.9); }
+      else {
+        const e = cl((k - 0.5) / 0.15);
+        if (e < 1) { glow(gx2, gy2, r * 3, COL.exit, 0.5 * (1 - e)); sceneBurst(gx2, gy2, e, COL.exit, r * 3); }
+        if (k > 0.56) miniBat(bx - r * 2.6, by + r * 1.4, r, m1, { alpha: cl((k - 0.56) / 0.08) });
+      }
+      miniBat(bx, by, r, me);
+    }
+    ctx.restore();
+  }
+
+  function drawGuide() {
+    const G = guideLayout(), u = G.u, sc = G.scenes[guide.k % G.scenes.length], k = Math.min(1, guide.kt / SCENE_T);
+    ctx.save();
+    ctx.fillStyle = 'rgba(4, 3, 16, 0.55)';
+    ctx.fillRect(0, 0, W, H);
+    // the glass panel
+    const pg = ctx.createLinearGradient(0, G.py, 0, G.py + G.ph);
+    pg.addColorStop(0, 'rgba(30, 24, 74, 0.92)'); pg.addColorStop(1, 'rgba(8, 8, 28, 0.94)');
+    ctx.fillStyle = pg;
+    roundRect(G.px, G.py, G.pw, G.ph, 16 * u); ctx.fill();
+    glowStroke('rgba(150, 130, 255, 0.85)', 2, 'rgba(150, 130, 255, 1)', 1.2);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    // title: what to do, and which map
+    const head = 'HOW TO PLAY', where = explore ? `${TITLES[variant]} · ${stageCount() > 1 ? `${L.def.stageName}, cave ${stage + 1} of ${stageCount()}` : L.def.stageName || 'Explore'}` : `${TITLES[variant]} · Side-scroll`;
+    ctx.font = `700 ${Math.round(15 * u)}px ${FONT}`;
+    const hw = ctx.measureText(head).width;
+    ctx.font = `600 ${Math.round(10.5 * u)}px ${FONT}`;
+    const ww = ctx.measureText(where).width, tx = W / 2 - (hw + 10 * u + ww) / 2;
+    ctx.textAlign = 'left';
+    ctx.font = `700 ${Math.round(15 * u)}px ${FONT}`; ctx.fillStyle = '#ffe278'; ctx.fillText(head, tx, G.py + 16 * u);
+    ctx.font = `600 ${Math.round(10.5 * u)}px ${FONT}`; ctx.fillStyle = `rgba(${explore ? wallRgb() : COL.wall}, 0.95)`; ctx.fillText(where, tx + hw + 10 * u, G.py + 16.5 * u);
+    // the scene, with its edge in the scene's colour
+    const B = G.box;
+    drawScene(sc.id, B.x, B.y, B.w, B.h, k);
+    roundRect(B.x, B.y, B.w, B.h, 10); ctx.strokeStyle = 'rgba(150, 130, 255, 0.55)'; ctx.lineWidth = 1.5; ctx.stroke();
+    // little arrows on the scene's sides: tap to go back or on
+    ctx.fillStyle = 'rgba(232, 236, 255, 0.35)';
+    for (const sd of [-1, 1]) {
+      const ax = sd < 0 ? B.x + 9 * u : B.x + B.w - 9 * u, ay = B.y + B.h / 2;
+      ctx.beginPath(); ctx.moveTo(ax + sd * 4 * u, ay); ctx.lineTo(ax - sd * 3 * u, ay - 6 * u); ctx.lineTo(ax - sd * 3 * u, ay + 6 * u); ctx.closePath(); ctx.fill();
+    }
+    // the caption (shrunk to fit), and a smaller line under it
+    ctx.textAlign = 'center';
+    let fsz = 15 * u;
+    ctx.font = `700 ${Math.round(fsz)}px ${FONT}`;
+    while (fsz > 10 && ctx.measureText(sc.text).width > G.pw - 24 * u) { fsz -= 0.5; ctx.font = `700 ${Math.round(fsz)}px ${FONT}`; }
+    const a = Math.min(1, guide.kt * 5);
+    ctx.fillStyle = `rgba(5, 6, 15, ${0.8 * a})`; ctx.fillText(sc.text, W / 2 + 1, G.capY + 10 * u + 2);
+    ctx.fillStyle = `rgba(255, 255, 255, ${a})`; ctx.fillText(sc.text, W / 2, G.capY + 10 * u);
+    ctx.font = `600 ${Math.round(10 * u)}px ${FONT}`;
+    ctx.fillStyle = `rgba(214, 208, 255, ${0.8 * a})`;
+    ctx.fillText(sc.sub || '', W / 2, G.capY + 24 * u, G.pw - 24 * u);
+    // which scene: a dot each, the current one bigger with its time filling in
+    G.dots.forEach((d, j) => {
+      const cur = j === guide.k % G.scenes.length;
+      ctx.beginPath(); ctx.arc(d.x, d.y, (cur ? 4.5 : 3) * u, 0, Math.PI * 2);
+      ctx.fillStyle = cur ? '#ffe278' : 'rgba(214, 208, 255, 0.35)'; ctx.fill();
+      if (cur) { ctx.strokeStyle = 'rgba(255, 226, 120, 0.9)'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(d.x, d.y, 6.5 * u, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * k); ctx.stroke(); }
+    });
+    // START! (this device offline, or the host online), or a wait for the host
+    const b = G.start;
+    if (canStartGuide()) {
+      const pulse = 0.5 + 0.5 * Math.sin(guide.t * 4);
+      glow(W / 2, b.y + b.h / 2, b.w * 0.75, '120, 255, 190', 0.16 + 0.12 * pulse);
+      const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+      g.addColorStop(0, 'rgba(90, 230, 160, 0.95)'); g.addColorStop(1, 'rgba(24, 120, 96, 0.95)');
+      ctx.fillStyle = g;
+      roundRect(b.x, b.y, b.w, b.h, b.h / 2); ctx.fill();
+      glowStroke('rgba(200, 255, 225, 0.95)', 2, 'rgba(120, 255, 190, 1)', 1 + pulse);
+      ctx.font = `800 ${Math.round(b.h * 0.5)}px ${FONT}`;
+      ctx.fillStyle = 'rgba(6, 30, 22, 0.5)'; ctx.fillText('START!', W / 2, b.y + b.h / 2 + 2);
+      ctx.fillStyle = '#ffffff'; ctx.fillText('START!', W / 2, b.y + b.h / 2);
+      if (!touchUsed) {
+        ctx.font = `600 ${Math.round(10 * u)}px ${FONT}`;
+        ctx.fillStyle = 'rgba(232, 236, 255, 0.7)'; ctx.textAlign = 'left';
+        ctx.fillText('or press Enter', b.x + b.w + 10 * u, b.y + b.h / 2);
+        ctx.textAlign = 'center';
+      }
+    } else {
+      ctx.font = `700 ${Math.round(12 * u)}px ${FONT}`;
+      const text = 'Waiting for the host' + '.'.repeat(1 + (Math.floor(guide.t * 2.5) % 3));
+      const tw = ctx.measureText('Waiting for the host...').width + 36 * u;
+      pill(W / 2 - tw / 2, b.y, tw, b.h, 'rgba(150, 130, 255, 0.75)', 6);
+      ctx.fillStyle = 'rgba(244, 241, 255, 0.9)'; ctx.textAlign = 'left';
+      ctx.fillText(text, W / 2 - tw / 2 + 18 * u, b.y + b.h / 2 + 1);
+      ctx.textAlign = 'center';
+    }
+    ctx.restore();
+  }
+
   // ---- Main hooks ---------------------------------------------------------
   // Called by the main loop each frame while a co-op run is on (dt is 0 while paused)
   function frame(dt, context, width, height) {
     ctx = context; W = width; H = height; frameDt = dt;
+    if (active && !paused) tickGuide(dt);
     if (active && !paused) { if (mode === 'client') clientUpdate(dt); else update(dt); }
     if (L) render();
   }
@@ -3872,6 +4558,8 @@
       ...L.hearts.filter((o) => !o.got).map((o) => ({ k: 'heart', x: o.x, y: o.y })),
       ...L.powers.filter((o) => !o.got).map((o) => ({ k: 'power', x: o.x, y: o.y, rgb: PW[o.type].rgb })),
       ...L.keys.filter((o) => !o.got).map((o) => ({ k: 'key', x: o.x, y: o.y })),
+      // the Phoenix Feather (a secret: only once its tile has been seen, like everything else here)
+      ...L.feathers.filter((o) => !o.got).map((o) => ({ k: 'feather', x: o.x, y: o.y })),
     ];
     const legend = [{ k: 'me', rgb: me ? me.rgb : BATS[0].rgb }];
     if (bats.length > 1) legend.push({ k: 'mate', rgb: (bats.find((b) => b !== me) || bats[0]).rgb });
@@ -3879,6 +4567,9 @@
     if (nk) legend.push({ k: 'key' });
     if (L.gates.length) legend.push({ k: 'switch', rgb: GATE_COLS[0] });
     legend.push({ k: 'heart' }, { k: 'power', rgb: PW.speed.rgb, label: 'Power' });
+    if (L.feathers.some((o) => !o.got && featherSeen(o))) legend.push({ k: 'feather' });
+    const down = bats.find((b) => b.ko && b !== me);
+    if (down) legend.push({ k: 'mate', rgb: down.rgb, ko: true, label: 'Fallen' });
     return {
       fog: L.fog, grid: L.grid, w: L.w, h: L.h, wall: wallRgb(), coop: true,
       title: L.def.stageName || 'Explore',
@@ -3907,7 +4598,7 @@
     setView: (v) => { view = v === '2d' ? '2d' : '3d'; if (view === '2d') window.EchoDuel3D?.hide?.(); },
     setPaused: (p) => { paused = !!p; if (paused) { keys.clear(); sticks.clear(); } },
     // Explore's map (game.js shows it): open while the team is in a cave, never in Side-scroll
-    get mapReady() { return active && explore && !!L?.fog && !over && (phase === 'play' || phase === 'count' || phase === 'wipe'); },
+    get mapReady() { return active && explore && !!L?.fog && !over && !guide && (phase === 'play' || phase === 'count' || phase === 'wipe'); },
     get localPlayers() { return mode === 'local' ? localCount : 1; },
     mapInfo,
     // spectating while your bat is down: the teammate being watched (-1 when not spectating)
@@ -3950,7 +4641,18 @@
     knockOut: (i) => knockOut(bats[i]),
     teleport: (i, x, y) => { const b = bats[i]; if (b) { b.x = x; b.y = y; b.vx = b.vy = 0; } },
     setScroll: (x) => { scroll.x = x; },
-    skipCountdown: () => { if (phase === 'count') { countdown = 0.001; } },
+    // (skipping the countdown skips the how-to-play guide too, on this device or as the host)
+    skipCountdown: () => { if (guide && mode !== 'client') guide = null; if (phase === 'count') { countdown = 0.001; } },
+    // the how-to-play guide: { scene, id, scenes } while it's up, else null. skipGuide() presses START
+    // (host / offline); skipGuide(true) also keeps it off for later runs, skipGuide(false) back on
+    get guide() {
+      if (!guide) return null;
+      const sc = guideScenes(), G = W ? guideLayout() : null;
+      return { scene: guide.k % sc.length, id: sc[guide.k % sc.length].id, scenes: sc.map((o) => o.id), text: sc[guide.k % sc.length].text, canStart: canStartGuide(), start: G && G.start, dots: G && G.dots, box: G && G.box };
+    },
+    skipGuide: (always) => { if (always !== undefined) noGuide = !!always; startGuide(); },
+    startGuide: () => startGuide(),
+    guideScene: (k, t = 0) => { if (guide) { guideGo(k); guide.kt = Math.max(0, Math.min(SCENE_T - 0.01, t)); } },
     // run the simulation without drawing (fast balance tests): secs of game time in fixed steps
     simulate(secs, dt = 1 / 30) {
       for (let t = 0; t < secs && active && !over; t += dt) { if (mode === 'client') clientUpdate(dt); else update(dt); }

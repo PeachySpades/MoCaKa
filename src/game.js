@@ -192,6 +192,8 @@
     key() { [1319, 1568, 2093, 2637].forEach((f, i) => { tone(f, f * 1.01, 0.18, 'triangle', 0.06, i * 0.06); tone(f * 2, f * 2, 0.1, 'sine', 0.02, i * 0.06 + 0.02); }); hiss(0.25, 0.03, 7000, ac && ac.currentTime + 0.1); },
     gate() { tone(70, 130, 0.6, 'sawtooth', 0.05); hiss(0.7, 0.1, 400, undefined, sfxBus, 'lowpass'); [523, 784, 1047].forEach((f, i) => tone(f, f, 0.3, 'sine', 0.05, 0.35 + i * 0.08)); },
     revive() { tone(330, 440, 0.12, 'triangle', 0.1); tone(440, 660, 0.14, 'triangle', 0.1, 0.13); [784, 988, 1175, 1568].forEach((f, i) => tone(f, f * 1.01, 0.3, 'sine', 0.06, 0.26 + i * 0.07)); hiss(0.4, 0.04, 6000, ac && ac.currentTime + 0.3); },
+    // the Phoenix Feather (Co-op Explore): a whoosh of flame rising into a bright fanfare
+    phoenix() { hiss(0.7, 0.1, 1400, undefined, sfxBus, 'bandpass'); tone(220, 880, 0.5, 'sawtooth', 0.04); [523, 659, 784, 1047, 1319, 1568].forEach((f, i) => tone(f, f * 1.01, 0.32, 'triangle', 0.07, 0.3 + i * 0.07)); tone(2093, 2100, 0.8, 'sine', 0.05, 0.75); },
     flyoff() { hiss(0.8, 0.12, 900, undefined, sfxBus, 'bandpass'); tone(300, 1200, 0.6, 'sine', 0.05); [523, 659, 784, 1047, 1319].forEach((f, i) => tone(f, f * 1.01, 0.25, 'triangle', 0.07, 0.45 + i * 0.1)); tone(1568, 1570, 0.7, 'sine', 0.05, 0.95); },
   };
 
@@ -1965,6 +1967,18 @@
             g.strokeStyle = `rgba(${o.rgb}, ${0.7 * (1 - ring)})`; g.lineWidth = 1.5;
             g.beginPath(); g.arc(x, y, s * (1.2 + ring * 2.2), 0, Math.PI * 2); g.stroke();
           }
+          // a fallen bat (it stays put until a teammate comes): a pulsing beacon in its colour, and a heart
+          if (o.ko) {
+            const f = (now * 0.9) % 1;
+            g.strokeStyle = `rgba(${o.rgb}, ${0.9 * (1 - f)})`; g.lineWidth = 1.6;
+            g.beginPath(); g.arc(x, y, s * (1.3 + f * 2.4), 0, Math.PI * 2); g.stroke();
+            halo(g, x, y, s * 2.8, o.rgb, 0.35 + 0.2 * Math.sin(now * 6));
+            const hx = x + s * 1.3, hy = y - s * 1.2, hs = s * 0.7;
+            g.beginPath(); g.moveTo(hx, hy + hs * 0.85);
+            g.bezierCurveTo(hx - hs * 1.3, hy - hs * 0.1, hx - hs * 0.65, hy - hs * 1.15, hx, hy - hs * 0.35);
+            g.bezierCurveTo(hx + hs * 0.65, hy - hs * 1.15, hx + hs * 1.3, hy - hs * 0.1, hx, hy + hs * 0.85);
+            g.fillStyle = `rgb(${o.rgb})`; g.fill(); g.strokeStyle = 'rgba(255, 255, 255, 0.9)'; g.lineWidth = 1; g.stroke();
+          }
           if (!blink) return;
           halo(g, x, y, s * 2.6, o.rgb, o.ko ? 0.2 : 0.55);
           // a tiny bat: body and two wings
@@ -2043,6 +2057,19 @@
           g.beginPath(); g.moveTo(x, y - s * 0.45); g.lineTo(x + s * 0.3, y); g.lineTo(x, y + s * 0.45); g.lineTo(x - s * 0.3, y); g.closePath(); g.fill();
           return;
         }
+        case 'feather': {
+          // the Phoenix Feather: a little flame-orange plume
+          halo(g, x, y, s * 2.6, '255, 140, 50', 0.55 + 0.15 * Math.sin(now * 4));
+          g.save(); g.translate(x, y); g.rotate(-0.55);
+          g.beginPath(); g.moveTo(0, s * 1.1);
+          g.bezierCurveTo(-s * 0.8, s * 0.5, -s * 0.6, -s * 0.6, s * 0.1, -s * 1.2);
+          g.bezierCurveTo(s * 0.65, -s * 0.45, s * 0.5, s * 0.45, 0, s * 1.1); g.closePath();
+          g.fillStyle = 'rgb(255, 150, 60)'; g.fill();
+          g.strokeStyle = 'rgba(255, 240, 190, 0.95)'; g.lineWidth = 1; g.stroke();
+          g.beginPath(); g.moveTo(0, s * 1.4); g.lineTo(s * 0.1, -s * 1.1); g.stroke();
+          g.restore();
+          return;
+        }
         case 'moth': {
           const rgb = '255, 226, 120';
           halo(g, x, y, s * 1.6, rgb, 0.45);
@@ -2053,7 +2080,7 @@
         default:
       }
     }
-    const LABELS = { me: 'You', mate: 'Team', lantern: 'Lantern', exit: 'Exit', key: 'Key', switch: 'Switch', gate: 'Gate', heart: 'Heart', power: 'Power-up', moth: 'Moth' };
+    const LABELS = { me: 'You', mate: 'Team', lantern: 'Lantern', exit: 'Exit', key: 'Key', switch: 'Switch', gate: 'Gate', heart: 'Heart', power: 'Power-up', moth: 'Moth', feather: 'Phoenix Feather' };
 
     // info: { fog, grid (1 = rock), w, h, wall ('r, g, b'), title, sub, coop, danger, hint,
     //         tint (tile -> 'r, g, b' for a closed gate), gateKey, bats: [{ x, y, rgb, me, ko }],
